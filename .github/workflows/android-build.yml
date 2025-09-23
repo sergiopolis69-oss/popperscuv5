@@ -2,7 +2,8 @@ name: android-build
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
@@ -17,13 +18,13 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.24.0"
-          channel: "stable"
+          flutter-version: '3.24.0'
+          channel: 'stable'
 
       - name: Cache Pub
         uses: actions/cache@v4
@@ -33,56 +34,96 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pub-
 
-      # 1) Crear android/ si no existe (sin tocar lib/)
-      - name: Ensure Android skeleton
+      - name: Ensure Android skeleton (if missing)
+        shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           if [ ! -d "android" ]; then
             flutter create . --platforms=android --project-name=popperscuv5
           fi
 
-      # 2) Subir el Gradle wrapper a 8.2.1 (AGP 8.1.2 requiere 8.0–8.2)
       - name: Bump Gradle wrapper to 8.2.1
+        shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           WRAPPER_FILE="android/gradle/wrapper/gradle-wrapper.properties"
           if [ -f "$WRAPPER_FILE" ]; then
-            sed -i 's#distributionUrl=.*#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.2.1-all.zip#' "$WRAPPER_FILE"
+            # Reemplaza toda la línea distributionUrl=...
+            perl -0777 -pe "s#distributionUrl=.*#distributionUrl=https://services.gradle.org/distributions/gradle-8.2.1-all.zip#g" -i "$WRAPPER_FILE"
           fi
 
-      # 3) Parchear SDK/Kotlin/AGP, AndroidX/Jetifier y settings.gradle (plugins{})
-      - name: Patch Android config (SDK 35 + Kotlin/AGP)
+      - name: Patch Android config (SDK 35, Kotlin 1.9.24, AGP 8.1.2)
+        shell: bash
         run: |
-          set -euxo pipefail
-
+          set -euo pipefail
           APP_GRADLE="android/app/build.gradle"
           SETTINGS_GRADLE="android/settings.gradle"
           ROOT_GRADLE="android/build.gradle"
           PROPS="android/gradle.properties"
 
-          # compileSdk / targetSdk = 35
           if [ -f "$APP_GRADLE" ]; then
-            sed -i 's/compileSdk *[0-9][0-9]*/compileSdk 35/' "$APP_GRADLE" || true
+            perl -0777 -pe "s/compileSdk\s+\d+/compileSdk 35/g" -i "$APP_GRADLE"
             if grep -q "targetSdk" "$APP_GRADLE"; then
-              sed -i 's/targetSdk *[0-9][0-9]*/targetSdk 35/' "$APP_GRADLE" || true
+              perl -0777 -pe "s/targetSdk\s+\d+/targetSdk 35/g" -i "$APP_GRADLE"
             else
+              # Inserta targetSdk 35 dentro de defaultConfig { ... }
               awk '1;/defaultConfig *\{/{print "        targetSdk 35"}' "$APP_GRADLE" > "$APP_GRADLE.tmp" && mv "$APP_GRADLE.tmp" "$APP_GRADLE"
             fi
           fi
 
-          # settings.gradle (plantilla moderna): Kotlin 1.9.24 y AGP 8.1.2
+          # settings.gradle (formato moderno con plugins{})
           if [ -f "$SETTINGS_GRADLE" ]; then
-            sed -i 's/id *"org.jetbrains.kotlin.android" *version *"[^"]*"/id "org.jetbrains.kotlin.android" version "1.9.24"/' "$SETTINGS_GRADLE" || true
-            sed -i 's/id *"com.android.application" *version *"[^"]*"/id "com.android.application" version "8.1.2"/' "$SETTINGS_GRADLE" || true
-            sed -i 's/id *"com.android.library" *version *"[^"]*"/id "com.android.library" version "8.1.2"/' "$SETTINGS_GRADLE" || true
+            perl -0777 -pe 's/id\s*"org\.jetbrains\.kotlin\.android"\s*version\s*"[^"]*"/id "org.jetbrains.kotlin.android" version "1.9.24"/g' -i "$SETTINGS_GRADLE"
+            perl -0777 -pe 's/id\s*"com\.android\.application"\s*version\s*"[^"]*"/id "com.android.application" version "8.1.2"/g' -i "$SETTINGS_GRADLE"
+            perl -0777 -pe 's/id\s*"com\.android\.library"\s*version\s*"[^"]*"/id "com.android.library" version "8.1.2"/g' -i "$SETTINGS_GRADLE"
           fi
 
-          # build.gradle (estilo viejo), por si tu plantilla aún lo usa
+          # build.gradle (formato viejo) por si aplica
           if [ -f "$ROOT_GRADLE" ]; then
-            sed -i "s/ext.kotlin_version *= *'[^']*'/ext.kotlin_version = '1.9.24'/" "$ROOT_GRADLE" || true
-            sed -i 's/com.android.tools.build:gradle:[0-9.]\+/com.android.tools.build:gradle:8.1.2/' "$ROOT_GRADLE" || true
+            perl -0777 -pe "s/ext\.kotlin_version\s*=\s*'[^']*'/ext.kotlin_version = '1.9.24'/g" -i "$ROOT_GRADLE" || true
+            perl -0777 -pe "s/com\.android\.tools\.build:gradle:\d+(\.\d+){1,2}/com.android.tools.build:gradle:8.1.2/g" -i "$ROOT_GRADLE" || true
           fi
 
+          # AndroidX / Jetifier
+          touch "$PROPS"
+          grep -q '^android.useAndroidX=true' "$PROPS" || echo 'android.useAndroidX=true' >> "$PROPS"
+          grep -q '^android.enableJetifier=true' "$PROPS" || echo 'android.enableJetifier=true' >> "$PROPS"
+
+      - name: Patch Dart import for ConflictAlgorithm (sqflite)
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE="lib/utils/xml_backup.dart"
+          if [ -f "$FILE" ] && grep -q "ConflictAlgorithm" "$FILE"; then
+            if ! grep -q "sqflite.dart' show ConflictAlgorithm" "$FILE"; then
+              awk '1;/package:xml\/xml.dart/{print "import '\''package:sqflite/sqflite.dart'\'' show ConflictAlgorithm;"}' "$FILE" > "$FILE.tmp" && mv "$FILE.tmp" "$FILE"
+            fi
+          fi
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Accept Android licenses (best-effort)
+        shell: bash
+        run: yes "y" | flutter doctor --android-licenses || true
+
+      - name: Build APK (release)
+        run: flutter build apk --release
+
+      - name: Build AAB (release)
+        run: flutter build appbundle --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Upload AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-aab
+          path: build/app/outputs/bundle/release/app-release.aab
           # AndroidX / Jetifier
           [ -f "$PROPS" ] || touch "$PROPS"
           grep -q '^android.useAndroidX=true' "$PROPS" || echo 'android.useAndroidX=true' >> "$PROPS"
