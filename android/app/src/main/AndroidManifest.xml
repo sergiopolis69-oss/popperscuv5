@@ -17,7 +17,15 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <meta-data
+                android:name="io.flutter.embedding.android.SplashScreenDrawable"
+                android:resource="@drawable/launch_background" />
         </activity>
+
+        <!-- Forzar Flutter embedding v2 -->
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
     </application>
 
 </manifest>
