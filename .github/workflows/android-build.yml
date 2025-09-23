@@ -44,39 +44,83 @@ jobs:
             sed -i 's#^distributionUrl=.*#distributionUrl=https://services.gradle.org/distributions/gradle-8.2.1-all.zip#' "$WRAPPER_FILE"
           fi
 
-      # 3) Forzar versiones modernas (AGP/Kotlin) y SDKs en settings.gradle y app/build.gradle
+      # 3) Reescribir settings.gradle (plugins modernos) y fijar SDK 35 en app/build.gradle
       - name: Patch Gradle settings and app build
         shell: bash
         run: |
           set -euo pipefail
 
           SETTINGS_GRADLE="android/settings.gradle"
+          : > "$SETTINGS_GRADLE"
+          echo 'pluginManagement {' >> "$SETTINGS_GRADLE"
+          echo '    repositories {' >> "$SETTINGS_GRADLE"
+          echo '        google()' >> "$SETTINGS_GRADLE"
+          echo '        mavenCentral()' >> "$SETTINGS_GRADLE"
+          echo '        gradlePluginPortal()' >> "$SETTINGS_GRADLE"
+          echo '    }' >> "$SETTINGS_GRADLE"
+          echo '    plugins {' >> "$SETTINGS_GRADLE"
+          echo '        id "com.android.application" version "8.1.2"' >> "$SETTINGS_GRADLE"
+          echo '        id "com.android.library" version "8.1.2"' >> "$SETTINGS_GRADLE"
+          echo '        id "org.jetbrains.kotlin.android" version "1.9.24"' >> "$SETTINGS_GRADLE"
+          echo '    }' >> "$SETTINGS_GRADLE"
+          echo '}' >> "$SETTINGS_GRADLE"
+          echo 'plugins {' >> "$SETTINGS_GRADLE"
+          echo '    id "com.android.application" apply false' >> "$SETTINGS_GRADLE"
+          echo '    id "org.jetbrains.kotlin.android" apply false' >> "$SETTINGS_GRADLE"
+          echo '}' >> "$SETTINGS_GRADLE"
+          echo 'include(":app")' >> "$SETTINGS_GRADLE"
+
           APP_GRADLE="android/app/build.gradle"
+          sed -i 's/compileSdk *[0-9][0-9]*/compileSdk 35/' "$APP_GRADLE" || true
+          if grep -q 'defaultConfig' "$APP_GRADLE"; then
+            if grep -q 'targetSdk' "$APP_GRADLE"; then
+              sed -i 's/targetSdk *[0-9][0-9]*/targetSdk 35/' "$APP_GRADLE" || true
+            else
+              awk '1;/defaultConfig[[:space:]]*\{/{print "        targetSdk 35"}' "$APP_GRADLE" > "$APP_GRADLE.tmp" && mv "$APP_GRADLE.tmp" "$APP_GRADLE"
+            fi
+          fi
+
           PROPS="android/gradle.properties"
+          touch "$PROPS"
+          grep -q '^android.useAndroidX=true' "$PROPS" || echo 'android.useAndroidX=true' >> "$PROPS"
+          grep -q '^android.enableJetifier=true' "$PROPS" || echo 'android.enableJetifier=true' >> "$PROPS"
 
-          # Reescribir settings.gradle con plugins modernos (forma estable)
-          cat > "$SETTINGS_GRADLE" <<'EOF'
-pluginManagement {
-    repositories {
-        google()
-        mavenCentral()
-        gradlePluginPortal()
-    }
-    plugins {
-        id "com.android.application" version "8.1.2"
-        id "com.android.library" version "8.1.2"
-        id "org.jetbrains.kotlin.android" version "1.9.24"
-    }
-}
-plugins {
-    id "com.android.application" apply false
-    id "org.jetbrains.kotlin.android" apply false
-}
-include(":app")
-EOF
+      # 4) Parche para ConflictAlgorithm (sqflite) si hace falta
+      - name: Patch Dart import for ConflictAlgorithm
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE="lib/utils/xml_backup.dart"
+          if [ -f "$FILE" ] && grep -q "ConflictAlgorithm" "$FILE"; then
+            if ! grep -q "sqflite.dart' show ConflictAlgorithm" "$FILE"; then
+              awk '1;/package:xml\/xml.dart/{print "import '\''package:sqflite/sqflite.dart'\'' show ConflictAlgorithm;"}' "$FILE" > "$FILE.tmp" && mv "$FILE.tmp" "$FILE"
+            fi
+          fi
 
-          # Asegurar compileSdk/targetSdk 35 en app/build.gradle
-          # (si falta targetSdk lo insertamos dentro de defaultConfig)
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Accept Android licenses (best-effort)
+        shell: bash
+        run: yes "y" | flutter doctor --android-licenses || true
+
+      - name: Build APK (release)
+        run: flutter build apk --release
+
+      - name: Build AAB (release)
+        run: flutter build appbundle --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Upload AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-aab
+          path: build/app/outputs/bundle/release/app-release.aab          # (si falta targetSdk lo insertamos dentro de defaultConfig)
           sed -i 's/compileSdk *[0-9][0-9]*/compileSdk 35/' "$APP_GRADLE" || true
           if grep -q 'defaultConfig' "$APP_GRADLE"; then
             if grep -q 'targetSdk' "$APP_GRADLE"; then
