@@ -20,20 +20,20 @@ jobs:
           flutter-version: "3.24.0"
           channel: "stable"
 
-      - name: Android skeleton
+      - name: Create Flutter Android skeleton if missing
         run: |
           set -e
           if [ ! -d android ]; then
             flutter create . --platforms=android --project-name=popperscuv5
           fi
 
-      - name: Gradle 8.2.1
+      - name: Gradle wrapper 8.2.1
         run: |
           set -e
           mkdir -p android/gradle/wrapper
           echo 'distributionUrl=https://services.gradle.org/distributions/gradle-8.2.1-all.zip' > android/gradle/wrapper/gradle-wrapper.properties
 
-      - name: settings.gradle (AGP/Kotlin)
+      - name: settings.gradle (AGP 8.1.2 / Kotlin 1.9.24)
         run: |
           set -e
           FILE="android/settings.gradle"
@@ -55,18 +55,52 @@ jobs:
           echo '}' >> "$FILE"
           echo 'include(":app")' >> "$FILE"
 
-      - name: SDK 35 + AndroidX
+      - name: app/build.gradle (compileSdk/targetSdk 35)
         run: |
           set -e
           APP="android/app/build.gradle"
-          if [ -f "$APP" ]; then
-            sed -i 's/compileSdk.*/compileSdk 35/' "$APP" || true
-            if grep -q 'targetSdk' "$APP"; then
-              sed -i 's/targetSdk.*/targetSdk 35/' "$APP" || true
-            else
-              awk '1;/defaultConfig *\{/{print "        targetSdk 35"}' "$APP" > "$APP.tmp" && mv "$APP.tmp" "$APP"
-            fi
-          fi
+          : > "$APP"
+          echo 'plugins {' >> "$APP"
+          echo '    id "com.android.application"' >> "$APP"
+          echo '    id "org.jetbrains.kotlin.android"' >> "$APP"
+          echo '}' >> "$APP"
+          echo '' >> "$APP"
+          echo 'android {' >> "$APP"
+          echo '    namespace "com.example.popperscuv5"' >> "$APP"
+          echo '    compileSdk 35' >> "$APP"
+          echo '' >> "$APP"
+          echo '    defaultConfig {' >> "$APP"
+          echo '        applicationId "com.example.popperscuv5"' >> "$APP"
+          echo '        minSdk 21' >> "$APP"
+          echo '        targetSdk 35' >> "$APP"
+          echo '        versionCode 1' >> "$APP"
+          echo '        versionName "1.0.0"' >> "$APP"
+          echo '    }' >> "$APP"
+          echo '' >> "$APP"
+          echo '    buildTypes {' >> "$APP"
+          echo '        release {' >> "$APP"
+          echo '            minifyEnabled false' >> "$APP"
+          echo '            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"' >> "$APP"
+          echo '        }' >> "$APP"
+          echo '    }' >> "$APP"
+          echo '' >> "$APP"
+          echo '    compileOptions {' >> "$APP"
+          echo '        sourceCompatibility JavaVersion.VERSION_17' >> "$APP"
+          echo '        targetCompatibility JavaVersion.VERSION_17' >> "$APP"
+          echo '    }' >> "$APP"
+          echo '' >> "$APP"
+          echo '    kotlinOptions {' >> "$APP"
+          echo '        jvmTarget = "17"' >> "$APP"
+          echo '    }' >> "$APP"
+          echo '}' >> "$APP"
+          echo '' >> "$APP"
+          echo 'dependencies {' >> "$APP"
+          echo '    implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.24"' >> "$APP"
+          echo '}' >> "$APP"
+
+      - name: gradle.properties (AndroidX/Jetifier)
+        run: |
+          set -e
           echo 'android.useAndroidX=true' >> android/gradle.properties
           echo 'android.enableJetifier=true' >> android/gradle.properties
 
@@ -80,10 +114,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: app-release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
-      - uses: actions/upload-artifact@v4
-        with:
-          name: app-release-aab
+          path: build/app/outputs/flutter-apk/app-release.apk          name: app-release-aab
           path: build/app/outputs/bundle/release/app-release.aab          path: build/app/outputs/flutter-apk/app-release.apk
 
       - uses: actions/upload-artifact@v4
