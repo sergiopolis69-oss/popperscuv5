@@ -1,21 +1,17 @@
 
-# PDV Flutter (v1.1)
+# PDV Flutter (popperscuv5)
 
-Cambios:
-- Export/Import XML compatibles con Android 11–15 usando **selector del sistema** (SAF).
-- Histograma removido de Historial; ahora hay gráficos **sencillos** en la página de **Utilidad** para ventas por día y utilidad % por día.
-- Tema visual aplicado (cards redondeadas, tipografía Material 3, color seed del logo).
-- Inventario con **stock** y actualización automática por ventas y compras.
+- Android 11–15: Export/Import XML con selector del sistema (SAF).
+- Ventas: live search de productos/clientes, agregar cliente rápido, envío y descuento.
+- Historial: filtros + resumen con histograma simple.
+- Utilidad: promedio ponderado, descuentos prorrateados y envío excluido; histogramas diarios.
+- Inventario: altas/bajas por compras/ventas; agregar/eliminar; último costo/fecha.
+- Compras: actualiza stock y último costo/fecha.
+- Clientes: Top por # ventas, conteo, alta por formulario.
 
-### Compilar en GitHub
-Incluye workflow `android-build.yml`. Cada push a `main` construye el APK y lo publica como artifact.
-
-### Local
+## Correr
 ```bash
-flutter create . --overwrite --platforms=android
+flutter create . --platforms=android   # solo si no existe /android
 flutter pub get
 flutter run
 ```
-
-### Android 11–15 (Descargas)
-La exportación usa el **selector del sistema (SAF)** mediante `file_saver` y la importación usa `file_picker`. Funciona en Android 11–15 sin solicitar permisos de almacenamiento.
