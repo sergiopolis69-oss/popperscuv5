@@ -21,67 +21,52 @@ jobs:
           flutter-version: "3.24.0"
           channel: "stable"
 
-      - name: Prepare Android + patches (one shot)
+      - name: Prepare Android and patches
         run: |
           set -euo pipefail
 
-          # 1) Crear android/ si no existe (sin tocar lib/)
+          # Crear android/ si no existe (sin tocar lib/)
           if [ ! -d android ]; then
             flutter create . --platforms=android --project-name=popperscuv5
           fi
 
-          # 2) Subir Gradle wrapper a 8.2.1 (requerido por AGP 8.1.x)
-          WRAPPER="android/gradle/wrapper/gradle-wrapper.properties"
-          if [ -f "$WRAPPER" ]; then
-            sed -i 's#^distributionUrl=.*#distributionUrl=https://services.gradle.org/distributions/gradle-8.2.1-all.zip#' "$WRAPPER"
+          # Gradle 8.2.1 (requerido por AGP 8.1.x)
+          sed -i 's#^distributionUrl=.*#distributionUrl=https://services.gradle.org/distributions/gradle-8.2.1-all.zip#' android/gradle/wrapper/gradle-wrapper.properties
+
+          # Forzar SDK 35
+          sed -i 's/compileSdk[[:space:]]\+[0-9][0-9]*/compileSdk 35/g' android/app/build.gradle || true
+          if grep -q 'targetSdk' android/app/build.gradle; then
+            sed -i 's/targetSdk[[:space:]]\+[0-9][0-9]*/targetSdk 35/g' android/app/build.gradle || true
+          else
+            awk '1;/defaultConfig[[:space:]]*\{/{print "        targetSdk 35"}' android/app/build.gradle > tmp && mv tmp android/app/build.gradle
           fi
 
-          # 3) Ajustar versiones modernas en settings.gradle (plugins{} de plantilla reciente)
-          SETTINGS="android/settings.gradle"
-          if [ -f "$SETTINGS" ]; then
-            # Kotlin
-            sed -i 's/id[[:space:]]*"org.jetbrains.kotlin.android"[[:space:]]*version[[:space:]]*"[^"]*"/id "org.jetbrains.kotlin.android" version "1.9.24"/g' "$SETTINGS" || true
-            # AGP app y library
-            sed -i 's/id[[:space:]]*"com.android.application"[[:space:]]*version[[:space:]]*"[^"]*"/id "com.android.application" version "8.1.2"/g' "$SETTINGS" || true
-            sed -i 's/id[[:space:]]*"com.android.library"[[:space:]]*version[[:space:]]*"[^"]*"/id "com.android.library" version "8.1.2"/g' "$SETTINGS" || true
+          # Ajustar versiones modernas en settings.gradle (plantilla reciente con plugins{})
+          if [ -f android/settings.gradle ]; then
+            sed -i 's/id[[:space:]]*"org.jetbrains.kotlin.android"[[:space:]]*version[[:space:]]*"[^"]*"/id "org.jetbrains.kotlin.android" version "1.9.24"/g' android/settings.gradle || true
+            sed -i 's/id[[:space:]]*"com.android.application"[[:space:]]*version[[:space:]]*"[^"]*"/id "com.android.application" version "8.1.2"/g' android/settings.gradle || true
+            sed -i 's/id[[:space:]]*"com.android.library"[[:space:]]*version[[:space:]]*"[^"]*"/id "com.android.library" version "8.1.2"/g' android/settings.gradle || true
           fi
 
-          # 4) compileSdk / targetSdk 35 en app/build.gradle
-          APP="android/app/build.gradle"
-          if [ -f "$APP" ]; then
-            sed -i 's/compileSdk[[:space:]]\+[0-9][0-9]*/compileSdk 35/g' "$APP" || true
-            if grep -q 'defaultConfig' "$APP"; then
-              if grep -q 'targetSdk' "$APP"; then
-                sed -i 's/targetSdk[[:space:]]\+[0-9][0-9]*/targetSdk 35/g' "$APP" || true
-              else
-                # Inserta targetSdk si no está
-                awk '1;/defaultConfig[[:space:]]*\{/{print "        targetSdk 35"}' "$APP" > "$APP.tmp" && mv "$APP.tmp" "$APP"
-              fi
-            fi
-          fi
+          # AndroidX / Jetifier
+          echo 'android.useAndroidX=true' >> android/gradle.properties
+          echo 'android.enableJetifier=true' >> android/gradle.properties
 
-          # 5) AndroidX / Jetifier
-          PROPS="android/gradle.properties"
-          touch "$PROPS"
-          grep -q '^android.useAndroidX=true' "$PROPS" || echo 'android.useAndroidX=true' >> "$PROPS"
-          grep -q '^android.enableJetifier=true' "$PROPS" || echo 'android.enableJetifier=true' >> "$PROPS"
+      - run: flutter pub get
 
-          # 6) Import faltante para ConflictAlgorithm en XML backup (si aplica)
-          DART="lib/utils/xml_backup.dart"
-          if [ -f "$DART" ] && grep -q 'ConflictAlgorithm' "$DART"; then
-            if ! grep -q "sqflite.dart' show ConflictAlgorithm" "$DART"; then
-              awk '1;/package:xml\/xml.dart/{print "import '\''package:sqflite/sqflite.dart'\'' show ConflictAlgorithm;"}' "$DART" > "$DART.tmp" && mv "$DART.tmp" "$DART"
-            fi
-          fi
+      - run: flutter build apk --release
 
-      - name: Get packages
-        run: flutter pub get
+      - run: flutter build appbundle --release
 
-      - name: Build APK (release)
-        run: flutter build apk --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
 
-      - name: Build AAB (release)
-        run: flutter build appbundle --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-release-aab
+          path: build/app/outputs/bundle/release/app-release.aab        run: flutter build appbundle --release
 
       - uses: actions/upload-artifact@v4
         with:
