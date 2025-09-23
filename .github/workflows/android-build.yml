@@ -75,14 +75,19 @@ jobs:
           printf 'android.useAndroidX=true\n' >> android/gradle.properties
           printf 'android.enableJetifier=true\n' >> android/gradle.properties
 
-      - name: Flutter pub get
-        run: flutter pub get
+      - run: flutter pub get
+      - run: flutter build apk --release
+      - run: flutter build appbundle --release
 
-      - name: Build APK (release)
-        run: flutter build apk --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
 
-      - name: Build AAB (release)
-        run: flutter build appbundle --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-release-aab
+          path: build/app/outputs/bundle/release/app-release.aab        run: flutter build appbundle --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
