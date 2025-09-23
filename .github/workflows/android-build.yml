@@ -20,69 +20,81 @@ jobs:
           flutter-version: "3.24.0"
           channel: "stable"
 
-      - name: Prepare Android (safe rewrite)
+      - name: Ensure android skeleton
         shell: bash
         run: |
           set -e
-
-          # Create android/ if missing
           if [ ! -d android ]; then
             flutter create . --platforms=android --project-name=popperscuv5
           fi
 
-          # Gradle wrapper 8.2.1
+      - name: Set Gradle wrapper 8.2.1
+        shell: bash
+        run: |
+          set -e
           mkdir -p android/gradle/wrapper
-          cat > android/gradle/wrapper/gradle-wrapper.properties <<'EOF'
-distributionUrl=https\://services.gradle.org/distributions/gradle-8.2.1-all.zip
-EOF
+          printf 'distributionUrl=https\\://services.gradle.org/distributions/gradle-8.2.1-all.zip\n' > android/gradle/wrapper/gradle-wrapper.properties
 
-          # settings.gradle (AGP/Kotlin)
-          cat > android/settings.gradle <<'EOF'
-pluginManagement {
-    repositories {
-        google()
-        mavenCentral()
-        gradlePluginPortal()
-    }
-    plugins {
-        id "com.android.application" version "8.1.2"
-        id "com.android.library"     version "8.1.2"
-        id "org.jetbrains.kotlin.android" version "1.9.24"
-    }
-}
-plugins {
-    id "com.android.application" apply false
-    id "org.jetbrains.kotlin.android" apply false
-}
-include(":app")
-EOF
+      - name: Write settings.gradle (AGP/Kotlin)
+        shell: bash
+        run: |
+          set -e
+          FILE="android/settings.gradle"
+          : > "$FILE"
+          printf 'pluginManagement {\n' >> "$FILE"
+          printf '    repositories {\n' >> "$FILE"
+          printf '        google()\n' >> "$FILE"
+          printf '        mavenCentral()\n' >> "$FILE"
+          printf '        gradlePluginPortal()\n' >> "$FILE"
+          printf '    }\n' >> "$FILE"
+          printf '    plugins {\n' >> "$FILE"
+          printf '        id "com.android.application" version "8.1.2"\n' >> "$FILE"
+          printf '        id "com.android.library"     version "8.1.2"\n' >> "$FILE"
+          printf '        id "org.jetbrains.kotlin.android" version "1.9.24"\n' >> "$FILE"
+          printf '    }\n' >> "$FILE"
+          printf '}\n' >> "$FILE"
+          printf 'plugins {\n' >> "$FILE"
+          printf '    id "com.android.application" apply false\n' >> "$FILE"
+          printf '    id "org.jetbrains.kotlin.android" apply false\n' >> "$FILE"
+          printf '}\n' >> "$FILE"
+          printf 'include(":app")\n' >> "$FILE"
 
-          # compileSdk / targetSdk 35
+      - name: Force SDK 35 and AndroidX
+        shell: bash
+        run: |
+          set -e
           APP="android/app/build.gradle"
           if [ -f "$APP" ]; then
-            sed -i 's/compileSdk[[:space:]]*[0-9][0-9]*/compileSdk 35/' "$APP" || true
+            sed -i 's/compileSdk.*/compileSdk 35/' "$APP" || true
             if grep -q 'targetSdk' "$APP"; then
-              sed -i 's/targetSdk[[:space:]]*[0-9][0-9]*/targetSdk 35/' "$APP" || true
+              sed -i 's/targetSdk.*/targetSdk 35/' "$APP" || true
             else
-              awk '1;/defaultConfig[[:space:]]*\{/{print "        targetSdk 35"}' "$APP" > "$APP.tmp" && mv "$APP.tmp" "$APP"
+              awk '1;/defaultConfig *\{/{print "        targetSdk 35"}' "$APP" > "$APP.tmp" && mv "$APP.tmp" "$APP"
             fi
           fi
+          printf 'android.useAndroidX=true\n' >> android/gradle.properties
+          printf 'android.enableJetifier=true\n' >> android/gradle.properties
 
-          # AndroidX / Jetifier
-          echo 'android.useAndroidX=true' >> android/gradle.properties
-          echo 'android.enableJetifier=true' >> android/gradle.properties
+      - name: Flutter pub get
+        run: flutter pub get
 
-      - run: flutter pub get
+      - name: Build APK (release)
+        run: flutter build apk --release
 
-      - run: flutter build apk --release
+      - name: Build AAB (release)
+        run: flutter build appbundle --release
 
-      - run: flutter build appbundle --release
-
-      - uses: actions/upload-artifact@v4
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
         with:
           name: app-release-apk
           path: build/app/outputs/flutter-apk/app-release.apk
 
+      - name: Upload AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-aab
+          path: build/app/outputs/bundle/release/app-release.aab
       - uses: actions/upload-artifact@v4
         with:
           name: app-release-aab
