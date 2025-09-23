@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:xml/xml.dart' as xml;
 import 'package:file_saver/file_saver.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:sqflite/sqflite.dart' show ConflictAlgorithm;
 import '../data/database.dart';
 
 class XmlBackup {
@@ -43,7 +44,6 @@ class XmlBackup {
     return Uint8List.fromList(xmlStr.codeUnits);
   }
 
-  /// Export usando selector del sistema (SAF) - Android 11–15 friendly
   static Future<String?> exportAll() async {
     final bytes = await _buildXmlBytes();
     final savedPath = await FileSaver.instance.saveFile(
@@ -54,7 +54,6 @@ class XmlBackup {
     return savedPath;
   }
 
-  /// Importa desde picker (XML)
   static Future<void> importAllWithPicker() async {
     final res = await FilePicker.platform.pickFiles(
       type: FileType.custom,
