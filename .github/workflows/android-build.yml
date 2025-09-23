@@ -13,7 +13,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Java 17 es lo recomendado para Gradle/AGP recientes
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
@@ -26,7 +25,6 @@ jobs:
           flutter-version: "3.24.0"
           channel: "stable"
 
-      # Cache de dependencias de Dart/Flutter
       - name: Cache Pub
         uses: actions/cache@v4
         with:
@@ -35,8 +33,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pub-
 
-      # Si no existe la carpeta android (porque el repo solo tiene lib/, assets/, etc.), la creamos.
-      # OJO: NO usamos --overwrite para no reponer el demo de Flutter sobre tu lib/.
+      # Si no existe carpeta android, se crea.
       - name: Ensure Android skeleton (no overwrite)
         run: |
           if [ ! -d "android" ]; then
@@ -46,15 +43,9 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
-      # (Opcional) Aceptar licencias del SDK; no falla si no está sdkmanager
-      - name: Accept Android licenses (best-effort)
-        run: |
-          yes "y" | flutter doctor --android-licenses || true
-
       - name: Build APK (release)
         run: flutter build apk --release
 
-      # (Opcional) Build AAB para Play Store
       - name: Build AAB (release)
         run: flutter build appbundle --release
 
