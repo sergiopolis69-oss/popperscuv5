@@ -20,47 +20,42 @@ jobs:
           flutter-version: "3.24.0"
           channel: "stable"
 
-      - name: Ensure android skeleton
-        shell: bash
+      - name: Android skeleton
         run: |
           set -e
           if [ ! -d android ]; then
             flutter create . --platforms=android --project-name=popperscuv5
           fi
 
-      - name: Set Gradle wrapper 8.2.1
-        shell: bash
+      - name: Gradle 8.2.1
         run: |
           set -e
           mkdir -p android/gradle/wrapper
-          printf 'distributionUrl=https\\://services.gradle.org/distributions/gradle-8.2.1-all.zip\n' > android/gradle/wrapper/gradle-wrapper.properties
+          echo 'distributionUrl=https://services.gradle.org/distributions/gradle-8.2.1-all.zip' > android/gradle/wrapper/gradle-wrapper.properties
 
-      - name: Write settings.gradle (AGP/Kotlin)
-        shell: bash
+      - name: settings.gradle (AGP/Kotlin)
         run: |
           set -e
           FILE="android/settings.gradle"
-          : > "$FILE"
-          printf 'pluginManagement {\n' >> "$FILE"
-          printf '    repositories {\n' >> "$FILE"
-          printf '        google()\n' >> "$FILE"
-          printf '        mavenCentral()\n' >> "$FILE"
-          printf '        gradlePluginPortal()\n' >> "$FILE"
-          printf '    }\n' >> "$FILE"
-          printf '    plugins {\n' >> "$FILE"
-          printf '        id "com.android.application" version "8.1.2"\n' >> "$FILE"
-          printf '        id "com.android.library"     version "8.1.2"\n' >> "$FILE"
-          printf '        id "org.jetbrains.kotlin.android" version "1.9.24"\n' >> "$FILE"
-          printf '    }\n' >> "$FILE"
-          printf '}\n' >> "$FILE"
-          printf 'plugins {\n' >> "$FILE"
-          printf '    id "com.android.application" apply false\n' >> "$FILE"
-          printf '    id "org.jetbrains.kotlin.android" apply false\n' >> "$FILE"
-          printf '}\n' >> "$FILE"
-          printf 'include(":app")\n' >> "$FILE"
+          echo 'pluginManagement {' > "$FILE"
+          echo '    repositories {' >> "$FILE"
+          echo '        google()' >> "$FILE"
+          echo '        mavenCentral()' >> "$FILE"
+          echo '        gradlePluginPortal()' >> "$FILE"
+          echo '    }' >> "$FILE"
+          echo '    plugins {' >> "$FILE"
+          echo '        id "com.android.application" version "8.1.2"' >> "$FILE"
+          echo '        id "com.android.library"     version "8.1.2"' >> "$FILE"
+          echo '        id "org.jetbrains.kotlin.android" version "1.9.24"' >> "$FILE"
+          echo '    }' >> "$FILE"
+          echo '}' >> "$FILE"
+          echo 'plugins {' >> "$FILE"
+          echo '    id "com.android.application" apply false' >> "$FILE"
+          echo '    id "org.jetbrains.kotlin.android" apply false' >> "$FILE"
+          echo '}' >> "$FILE"
+          echo 'include(":app")' >> "$FILE"
 
-      - name: Force SDK 35 and AndroidX
-        shell: bash
+      - name: SDK 35 + AndroidX
         run: |
           set -e
           APP="android/app/build.gradle"
@@ -72,18 +67,20 @@ jobs:
               awk '1;/defaultConfig *\{/{print "        targetSdk 35"}' "$APP" > "$APP.tmp" && mv "$APP.tmp" "$APP"
             fi
           fi
-          printf 'android.useAndroidX=true\n' >> android/gradle.properties
-          printf 'android.enableJetifier=true\n' >> android/gradle.properties
+          echo 'android.useAndroidX=true' >> android/gradle.properties
+          echo 'android.enableJetifier=true' >> android/gradle.properties
 
-      - run: flutter pub get
-      - run: flutter build apk --release
-      - run: flutter build appbundle --release
+      - name: Build APK
+        run: |
+          set -e
+          flutter pub get
+          flutter build apk --release
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
         with:
           name: app-release-apk
           path: build/app/outputs/flutter-apk/app-release.apk
-
       - uses: actions/upload-artifact@v4
         with:
           name: app-release-aab
