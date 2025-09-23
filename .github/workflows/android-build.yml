@@ -33,7 +33,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pub-
 
-      # Crea android/ si NO existe (forzamos nombre válido del proyecto)
+      # 1) Crear android/ si no existe (sin tocar lib/)
       - name: Ensure Android skeleton
         run: |
           set -euxo pipefail
@@ -41,7 +41,16 @@ jobs:
             flutter create . --platforms=android --project-name=popperscuv5
           fi
 
-      # Parchea Android SDK/Kotlin/AGP y gradle.properties
+      # 2) Subir el Gradle wrapper a 8.2.1 (AGP 8.1.2 requiere 8.0–8.2)
+      - name: Bump Gradle wrapper to 8.2.1
+        run: |
+          set -euxo pipefail
+          WRAPPER_FILE="android/gradle/wrapper/gradle-wrapper.properties"
+          if [ -f "$WRAPPER_FILE" ]; then
+            sed -i 's#distributionUrl=.*#distributionUrl=https\\://services.gradle.org/distributions/gradle-8.2.1-all.zip#' "$WRAPPER_FILE"
+          fi
+
+      # 3) Parchear SDK/Kotlin/AGP, AndroidX/Jetifier y settings.gradle (plugins{})
       - name: Patch Android config (SDK 35 + Kotlin/AGP)
         run: |
           set -euxo pipefail
@@ -51,7 +60,7 @@ jobs:
           ROOT_GRADLE="android/build.gradle"
           PROPS="android/gradle.properties"
 
-          # 1) compileSdk / targetSdk = 35 (app/build.gradle)
+          # compileSdk / targetSdk = 35
           if [ -f "$APP_GRADLE" ]; then
             sed -i 's/compileSdk *[0-9][0-9]*/compileSdk 35/' "$APP_GRADLE" || true
             if grep -q "targetSdk" "$APP_GRADLE"; then
@@ -61,28 +70,58 @@ jobs:
             fi
           fi
 
-          # 2) settings.gradle (plantilla moderna con plugins{}): Kotlin 1.9.24 y AGP 8.1.2
+          # settings.gradle (plantilla moderna): Kotlin 1.9.24 y AGP 8.1.2
           if [ -f "$SETTINGS_GRADLE" ]; then
             sed -i 's/id *"org.jetbrains.kotlin.android" *version *"[^"]*"/id "org.jetbrains.kotlin.android" version "1.9.24"/' "$SETTINGS_GRADLE" || true
             sed -i 's/id *"com.android.application" *version *"[^"]*"/id "com.android.application" version "8.1.2"/' "$SETTINGS_GRADLE" || true
             sed -i 's/id *"com.android.library" *version *"[^"]*"/id "com.android.library" version "8.1.2"/' "$SETTINGS_GRADLE" || true
           fi
 
-          # 3) build.gradle (plantilla vieja con buildscript{}), por si aplica
+          # build.gradle (estilo viejo), por si tu plantilla aún lo usa
           if [ -f "$ROOT_GRADLE" ]; then
             sed -i "s/ext.kotlin_version *= *'[^']*'/ext.kotlin_version = '1.9.24'/" "$ROOT_GRADLE" || true
             sed -i 's/com.android.tools.build:gradle:[0-9.]\+/com.android.tools.build:gradle:8.1.2/' "$ROOT_GRADLE" || true
           fi
 
-          # 4) gradle.properties → AndroidX/Jetifier
+          # AndroidX / Jetifier
           [ -f "$PROPS" ] || touch "$PROPS"
           grep -q '^android.useAndroidX=true' "$PROPS" || echo 'android.useAndroidX=true' >> "$PROPS"
           grep -q '^android.enableJetifier=true' "$PROPS" || echo 'android.enableJetifier=true' >> "$PROPS"
 
-      # Arregla el import para ConflictAlgorithm si falta
+      # 4) Arreglar import para ConflictAlgorithm si hace falta
       - name: Patch Dart import for ConflictAlgorithm
         run: |
           set -euxo pipefail
+          FILE="lib/utils/xml_backup.dart"
+          if [ -f "$FILE" ] && grep -q "ConflictAlgorithm" "$FILE"; then
+            if ! grep -q "sqflite.dart' show ConflictAlgorithm" "$FILE"; then
+              awk '1;/package:xml\/xml.dart/{print "import '\''package:sqflite/sqflite.dart'\'' show ConflictAlgorithm;"}' "$FILE" > "$FILE.tmp" && mv "$FILE.tmp" "$FILE"
+            fi
+          fi
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Accept Android licenses (best-effort)
+        run: yes "y" | flutter doctor --android-licenses || true
+
+      - name: Build APK (release)
+        run: flutter build apk --release
+
+      - name: Build AAB (release)
+        run: flutter build appbundle --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Upload AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-aab
+          path: build/app/outputs/bundle/release/app-release.aab          set -euxo pipefail
           FILE="lib/utils/xml_backup.dart"
           if [ -f "$FILE" ] && grep -q "ConflictAlgorithm" "$FILE"; then
             if ! grep -q "sqflite.dart' show ConflictAlgorithm" "$FILE"; then
