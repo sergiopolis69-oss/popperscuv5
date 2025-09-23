@@ -18,6 +18,7 @@ android {
 
     buildTypes {
         release {
+            // 👇 Corrección: desactivado shrinkResources para evitar el error
             shrinkResources false
             minifyEnabled false
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
