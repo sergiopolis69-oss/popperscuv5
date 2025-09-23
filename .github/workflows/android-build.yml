@@ -33,15 +33,52 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pub-
 
-      # Si no existe carpeta android, se crea.
-      - name: Ensure Android skeleton (no overwrite)
+      # Crea android/ si no existe, sin tocar lib/ (forzamos nombre válido)
+      - name: Ensure Android skeleton
         run: |
           if [ ! -d "android" ]; then
-            flutter create . --platforms=android
+            flutter create . --platforms=android --project-name=popperscuv5
           fi
+
+      # Parchea compileSdk/targetSdk a 35 y Kotlin/AGP modernos
+      - name: Patch Android config (SDK 35 + Kotlin)
+        run: |
+          set -euxo pipefail
+
+          # 1) compileSdk / targetSdk a 35
+          APP_GRADLE="android/app/build.gradle"
+          if grep -q "compileSdk" "$APP_GRADLE"; then
+            sed -i 's/compileSdk *[0-9][0-9]*/compileSdk 35/' "$APP_GRADLE"
+          fi
+          if grep -q "targetSdk" "$APP_GRADLE"; then
+            sed -i 's/targetSdk *[0-9][0-9]*/targetSdk 35/' "$APP_GRADLE"
+          else
+            # si no existe targetSdk, lo insertamos dentro de defaultConfig
+            awk '1;/defaultConfig *\{/{print "        targetSdk 35"}' "$APP_GRADLE" > "$APP_GRADLE.tmp" && mv "$APP_GRADLE.tmp" "$APP_GRADLE"
+          fi
+
+          # 2) Kotlin 1.9.24 y AGP 8.1.2 (compatibles con SDK 35)
+          ROOT_GRADLE="android/build.gradle"
+          if grep -q "ext.kotlin_version" "$ROOT_GRADLE"; then
+            sed -i "s/ext.kotlin_version *= *'[^']*'/ext.kotlin_version = '1.9.24'/" "$ROOT_GRADLE"
+          fi
+          if grep -q 'com.android.tools.build:gradle' "$ROOT_GRADLE"; then
+            sed -i 's/com.android.tools.build:gradle:[0-9.]\+/com.android.tools.build:gradle:8.1.2/' "$ROOT_GRADLE"
+          fi
+
+          # 3) Asegurar AndroidX/Jetifier
+          GRADLE_PROPS="android/gradle.properties"
+          grep -q '^android.useAndroidX=true' "$GRADLE_PROPS" || echo 'android.useAndroidX=true' >> "$GRADLE_PROPS"
+          grep -q '^android.enableJetifier=true' "$GRADLE_PROPS" || echo 'android.enableJetifier=true' >> "$GRADLE_PROPS"
+
+          # (Plantillas nuevas usan 'plugins' en lugar de buildscript; si es tu caso no pasa nada con estos sed)
+          true
 
       - name: Flutter pub get
         run: flutter pub get
+
+      - name: Accept Android licenses (best-effort)
+        run: yes "y" | flutter doctor --android-licenses || true
 
       - name: Build APK (release)
         run: flutter build apk --release
