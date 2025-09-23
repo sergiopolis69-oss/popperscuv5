@@ -34,11 +34,11 @@ class CustomerRepository {
   Future<List<Map<String, Object?>>> topCustomers({int limit=10}) async {
     final db = await AppDatabase().db();
     final res = await db.rawQuery('''
-      SELECT c.phone, c.name, COUNT(s.id) as salesCount
+      SELECT c.phone, c.name, COALESCE(COUNT(s.id), 0) as salesCount
       FROM customers c
       LEFT JOIN sales s ON s.customerPhone=c.phone
       GROUP BY c.phone, c.name
-      ORDER BY salesCount DESC
+      ORDER BY salesCount DESC, c.name ASC
       LIMIT ?;
     ''', [limit]);
     return res;

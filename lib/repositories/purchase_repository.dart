@@ -12,24 +12,24 @@ class PurchaseRepository {
           ...it.toMap(),
           'purchaseId': pid,
         });
-        // actualizar último costo/fecha y sumar stock
-        await txn.rawUpdate('UPDATE products SET lastPurchasePrice=?, lastPurchaseDate=?, stock = stock + ? WHERE id=?',
+        // actualizar último costo/fecha y stock
+        await txn.rawUpdate('UPDATE products SET lastPurchasePrice=?, lastPurchaseDate=?, stock=stock+? WHERE id=?',
           [it.unitCost, p.date, it.quantity, it.productId]);
       }
       return pid;
     });
   }
 
-  Future<List<Map<String, Object?>>> recentPurchases() async {
+  Future<List<Map<String, Object?>>> recentPurchases({int limit=20}) async {
     final db = await AppDatabase().db();
     final res = await db.rawQuery('''
-      SELECT p.id, p.date, p.supplier, SUM(pi.quantity*pi.unitCost) as total
+      SELECT p.id, p.date, p.supplier, COALESCE(SUM(pi.quantity*pi.unitCost),0) as total
       FROM purchases p
-      JOIN purchase_items pi ON pi.purchaseId=p.id
+      LEFT JOIN purchase_items pi ON pi.purchaseId=p.id
       GROUP BY p.id
-      ORDER BY p.date DESC
-      LIMIT 50;
-    ''');
+      ORDER BY p.date DESC, p.id DESC
+      LIMIT ?;
+    ''', [limit]);
     return res;
   }
 }

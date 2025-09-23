@@ -2,7 +2,6 @@
 import '../data/database.dart';
 
 class ProfitRepository {
-  /// Promedio ponderado de utilidad % en el periodo (excluye envío, prorratea descuento).
   Future<double> weightedProfitPercent({
     required String from,
     required String to,
@@ -63,7 +62,6 @@ class ProfitRepository {
     return (profit / totalRevenue) * 100.0;
   }
 
-  /// Histograma simple: ventas por día (monto)
   Future<List<Map<String, Object?>>> dailySales(String from, String to) async {
     final db = await AppDatabase().db();
     return await db.rawQuery('''
@@ -77,7 +75,6 @@ class ProfitRepository {
     ''', [from, to]);
   }
 
-  /// Histograma simple: utilidad % por día
   Future<List<Map<String, Object?>>> dailyProfitPercent(String from, String to) async {
     final db = await AppDatabase().db();
     final sales = await db.rawQuery('''

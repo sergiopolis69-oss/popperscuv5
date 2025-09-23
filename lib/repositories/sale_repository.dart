@@ -51,17 +51,28 @@ class SaleRepository {
     return res;
   }
 
-  Future<List<Map<String, Object?>>> dailyHistogram(String from, String to) async {
+  Future<List<Map<String, Object?>>> dailyHistogram(String from, String to, {
+    String? customerPhone,
+    String? paymentMethod,
+    String? productNameLike,
+  }) async {
     final db = await AppDatabase().db();
+    final where = <String>["date(s.datetime) BETWEEN date(?) AND date(?)"];
+    final args = <Object?>[from, to];
+    if (customerPhone != null && customerPhone.isNotEmpty){ where.add('s.customerPhone=?'); args.add(customerPhone); }
+    if (paymentMethod != null && paymentMethod.isNotEmpty){ where.add('s.paymentMethod=?'); args.add(paymentMethod); }
+    if (productNameLike != null && productNameLike.isNotEmpty){ where.add('p.name LIKE ?'); args.add('%$productNameLike%'); }
+
     final res = await db.rawQuery('''
       SELECT strftime('%Y-%m-%d', datetime) as day,
              SUM(si.quantity*si.unitPrice) as total
       FROM sales s
       JOIN sale_items si ON si.saleId=s.id
-      WHERE date(s.datetime) BETWEEN date(?) AND date(?)
+      JOIN products p ON p.id=si.productId
+      WHERE ${where.join(' AND ')}
       GROUP BY day
       ORDER BY day ASC;
-    ''', [from, to]);
+    ''', args);
     return res;
   }
 }
