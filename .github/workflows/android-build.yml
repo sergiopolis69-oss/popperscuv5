@@ -1,5 +1,4 @@
 name: android-build
-
 on:
   push:
     branches: [ "main" ]
@@ -26,17 +25,18 @@ jobs:
         run: |
           set -e
 
-          # Crear android/ si no existe
+          # Create android/ if missing
           if [ ! -d android ]; then
             flutter create . --platforms=android --project-name=popperscuv5
           fi
 
-          # Reescribir gradle-wrapper.properties con Gradle 8.2.1
+          # Gradle wrapper 8.2.1
+          mkdir -p android/gradle/wrapper
           cat > android/gradle/wrapper/gradle-wrapper.properties <<'EOF'
 distributionUrl=https\://services.gradle.org/distributions/gradle-8.2.1-all.zip
 EOF
 
-          # Reescribir settings.gradle con AGP 8.1.2 y Kotlin 1.9.24
+          # settings.gradle (AGP/Kotlin)
           cat > android/settings.gradle <<'EOF'
 pluginManagement {
     repositories {
@@ -57,265 +57,33 @@ plugins {
 include(":app")
 EOF
 
-          # Forzar compileSdk/targetSdk 35 en build.gradle
+          # compileSdk / targetSdk 35
           APP="android/app/build.gradle"
-          if grep -q 'compileSdk' "$APP"; then
-            sed -i 's/compileSdk.*/compileSdk 35/' "$APP"
-          else
-            echo 'compileSdk 35' >> "$APP"
-          fi
-          if grep -q 'targetSdk' "$APP"; then
-            sed -i 's/targetSdk.*/targetSdk 35/' "$APP"
-          else
-            echo '        targetSdk 35' >> "$APP"
+          if [ -f "$APP" ]; then
+            sed -i 's/compileSdk[[:space:]]*[0-9][0-9]*/compileSdk 35/' "$APP" || true
+            if grep -q 'targetSdk' "$APP"; then
+              sed -i 's/targetSdk[[:space:]]*[0-9][0-9]*/targetSdk 35/' "$APP" || true
+            else
+              awk '1;/defaultConfig[[:space:]]*\{/{print "        targetSdk 35"}' "$APP" > "$APP.tmp" && mv "$APP.tmp" "$APP"
+            fi
           fi
 
-          # AndroidX/Jetifier
+          # AndroidX / Jetifier
           echo 'android.useAndroidX=true' >> android/gradle.properties
           echo 'android.enableJetifier=true' >> android/gradle.properties
 
-      - name: Flutter pub get
-        run: flutter pub get
+      - run: flutter pub get
 
-      - name: Build APK
-        run: flutter build apk --release
+      - run: flutter build apk --release
 
-      - name: Build AAB
-        run: flutter build appbundle --release
+      - run: flutter build appbundle --release
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: app-release-apk
           path: build/app/outputs/flutter-apk/app-release.apk
 
-      - name: Upload AAB
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-release-aab
-          path: build/app/outputs/bundle/release/app-release.aab          grep -q '^android.enableJetifier=true' "$PROPS" || echo 'android.enableJetifier=true' >> "$PROPS"
-
-      # 4) Parche para ConflictAlgorithm (sqflite) si hace falta
-      - name: Patch Dart import for ConflictAlgorithm
-        shell: bash
-        run: |
-          set -euo pipefail
-          FILE="lib/utils/xml_backup.dart"
-          if [ -f "$FILE" ] && grep -q "ConflictAlgorithm" "$FILE"; then
-            if ! grep -q "sqflite.dart' show ConflictAlgorithm" "$FILE"; then
-              awk '1;/package:xml\/xml.dart/{print "import '\''package:sqflite/sqflite.dart'\'' show ConflictAlgorithm;"}' "$FILE" > "$FILE.tmp" && mv "$FILE.tmp" "$FILE"
-            fi
-          fi
-
-      - name: Flutter pub get
-        run: flutter pub get
-
-      - name: Accept Android licenses (best-effort)
-        shell: bash
-        run: yes "y" | flutter doctor --android-licenses || true
-
-      - name: Build APK (release)
-        run: flutter build apk --release
-
-      - name: Build AAB (release)
-        run: flutter build appbundle --release
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
-
-      - name: Upload AAB
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-release-aab
-          path: build/app/outputs/bundle/release/app-release.aab          # (si falta targetSdk lo insertamos dentro de defaultConfig)
-          sed -i 's/compileSdk *[0-9][0-9]*/compileSdk 35/' "$APP_GRADLE" || true
-          if grep -q 'defaultConfig' "$APP_GRADLE"; then
-            if grep -q 'targetSdk' "$APP_GRADLE"; then
-              sed -i 's/targetSdk *[0-9][0-9]*/targetSdk 35/' "$APP_GRADLE" || true
-            else
-              # Inserta targetSdk 35 después de abrir defaultConfig
-              awk '1;/defaultConfig[[:space:]]*\{/{print "        targetSdk 35"}' "$APP_GRADLE" > "$APP_GRADLE.tmp" && mv "$APP_GRADLE.tmp" "$APP_GRADLE"
-            fi
-          fi
-
-          # AndroidX / Jetifier
-          touch "$PROPS"
-          grep -q '^android.useAndroidX=true' "$PROPS" || echo 'android.useAndroidX=true' >> "$PROPS"
-          grep -q '^android.enableJetifier=true' "$PROPS" || echo 'android.enableJetifier=true' >> "$PROPS"
-
-      # 4) Parche para ConflictAlgorithm (sqflite) si hace falta
-      - name: Patch Dart import for ConflictAlgorithm
-        shell: bash
-        run: |
-          set -euo pipefail
-          FILE="lib/utils/xml_backup.dart"
-          if [ -f "$FILE" ] && grep -q "ConflictAlgorithm" "$FILE"; then
-            if ! grep -q "sqflite.dart' show ConflictAlgorithm" "$FILE"; then
-              awk '1;/package:xml\/xml.dart/{print "import '\''package:sqflite/sqflite.dart'\'' show ConflictAlgorithm;"}' "$FILE" > "$FILE.tmp" && mv "$FILE.tmp" "$FILE"
-            fi
-          fi
-
-      - name: Flutter pub get
-        run: flutter pub get
-
-      - name: Accept Android licenses (best-effort)
-        shell: bash
-        run: yes "y" | flutter doctor --android-licenses || true
-
-      - name: Build APK (release)
-        run: flutter build apk --release
-
-      - name: Build AAB (release)
-        run: flutter build appbundle --release
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
-
-      - name: Upload AAB
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-release-aab
-          path: build/app/outputs/bundle/release/app-release.aab          fi
-
-          # build.gradle (formato viejo) por si aplica
-          if [ -f "$ROOT_GRADLE" ]; then
-            perl -0777 -pe "s/ext\.kotlin_version\s*=\s*'[^']*'/ext.kotlin_version = '1.9.24'/g" -i "$ROOT_GRADLE" || true
-            perl -0777 -pe "s/com\.android\.tools\.build:gradle:\d+(\.\d+){1,2}/com.android.tools.build:gradle:8.1.2/g" -i "$ROOT_GRADLE" || true
-          fi
-
-          # AndroidX / Jetifier
-          touch "$PROPS"
-          grep -q '^android.useAndroidX=true' "$PROPS" || echo 'android.useAndroidX=true' >> "$PROPS"
-          grep -q '^android.enableJetifier=true' "$PROPS" || echo 'android.enableJetifier=true' >> "$PROPS"
-
-      - name: Patch Dart import for ConflictAlgorithm (sqflite)
-        shell: bash
-        run: |
-          set -euo pipefail
-          FILE="lib/utils/xml_backup.dart"
-          if [ -f "$FILE" ] && grep -q "ConflictAlgorithm" "$FILE"; then
-            if ! grep -q "sqflite.dart' show ConflictAlgorithm" "$FILE"; then
-              awk '1;/package:xml\/xml.dart/{print "import '\''package:sqflite/sqflite.dart'\'' show ConflictAlgorithm;"}' "$FILE" > "$FILE.tmp" && mv "$FILE.tmp" "$FILE"
-            fi
-          fi
-
-      - name: Flutter pub get
-        run: flutter pub get
-
-      - name: Accept Android licenses (best-effort)
-        shell: bash
-        run: yes "y" | flutter doctor --android-licenses || true
-
-      - name: Build APK (release)
-        run: flutter build apk --release
-
-      - name: Build AAB (release)
-        run: flutter build appbundle --release
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
-
-      - name: Upload AAB
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-release-aab
-          path: build/app/outputs/bundle/release/app-release.aab
-          # AndroidX / Jetifier
-          [ -f "$PROPS" ] || touch "$PROPS"
-          grep -q '^android.useAndroidX=true' "$PROPS" || echo 'android.useAndroidX=true' >> "$PROPS"
-          grep -q '^android.enableJetifier=true' "$PROPS" || echo 'android.enableJetifier=true' >> "$PROPS"
-
-      # 4) Arreglar import para ConflictAlgorithm si hace falta
-      - name: Patch Dart import for ConflictAlgorithm
-        run: |
-          set -euxo pipefail
-          FILE="lib/utils/xml_backup.dart"
-          if [ -f "$FILE" ] && grep -q "ConflictAlgorithm" "$FILE"; then
-            if ! grep -q "sqflite.dart' show ConflictAlgorithm" "$FILE"; then
-              awk '1;/package:xml\/xml.dart/{print "import '\''package:sqflite/sqflite.dart'\'' show ConflictAlgorithm;"}' "$FILE" > "$FILE.tmp" && mv "$FILE.tmp" "$FILE"
-            fi
-          fi
-
-      - name: Flutter pub get
-        run: flutter pub get
-
-      - name: Accept Android licenses (best-effort)
-        run: yes "y" | flutter doctor --android-licenses || true
-
-      - name: Build APK (release)
-        run: flutter build apk --release
-
-      - name: Build AAB (release)
-        run: flutter build appbundle --release
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
-
-      - name: Upload AAB
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-release-aab
-          path: build/app/outputs/bundle/release/app-release.aab          set -euxo pipefail
-          FILE="lib/utils/xml_backup.dart"
-          if [ -f "$FILE" ] && grep -q "ConflictAlgorithm" "$FILE"; then
-            if ! grep -q "sqflite.dart' show ConflictAlgorithm" "$FILE"; then
-              # Inserta el import justo después de los otros imports
-              awk '1;/package:xml\/xml.dart/{print "import '\''package:sqflite/sqflite.dart'\'' show ConflictAlgorithm;"}' "$FILE" > "$FILE.tmp" && mv "$FILE.tmp" "$FILE"
-            fi
-          fi
-
-      - name: Flutter pub get
-        run: flutter pub get
-
-      - name: Accept Android licenses (best-effort)
-        run: yes "y" | flutter doctor --android-licenses || true
-
-      - name: Build APK (release)
-        run: flutter build apk --release
-
-      - name: Build AAB (release)
-        run: flutter build appbundle --release
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
-
-      - name: Upload AAB
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-release-aab
-          path: build/app/outputs/bundle/release/app-release.aab
-      - name: Accept Android licenses (best-effort)
-        run: yes "y" | flutter doctor --android-licenses || true
-
-      - name: Build APK (release)
-        run: flutter build apk --release
-
-      - name: Build AAB (release)
-        run: flutter build appbundle --release
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
-
-      - name: Upload AAB
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: app-release-aab
           path: build/app/outputs/bundle/release/app-release.aab
