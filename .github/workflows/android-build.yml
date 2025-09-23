@@ -2,87 +2,94 @@ name: android-build
 
 on:
   push:
-    branches:
-      - main
+    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
-      - name: Set up Flutter
-        uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.0'
-          channel: 'stable'
+          flutter-version: "3.24.0"
+          channel: "stable"
 
-      # 1) Generar android/ si falta (sin tocar lib/)
-      - name: Ensure Android skeleton
-        shell: bash
+      - name: Ensure android skeleton
         run: |
-          set -euo pipefail
-          if [ ! -d "android" ]; then
+          if [ ! -d android ]; then
             flutter create . --platforms=android --project-name=popperscuv5
           fi
 
-      # 2) Subir Gradle wrapper a 8.2.1 (requerido por AGP 8.1.x)
-      - name: Bump Gradle wrapper to 8.2.1
-        shell: bash
+      - name: Bump Gradle wrapper + patch configs
         run: |
-          set -euo pipefail
-          WRAPPER_FILE="android/gradle/wrapper/gradle-wrapper.properties"
-          if [ -f "$WRAPPER_FILE" ]; then
-            sed -i 's#^distributionUrl=.*#distributionUrl=https://services.gradle.org/distributions/gradle-8.2.1-all.zip#' "$WRAPPER_FILE"
-          fi
+          # Gradle 8.2.1
+          WRAPPER=android/gradle/wrapper/gradle-wrapper.properties
+          sed -i 's#^distributionUrl=.*#distributionUrl=https://services.gradle.org/distributions/gradle-8.2.1-all.zip#' $WRAPPER
 
-      # 3) Reescribir settings.gradle (plugins modernos) y fijar SDK 35 en app/build.gradle
-      - name: Patch Gradle settings and app build
-        shell: bash
-        run: |
-          set -euo pipefail
+          # settings.gradle fijo
+          cat > android/settings.gradle <<'EOT'
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+    plugins {
+        id "com.android.application" version "8.1.2"
+        id "com.android.library" version "8.1.2"
+        id "org.jetbrains.kotlin.android" version "1.9.24"
+    }
+}
+plugins {
+    id "com.android.application" apply false
+    id "org.jetbrains.kotlin.android" apply false
+}
+include(":app")
+EOT
 
-          SETTINGS_GRADLE="android/settings.gradle"
-          : > "$SETTINGS_GRADLE"
-          echo 'pluginManagement {' >> "$SETTINGS_GRADLE"
-          echo '    repositories {' >> "$SETTINGS_GRADLE"
-          echo '        google()' >> "$SETTINGS_GRADLE"
-          echo '        mavenCentral()' >> "$SETTINGS_GRADLE"
-          echo '        gradlePluginPortal()' >> "$SETTINGS_GRADLE"
-          echo '    }' >> "$SETTINGS_GRADLE"
-          echo '    plugins {' >> "$SETTINGS_GRADLE"
-          echo '        id "com.android.application" version "8.1.2"' >> "$SETTINGS_GRADLE"
-          echo '        id "com.android.library" version "8.1.2"' >> "$SETTINGS_GRADLE"
-          echo '        id "org.jetbrains.kotlin.android" version "1.9.24"' >> "$SETTINGS_GRADLE"
-          echo '    }' >> "$SETTINGS_GRADLE"
-          echo '}' >> "$SETTINGS_GRADLE"
-          echo 'plugins {' >> "$SETTINGS_GRADLE"
-          echo '    id "com.android.application" apply false' >> "$SETTINGS_GRADLE"
-          echo '    id "org.jetbrains.kotlin.android" apply false' >> "$SETTINGS_GRADLE"
-          echo '}' >> "$SETTINGS_GRADLE"
-          echo 'include(":app")' >> "$SETTINGS_GRADLE"
-
-          APP_GRADLE="android/app/build.gradle"
-          sed -i 's/compileSdk *[0-9][0-9]*/compileSdk 35/' "$APP_GRADLE" || true
-          if grep -q 'defaultConfig' "$APP_GRADLE"; then
-            if grep -q 'targetSdk' "$APP_GRADLE"; then
-              sed -i 's/targetSdk *[0-9][0-9]*/targetSdk 35/' "$APP_GRADLE" || true
+          # compileSdk/targetSdk 35
+          sed -i 's/compileSdk *[0-9][0-9]*/compileSdk 35/' android/app/build.gradle || true
+          if grep -q defaultConfig android/app/build.gradle; then
+            if grep -q targetSdk android/app/build.gradle; then
+              sed -i 's/targetSdk *[0-9][0-9]*/targetSdk 35/' android/app/build.gradle || true
             else
-              awk '1;/defaultConfig[[:space:]]*\{/{print "        targetSdk 35"}' "$APP_GRADLE" > "$APP_GRADLE.tmp" && mv "$APP_GRADLE.tmp" "$APP_GRADLE"
+              awk '1;/defaultConfig *\{/{print "        targetSdk 35"}' android/app/build.gradle > tmp && mv tmp android/app/build.gradle
             fi
           fi
 
-          PROPS="android/gradle.properties"
-          touch "$PROPS"
-          grep -q '^android.useAndroidX=true' "$PROPS" || echo 'android.useAndroidX=true' >> "$PROPS"
+          # AndroidX/Jetifier
+          echo 'android.useAndroidX=true' >> android/gradle.properties
+          echo 'android.enableJetifier=true' >> android/gradle.properties
+
+      - name: Patch Dart ConflictAlgorithm import
+        run: |
+          FILE=lib/utils/xml_backup.dart
+          if grep -q ConflictAlgorithm $FILE && ! grep -q "sqflite.dart' show ConflictAlgorithm" $FILE; then
+            awk '1;/package:xml\/xml.dart/{print "import '\''package:sqflite/sqflite.dart'\'' show ConflictAlgorithm;"}' $FILE > tmp && mv tmp $FILE
+          fi
+
+      - run: flutter pub get
+
+      - run: flutter build apk --release
+
+      - run: flutter build appbundle --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-release-aab
+          path: build/app/outputs/bundle/release/app-release.aab          grep -q '^android.useAndroidX=true' "$PROPS" || echo 'android.useAndroidX=true' >> "$PROPS"
           grep -q '^android.enableJetifier=true' "$PROPS" || echo 'android.enableJetifier=true' >> "$PROPS"
 
       # 4) Parche para ConflictAlgorithm (sqflite) si hace falta
