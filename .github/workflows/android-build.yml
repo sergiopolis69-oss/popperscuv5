@@ -17,13 +17,13 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Flutter stable 3.24.0
+      - name: Flutter 3.24.0 (stable)
         uses: subosito/flutter-action@v2
         with:
           channel: "stable"
           flutter-version: "3.24.0"
 
-      - name: Ensure android/
+      - name: Ensure android/ (if missing)
         shell: bash
         run: |
           set -e
@@ -38,7 +38,8 @@ jobs:
           mkdir -p android/gradle/wrapper
           echo "distributionUrl=https://services.gradle.org/distributions/gradle-8.2.1-all.zip" > android/gradle/wrapper/gradle-wrapper.properties
 
-      - name: settings.gradle (AGP/Kotlin)
+      # === CLAVE: settings.gradle con loader de Flutter y includeBuild al flutter_tools ===
+      - name: settings.gradle (Flutter plugin loader + AGP/Kotlin)
         shell: bash
         run: |
           set -e
@@ -49,69 +50,66 @@ jobs:
           echo "    mavenCentral()" >> "$FILE"
           echo "    gradlePluginPortal()" >> "$FILE"
           echo "  }" >> "$FILE"
-          echo "  plugins {" >> "$FILE"
-          echo '    id "com.android.application" version "8.1.2"' >> "$FILE"
-          echo '    id "com.android.library"     version "8.1.2"' >> "$FILE"
-          echo '    id "org.jetbrains.kotlin.android" version "1.9.24"' >> "$FILE"
+          echo "  def flutterSdkPath = System.getenv('FLUTTER_HOME') ?: System.getenv('FLUTTER_ROOT')" >> "$FILE"
+          echo "  if (flutterSdkPath != null) {" >> "$FILE"
+          echo "    includeBuild(\"\${flutterSdkPath}/packages/flutter_tools/gradle\")" >> "$FILE"
           echo "  }" >> "$FILE"
           echo "}" >> "$FILE"
+          echo "" >> "$FILE"
           echo "plugins {" >> "$FILE"
-          echo '  id "com.android.application" apply false' >> "$FILE"
-          echo '  id "org.jetbrains.kotlin.android" apply false' >> "$FILE"
+          echo "  id \"dev.flutter.flutter-plugin-loader\" version \"1.0.0\"" >> "$FILE"
+          echo "  id \"com.android.application\" version \"8.1.2\" apply false" >> "$FILE"
+          echo "  id \"org.jetbrains.kotlin.android\" version \"1.9.24\" apply false" >> "$FILE"
           echo "}" >> "$FILE"
-          echo 'include(":app")' >> "$FILE"
+          echo "include(\":app\")" >> "$FILE"
 
-      - name: app/build.gradle (SDK 35)
+      # === CLAVE: app/build.gradle aplicando el plugin de Flutter ===
+      - name: app/build.gradle (apply Flutter plugin + SDK 35)
         shell: bash
         run: |
           set -e
           APP="android/app/build.gradle"
-          if [ -f "$APP" ]; then
-            sed -i 's/compileSdk.*/compileSdk 35/' "$APP" || true
-            if grep -q 'targetSdk' "$APP"; then
-              sed -i 's/targetSdk.*/targetSdk 35/' "$APP" || true
-            else
-              awk '1;/defaultConfig *\{/{print "        targetSdk 35"}' "$APP" > "$APP.tmp" && mv "$APP.tmp" "$APP"
-            fi
-          else
-            echo 'plugins {'                                >  "$APP"
-            echo '  id "com.android.application"'           >> "$APP"
-            echo '  id "org.jetbrains.kotlin.android"'      >> "$APP"
-            echo '}'                                        >> "$APP"
-            echo ''                                         >> "$APP"
-            echo 'android {'                                >> "$APP"
-            echo '  namespace "com.example.popperscuv5"'    >> "$APP"
-            echo '  compileSdk 35'                          >> "$APP"
-            echo ''                                         >> "$APP"
-            echo '  defaultConfig {'                        >> "$APP"
-            echo '    applicationId "com.example.popperscuv5"' >> "$APP"
-            echo '    minSdk 21'                            >> "$APP"
-            echo '    targetSdk 35'                         >> "$APP"
-            echo '    versionCode 1'                        >> "$APP"
-            echo '    versionName "1.0.0"'                  >> "$APP"
-            echo '  }'                                      >> "$APP"
-            echo ''                                         >> "$APP"
-            echo '  buildTypes {'                           >> "$APP"
-            echo '    release {'                            >> "$APP"
-            echo '      minifyEnabled false'                >> "$APP"
-            echo '      proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"' >> "$APP"
-            echo '    }'                                    >> "$APP"
-            echo '  }'                                      >> "$APP"
-            echo ''                                         >> "$APP"
-            echo '  compileOptions {'                       >> "$APP"
-            echo '    sourceCompatibility JavaVersion.VERSION_17' >> "$APP"
-            echo '    targetCompatibility JavaVersion.VERSION_17' >> "$APP"
-            echo '  }'                                      >> "$APP"
-            echo ''                                         >> "$APP"
-            echo '  kotlinOptions {'                        >> "$APP"
-            echo '    jvmTarget = "17"'                     >> "$APP"
-            echo '  }'                                      >> "$APP"
-            echo '}'                                        >> "$APP"
-            echo ''                                         >> "$APP"
-            echo 'dependencies {'                           >> "$APP"
-            echo '  implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.24"' >> "$APP"
-            echo '}'                                        >> "$APP"
-          fi
+          : > "$APP"
+          {
+            echo "plugins {"
+            echo "  id \"com.android.application\""
+            echo "  id \"org.jetbrains.kotlin.android\""
+            echo "  id \"dev.flutter.flutter-gradle-plugin\""   # <— plugin de Flutter
+            echo "}"
+            echo ""
+            echo "android {"
+            echo "  namespace \"com.example.popperscuv5\""
+            echo "  compileSdk 35"
+            echo ""
+            echo "  defaultConfig {"
+            echo "    applicationId \"com.example.popperscuv5\""
+            echo "    minSdk 21"
+            echo "    targetSdk 35"
+            echo "    versionCode 1"
+            echo "    versionName \"1.0.0\""
+            echo "  }"
+            echo ""
+            echo "  buildTypes {"
+            echo "    release {"
+            echo "      minifyEnabled false"
+            echo "      proguardFiles getDefaultProguardFile(\"proguard-android-optimize.txt\"), \"proguard-rules.pro\""
+            echo "    }"
+            echo "  }"
+            echo ""
+            echo "  compileOptions {"
+            echo "    sourceCompatibility JavaVersion.VERSION_17"
+            echo "    targetCompatibility JavaVersion.VERSION_17"
+            echo "  }"
+            echo ""
+            echo "  kotlinOptions {"
+            echo "    jvmTarget = \"17\""
+            echo "  }"
+            echo "}"
+            echo ""
+            echo "dependencies {"
+            echo "  implementation \"org.jetbrains.kotlin:kotlin-stdlib:1.9.24\""
+            echo "}"
+          } >> "$APP"
 
       - name: AndroidX/Jetifier
         shell: bash
@@ -124,6 +122,7 @@ jobs:
         shell: bash
         run: |
           set -e
+          flutter --version
           flutter pub get
           flutter build apk --release
 
