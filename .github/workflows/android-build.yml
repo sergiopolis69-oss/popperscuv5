@@ -1,4 +1,3 @@
-
 name: android-build
 
 on:
@@ -9,20 +8,64 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Java 17 es lo recomendado para Gradle/AGP recientes
+      - name: Set up Java
+        uses: actions/setup-java@v4
         with:
-          flutter-version: '3.24.0'
-          channel: 'stable'
-      - name: Create Flutter project skeleton
-        run: flutter create . --overwrite --platforms=android --project-name=pdv_flutter
-      - name: Get packages
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.24.0"
+          channel: "stable"
+
+      # Cache de dependencias de Dart/Flutter
+      - name: Cache Pub
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: ${{ runner.os }}-pub-${{ hashFiles('**/pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pub-
+
+      # Si no existe la carpeta android (porque el repo solo tiene lib/, assets/, etc.), la creamos.
+      # OJO: NO usamos --overwrite para no reponer el demo de Flutter sobre tu lib/.
+      - name: Ensure Android skeleton (no overwrite)
+        run: |
+          if [ ! -d "android" ]; then
+            flutter create . --platforms=android
+          fi
+
+      - name: Flutter pub get
         run: flutter pub get
-      - name: Build APK
+
+      # (Opcional) Aceptar licencias del SDK; no falla si no está sdkmanager
+      - name: Accept Android licenses (best-effort)
+        run: |
+          yes "y" | flutter doctor --android-licenses || true
+
+      - name: Build APK (release)
         run: flutter build apk --release
+
+      # (Opcional) Build AAB para Play Store
+      - name: Build AAB (release)
+        run: flutter build appbundle --release
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: app-release-apk
           path: build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Upload AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-aab
+          path: build/app/outputs/bundle/release/app-release.aab
