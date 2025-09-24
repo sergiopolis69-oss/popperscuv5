@@ -1,46 +1,78 @@
-plugins {
-    id "com.android.application"
-    id "org.jetbrains.kotlin.android"
-    id "dev.flutter.flutter-gradle-plugin"
-}
+name: android-build
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
 
-android {
-    namespace "com.example.popperscuv5"
-    compileSdk 35
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    defaultConfig {
-        applicationId "com.example.popperscuv5"
-        minSdk 21
-        targetSdk 35
-        versionCode 1
-        versionName "1.0.0"
-    }
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
 
-    buildTypes {
-        release {
-            // IMPORTANTES: ambos en false
-            shrinkResources false
-            minifyEnabled false
+      - name: Flutter 3.24.0 (stable)
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: "3.24.0"
 
-            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
-        }
-        debug {
-            // por si algún plugin intenta habilitar shrink en debug
-            shrinkResources false
-            minifyEnabled false
-        }
-    }
+      - name: Env check
+        run: |
+          flutter --version
+          flutter doctor -v
 
-    compileOptions {
-        sourceCompatibility JavaVersion.VERSION_17
-        targetCompatibility JavaVersion.VERSION_17
-    }
+      - name: Clean & deps
+        run: |
+          rm -rf build
+          flutter clean
+          flutter pub get
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-}
+      - name: Build APK (release)
+        run: |
+          set -e
+          # Si falla, no detengas el job; intentaremos AAB
+          flutter build apk --release || true
 
-dependencies {
-    implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.24"
-}
+      - name: Build AAB (release, fallback)
+        run: |
+          set -e
+          # Siempre intenta el AAB también (Play Store lo prefiere)
+          flutter build appbundle --release || true
+
+      - name: List outputs (debug)
+        run: |
+          echo "::group::Outputs tree"
+          ls -la
+          echo
+          ls -R build/app/outputs || true
+          echo "::endgroup::"
+          echo "::group::Find artifacts"
+          find build -type f \( -name "*.apk" -o -name "*.aab" \) -maxdepth 6 -print || true
+          echo "::endgroup::"
+
+      - name: Upload APKs (catch-all)
+        uses: actions/upload-artifact@v4
+        with:
+          name: apks
+          if-no-files-found: warn
+          path: |
+            build/app/outputs/flutter-apk/*release*.apk
+            build/**/outputs/**/*.apk
+            build/**/*.apk
+
+      - name: Upload AABs (catch-all)
+        uses: actions/upload-artifact@v4
+        with:
+          name: aabs
+          if-no-files-found: warn
+          path: |
+            build/app/outputs/bundle/release/*.aab
+            build/**/outputs/**/*.aab
+            build/**/*.aab
