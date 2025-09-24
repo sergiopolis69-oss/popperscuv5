@@ -34,15 +34,64 @@ jobs:
           flutter clean
           flutter pub get
 
-      # Camino 1: flutter produce APK y AAB
-      - name: Build with Flutter
+      # ---------- Firma release (si hay secretos) ----------
+      - name: Prepare release keystore (optional)
+        if: ${{ vars.ANDROID_KEYSTORE_BASE64 != '' || secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 || vars.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || vars.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD || vars.ANDROID_KEY_PASSWORD }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD || vars.ANDROID_STORE_PASSWORD }}
         run: |
           set -e
-          # No fallar el job si uno de los dos no se genera
-          flutter build apk --release || true
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/upload-keystore.jks
+          cat > android/key.properties << 'EOF'
+          storePassword=${ANDROID_STORE_PASSWORD}
+          keyPassword=${ANDROID_KEY_PASSWORD}
+          keyAlias=${ANDROID_KEY_ALIAS}
+          storeFile=upload-keystore.jks
+          EOF
+          echo "key.properties created"
+
+      # Inyecta config de firma si existe key.properties
+      - name: Inject signing into app/build.gradle (optional)
+        run: |
+          set -e
+          if [ -f android/key.properties ]; then
+            APP=android/app/build.gradle
+            # agrega signingConfigs.release si no existe
+            if ! grep -q "signingConfigs" "$APP"; then
+              awk '1;/android *\{/{print;print "    signingConfigs {";print "        release {";print "            def keystoreProperties = new Properties()";print "            def keystoreFile = rootProject.file(\"key.properties\")";print "            if (keystoreFile.exists()) keystoreProperties.load(new FileInputStream(keystoreFile))";print "            storeFile = keystoreProperties.get(\"storeFile\") ? rootProject.file(keystoreProperties.get(\"storeFile\")) : null";print "            storePassword = keystoreProperties.get(\"storePassword\")";print "            keyAlias = keystoreProperties.get(\"keyAlias\")";print "            keyPassword = keystoreProperties.get(\"keyPassword\")";print "        }";print "    }"}' "$APP" > "$APP.tmp" && mv "$APP.tmp" "$APP"
+            fi
+            # vincula release con signingConfigs.release
+            if ! grep -q "signingConfig signingConfigs.release" "$APP"; then
+              awk '1;/buildTypes *\{/{flag=1} flag && /release *\{/{print;print "            signingConfig signingConfigs.release";flag=0;next} {print}' "$APP" > "$APP.tmp" && mv "$APP.tmp" "$APP"
+            fi
+            echo "signingConfig injected"
+          else
+            echo "No key.properties found; skipping release signing"
+          fi
+
+      # ---------- Build con Flutter ----------
+      # APK universal release (evita "paquete no válido" por ABI)
+      - name: Build APK release (universal)
+        run: |
+          set -e
+          flutter build apk --release --target-platform=android-arm,android-arm64,android-x64 || true
+
+      # AAB release (para Play Store)
+      - name: Build AAB release
+        run: |
+          set -e
           flutter build appbundle --release || true
 
-      # Camino 2 (fallback): Gradle directo (por si Flutter no recoge el artefacto)
+      # APK debug siempre instalable (firma debug)
+      - name: Build APK debug (installable)
+        run: |
+          set -e
+          flutter build apk --debug --no-tree-shake-icons || true
+
+      # ---------- Fallback con Gradle directo ----------
       - name: Build with Gradle (fallback)
         working-directory: android
         run: |
@@ -50,7 +99,9 @@ jobs:
           ./gradlew --version
           ./gradlew :app:assembleRelease || true
           ./gradlew :app:bundleRelease || true
+          ./gradlew :app:assembleDebug  || true
 
+      # ---------- Listar outputs y subir artefactos ----------
       - name: List outputs (debug)
         run: |
           echo "::group::Outputs under build/"
@@ -67,6 +118,7 @@ jobs:
           if-no-files-found: warn
           path: |
             build/app/outputs/flutter-apk/*release*.apk
+            build/app/outputs/flutter-apk/app-debug.apk
             build/**/outputs/**/*.apk
             build/**/*.apk
             android/app/build/outputs/**/*.apk
