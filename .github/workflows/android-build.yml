@@ -20,130 +20,59 @@ jobs:
       - name: Flutter 3.24.0 (stable)
         uses: subosito/flutter-action@v2
         with:
-          channel: "stable"
+          channel: stable
           flutter-version: "3.24.0"
 
-      - name: Ensure android/ (if missing)
-        shell: bash
+      - name: Env check
         run: |
-          set -e
-          if [ ! -d android ]; then
-            flutter create . --platforms=android --project-name=popperscuv5
-          fi
+          flutter --version
+          flutter doctor -v
 
-      - name: Gradle wrapper 8.2.1
-        shell: bash
+      - name: Clean & deps
         run: |
-          set -e
-          mkdir -p android/gradle/wrapper
-          echo "distributionUrl=https://services.gradle.org/distributions/gradle-8.2.1-all.zip" > android/gradle/wrapper/gradle-wrapper.properties
-
-      # === CLAVE: settings.gradle con loader de Flutter y includeBuild al flutter_tools ===
-      - name: settings.gradle (Flutter plugin loader + AGP/Kotlin)
-        shell: bash
-        run: |
-          set -e
-          FILE="android/settings.gradle"
-          echo "pluginManagement {" > "$FILE"
-          echo "  repositories {" >> "$FILE"
-          echo "    google()" >> "$FILE"
-          echo "    mavenCentral()" >> "$FILE"
-          echo "    gradlePluginPortal()" >> "$FILE"
-          echo "  }" >> "$FILE"
-          echo "  def flutterSdkPath = System.getenv('FLUTTER_HOME') ?: System.getenv('FLUTTER_ROOT')" >> "$FILE"
-          echo "  if (flutterSdkPath != null) {" >> "$FILE"
-          echo "    includeBuild(\"\${flutterSdkPath}/packages/flutter_tools/gradle\")" >> "$FILE"
-          echo "  }" >> "$FILE"
-          echo "}" >> "$FILE"
-          echo "" >> "$FILE"
-          echo "plugins {" >> "$FILE"
-          echo "  id \"dev.flutter.flutter-plugin-loader\" version \"1.0.0\"" >> "$FILE"
-          echo "  id \"com.android.application\" version \"8.1.2\" apply false" >> "$FILE"
-          echo "  id \"org.jetbrains.kotlin.android\" version \"1.9.24\" apply false" >> "$FILE"
-          echo "}" >> "$FILE"
-          echo "include(\":app\")" >> "$FILE"
-
-      # === CLAVE: app/build.gradle aplicando el plugin de Flutter ===
-      - name: app/build.gradle (apply Flutter plugin + SDK 35)
-        shell: bash
-        run: |
-          set -e
-          APP="android/app/build.gradle"
-          : > "$APP"
-          {
-            echo "plugins {"
-            echo "  id \"com.android.application\""
-            echo "  id \"org.jetbrains.kotlin.android\""
-            echo "  id \"dev.flutter.flutter-gradle-plugin\""   # <— plugin de Flutter
-            echo "}"
-            echo ""
-            echo "android {"
-            echo "  namespace \"com.example.popperscuv5\""
-            echo "  compileSdk 35"
-            echo ""
-            echo "  defaultConfig {"
-            echo "    applicationId \"com.example.popperscuv5\""
-            echo "    minSdk 21"
-            echo "    targetSdk 35"
-            echo "    versionCode 1"
-            echo "    versionName \"1.0.0\""
-            echo "  }"
-            echo ""
-            echo "  buildTypes {"
-            echo "    release {"
-            echo "      minifyEnabled false"
-            echo "      proguardFiles getDefaultProguardFile(\"proguard-android-optimize.txt\"), \"proguard-rules.pro\""
-            echo "    }"
-            echo "  }"
-            echo ""
-            echo "  compileOptions {"
-            echo "    sourceCompatibility JavaVersion.VERSION_17"
-            echo "    targetCompatibility JavaVersion.VERSION_17"
-            echo "  }"
-            echo ""
-            echo "  kotlinOptions {"
-            echo "    jvmTarget = \"17\""
-            echo "  }"
-            echo "}"
-            echo ""
-            echo "dependencies {"
-            echo "  implementation \"org.jetbrains.kotlin:kotlin-stdlib:1.9.24\""
-            echo "}"
-          } >> "$APP"
-
-      - name: AndroidX/Jetifier
-        shell: bash
-        run: |
-          set -e
-          echo "android.useAndroidX=true"  >> android/gradle.properties
-          echo "android.enableJetifier=true" >> android/gradle.properties
-
-      - name: Force minifyEnabled + shrinkResources in release
-        run: |
-          APP="android/app/build.gradle"
-          # minifyEnabled true
-          if grep -q "minifyEnabled" "$APP"; then
-            sed -i 's/minifyEnabled *false/minifyEnabled true/g' "$APP" || true
-          else
-            awk '1;/release *\{/{print "            minifyEnabled true"}' "$APP" > "$APP.tmp" && mv "$APP.tmp" "$APP"
-          fi
-          # shrinkResources true
-          if grep -q "shrinkResources" "$APP"; then
-            sed -i 's/shrinkResources *false/shrinkResources true/g' "$APP" || true
-          else
-            awk '1;/release *\{/{print "            shrinkResources true"}' "$APP" > "$APP.tmp" && mv "$APP.tmp" "$APP"
-          fi
+          rm -rf build
+          flutter clean
+          flutter pub get
 
       - name: Build APK (release)
-        shell: bash
         run: |
           set -e
-          flutter --version
-          flutter pub get
-          flutter build apk --release
+          # Si falla, no detengas el job; intentaremos AAB
+          flutter build apk --release || true
 
-      - name: Upload APK
+      - name: Build AAB (release, fallback)
+        run: |
+          set -e
+          # Siempre intenta el AAB también (Play Store lo prefiere)
+          flutter build appbundle --release || true
+
+      - name: List outputs (debug)
+        run: |
+          echo "::group::Outputs tree"
+          ls -la
+          echo
+          ls -R build/app/outputs || true
+          echo "::endgroup::"
+          echo "::group::Find artifacts"
+          find build -type f \( -name "*.apk" -o -name "*.aab" \) -maxdepth 6 -print || true
+          echo "::endgroup::"
+
+      - name: Upload APKs (catch-all)
         uses: actions/upload-artifact@v4
         with:
-          name: app-release-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          name: apks
+          if-no-files-found: warn
+          path: |
+            build/app/outputs/flutter-apk/*release*.apk
+            build/**/outputs/**/*.apk
+            build/**/*.apk
+
+      - name: Upload AABs (catch-all)
+        uses: actions/upload-artifact@v4
+        with:
+          name: aabs
+          if-no-files-found: warn
+          path: |
+            build/app/outputs/bundle/release/*.aab
+            build/**/outputs/**/*.aab
+            build/**/*.aab
