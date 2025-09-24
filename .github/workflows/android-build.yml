@@ -134,7 +134,6 @@ jobs:
             awk '1;/release *\{/{print "            shrinkResources true"}' "$APP" > "$APP.tmp" && mv "$APP.tmp" "$APP"
           fi
 
-
       - name: Build APK (release)
         shell: bash
         run: |
