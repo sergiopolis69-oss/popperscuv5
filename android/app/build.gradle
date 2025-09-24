@@ -16,17 +16,20 @@ android {
         versionName "1.0.0"
     }
 
-buildTypes {
-    release {
-        // Habilitamos R8 para satisfacer el requerimiento si un plugin enciende shrinkResources.
-        minifyEnabled true
-        shrinkResources true
+    buildTypes {
+        release {
+            // IMPORTANTES: ambos en false
+            shrinkResources false
+            minifyEnabled false
 
-        // Usa reglas por defecto + tus reglas
-        proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+        }
+        debug {
+            // por si algún plugin intenta habilitar shrink en debug
+            shrinkResources false
+            minifyEnabled false
+        }
     }
-}
-
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
