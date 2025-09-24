@@ -30,31 +30,34 @@ jobs:
 
       - name: Clean & deps
         run: |
-          rm -rf build
+          rm -rf build android/app/build
           flutter clean
           flutter pub get
 
-      - name: Build APK (release)
+      # Camino 1: flutter produce APK y AAB
+      - name: Build with Flutter
         run: |
           set -e
-          # Si falla, no detengas el job; intentaremos AAB
+          # No fallar el job si uno de los dos no se genera
           flutter build apk --release || true
+          flutter build appbundle --release || true
 
-      - name: Build AAB (release, fallback)
+      # Camino 2 (fallback): Gradle directo (por si Flutter no recoge el artefacto)
+      - name: Build with Gradle (fallback)
+        working-directory: android
         run: |
           set -e
-          # Siempre intenta el AAB también (Play Store lo prefiere)
-          flutter build appbundle --release || true
+          ./gradlew --version
+          ./gradlew :app:assembleRelease || true
+          ./gradlew :app:bundleRelease || true
 
       - name: List outputs (debug)
         run: |
-          echo "::group::Outputs tree"
-          ls -la
-          echo
-          ls -R build/app/outputs || true
+          echo "::group::Outputs under build/"
+          find build -type f \( -name "*.apk" -o -name "*.aab" \) -print || true
           echo "::endgroup::"
-          echo "::group::Find artifacts"
-          find build -type f \( -name "*.apk" -o -name "*.aab" \) -maxdepth 6 -print || true
+          echo "::group::Outputs under android/app/build/"
+          find android/app/build -type f \( -name "*.apk" -o -name "*.aab" \) -print || true
           echo "::endgroup::"
 
       - name: Upload APKs (catch-all)
@@ -66,6 +69,7 @@ jobs:
             build/app/outputs/flutter-apk/*release*.apk
             build/**/outputs/**/*.apk
             build/**/*.apk
+            android/app/build/outputs/**/*.apk
 
       - name: Upload AABs (catch-all)
         uses: actions/upload-artifact@v4
@@ -76,3 +80,4 @@ jobs:
             build/app/outputs/bundle/release/*.aab
             build/**/outputs/**/*.aab
             build/**/*.aab
+            android/app/build/outputs/**/*.aab
