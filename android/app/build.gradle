@@ -18,15 +18,13 @@ android {
 
     buildTypes {
         release {
-            // Si un plugin activa shrinkResources, esto evita el error
-            minifyEnabled true
-            shrinkResources true
-
+            shrinkResources false
+            minifyEnabled false
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
         }
         debug {
-            minifyEnabled false
             shrinkResources false
+            minifyEnabled false
         }
     }
 
@@ -34,10 +32,7 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
-
-    kotlinOptions {
-        jvmTarget = "17"
-    }
+    kotlinOptions { jvmTarget = "17" }
 }
 
 dependencies {
