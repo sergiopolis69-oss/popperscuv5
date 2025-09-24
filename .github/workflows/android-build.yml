@@ -118,6 +118,23 @@ jobs:
           echo "android.useAndroidX=true"  >> android/gradle.properties
           echo "android.enableJetifier=true" >> android/gradle.properties
 
+      - name: Force minifyEnabled + shrinkResources in release
+        run: |
+          APP="android/app/build.gradle"
+          # minifyEnabled true
+          if grep -q "minifyEnabled" "$APP"; then
+            sed -i 's/minifyEnabled *false/minifyEnabled true/g' "$APP" || true
+          else
+            awk '1;/release *\{/{print "            minifyEnabled true"}' "$APP" > "$APP.tmp" && mv "$APP.tmp" "$APP"
+          fi
+          # shrinkResources true
+          if grep -q "shrinkResources" "$APP"; then
+            sed -i 's/shrinkResources *false/shrinkResources true/g' "$APP" || true
+          else
+            awk '1;/release *\{/{print "            shrinkResources true"}' "$APP" > "$APP.tmp" && mv "$APP.tmp" "$APP"
+          fi
+
+
       - name: Build APK (release)
         shell: bash
         run: |
