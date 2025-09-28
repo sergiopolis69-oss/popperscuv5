@@ -1,55 +1,37 @@
-
-class Purchase {
-  final int? id;
-  final String date;
-  final String supplier;
-  final String note;
-
-  Purchase({this.id, required this.date, required this.supplier, this.note = ''});
-
-  Map<String, Object?> toMap() => {
-    'id': id,
-    'date': date,
-    'supplier': supplier,
-    'note': note,
-  };
-
-  factory Purchase.fromMap(Map<String, Object?> map) => Purchase(
-    id: map['id'] as int?,
-    date: map['date'] as String,
-    supplier: map['supplier'] as String,
-    note: (map['note'] as String?) ?? '',
-  );
-}
-
 class PurchaseItem {
-  final int? id;
-  final int purchaseId;
   final int productId;
   final int quantity;
   final double unitCost;
 
-  PurchaseItem({
+  PurchaseItem({required this.productId, required this.quantity, required this.unitCost});
+
+  Map<String, dynamic> toMap(int purchaseId) => {
+    'purchase_id': purchaseId,
+    'product_id': productId,
+    'quantity': quantity,
+    'unit_cost': unitCost,
+  };
+}
+
+class Purchase {
+  final int? id;
+  final String folio;
+  final int supplierId;
+  final DateTime date;
+  final List<PurchaseItem> items;
+
+  Purchase({
     this.id,
-    required this.purchaseId,
-    required this.productId,
-    required this.quantity,
-    required this.unitCost,
+    required this.folio,
+    required this.supplierId,
+    required this.date,
+    required this.items,
   });
 
-  Map<String, Object?> toMap() => {
+  Map<String, dynamic> toMap() => {
     'id': id,
-    'purchaseId': purchaseId,
-    'productId': productId,
-    'quantity': quantity,
-    'unitCost': unitCost,
+    'folio': folio,
+    'supplier_id': supplierId,
+    'date': date.toIso8601String(),
   };
-
-  factory PurchaseItem.fromMap(Map<String, Object?> map) => PurchaseItem(
-    id: map['id'] as int?,
-    purchaseId: (map['purchaseId'] as num).toInt(),
-    productId: (map['productId'] as num).toInt(),
-    quantity: (map['quantity'] as num).toInt(),
-    unitCost: (map['unitCost'] as num).toDouble(),
-  );
 }

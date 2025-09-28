@@ -4,17 +4,14 @@ pluginManagement {
         mavenCentral()
         gradlePluginPortal()
     }
-    // Necesario para el plugin de Flutter (v2 embedding)
     def flutterSdkPath = System.getenv("FLUTTER_HOME") ?: System.getenv("FLUTTER_ROOT")
     if (flutterSdkPath != null) {
         includeBuild("${flutterSdkPath}/packages/flutter_tools/gradle")
     }
 }
-
 plugins {
     id "dev.flutter.flutter-plugin-loader" version "1.0.0"
     id "com.android.application" version "8.1.2" apply false
     id "org.jetbrains.kotlin.android" version "1.9.24" apply false
 }
-
 include(":app")

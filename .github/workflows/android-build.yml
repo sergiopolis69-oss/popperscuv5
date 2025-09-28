@@ -23,28 +23,20 @@ jobs:
           channel: stable
           flutter-version: "3.24.0"
 
-      - name: Env check
-        run: |
-          flutter --version
-          flutter doctor -v
-
       - name: Clean & deps
         run: |
           rm -rf build android/app/build
           flutter clean
           flutter pub get
 
-      # APK release universal (evita "paquete no válido" por ABI)
       - name: Build APK release (universal)
         run: |
           flutter build apk --release --target-platform=android-arm,android-arm64,android-x64 || true
 
-      # AAB release (para Play Store)
       - name: Build AAB release
         run: |
           flutter build appbundle --release || true
 
-      # APK debug (siempre instalable con debug keystore)
       - name: Build APK debug
         run: |
           flutter build apk --debug --no-tree-shake-icons || true

@@ -1,83 +1,99 @@
-
 import 'package:sqflite/sqflite.dart';
-import 'package:path/path.dart' as p;
+import 'package:path/path.dart';
 
-class AppDatabase {
-  static final AppDatabase _instance = AppDatabase._internal();
-  factory AppDatabase() => _instance;
-  AppDatabase._internal();
+class DatabaseHelper {
+  static final DatabaseHelper instance = DatabaseHelper._();
+  DatabaseHelper._();
 
   Database? _db;
+  Future<Database> get db async => _db ??= await _open();
 
-  Future<Database> db() async {
-    if (_db != null) return _db!;
-    final path = p.join(await getDatabasesPath(), 'pdv_flutter.db');
-    _db = await openDatabase(
-      path,
-      version: 1,
+  Future<Database> _open() async {
+    final p = join(await getDatabasesPath(), 'pdv.db');
+    return await openDatabase(
+      p,
+      version: 5,
       onCreate: (Database db, int version) async {
-        await db.execute('''
-          CREATE TABLE products(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            category TEXT NOT NULL,
-            salePrice REAL NOT NULL,
-            lastPurchasePrice REAL NOT NULL,
-            lastPurchaseDate TEXT,
-            stock INTEGER NOT NULL DEFAULT 0
-          );
-        ''');
         await db.execute('''
           CREATE TABLE customers(
             phone TEXT PRIMARY KEY,
             name TEXT NOT NULL,
-            address TEXT NOT NULL
+            address TEXT DEFAULT ''
           );
         ''');
+
         await db.execute('''
-          CREATE TABLE purchases(
+          CREATE TABLE suppliers(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT NOT NULL,
-            supplier TEXT NOT NULL,
-            note TEXT
+            name TEXT NOT NULL,
+            phone TEXT DEFAULT '',
+            address TEXT DEFAULT ''
           );
         ''');
+
         await db.execute('''
-          CREATE TABLE purchase_items(
+          CREATE TABLE products(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            purchaseId INTEGER NOT NULL,
-            productId INTEGER NOT NULL,
-            quantity INTEGER NOT NULL,
-            unitCost REAL NOT NULL,
-            FOREIGN KEY(purchaseId) REFERENCES purchases(id),
-            FOREIGN KEY(productId) REFERENCES products(id)
+            sku TEXT UNIQUE,
+            name TEXT NOT NULL,
+            category TEXT DEFAULT '',
+            stock INTEGER NOT NULL DEFAULT 0,
+            last_purchase_price REAL NOT NULL DEFAULT 0,
+            last_purchase_date TEXT
           );
         ''');
+
         await db.execute('''
           CREATE TABLE sales(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            customerPhone TEXT NOT NULL,
-            paymentMethod TEXT NOT NULL,
-            datetime TEXT NOT NULL,
-            place TEXT NOT NULL,
-            shippingCost REAL NOT NULL,
-            discount REAL NOT NULL,
-            FOREIGN KEY(customerPhone) REFERENCES customers(phone)
+            customer_phone TEXT,
+            payment_method TEXT NOT NULL,
+            place TEXT DEFAULT '',
+            shipping_cost REAL NOT NULL DEFAULT 0,
+            discount REAL NOT NULL DEFAULT 0,
+            date TEXT NOT NULL
           );
         ''');
+
         await db.execute('''
           CREATE TABLE sale_items(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            saleId INTEGER NOT NULL,
-            productId INTEGER NOT NULL,
+            sale_id INTEGER NOT NULL,
+            product_id INTEGER NOT NULL,
             quantity INTEGER NOT NULL,
-            unitPrice REAL NOT NULL,
-            FOREIGN KEY(saleId) REFERENCES sales(id),
-            FOREIGN KEY(productId) REFERENCES products(id)
+            unit_price REAL NOT NULL,
+            FOREIGN KEY(sale_id) REFERENCES sales(id) ON DELETE CASCADE
+          );
+        ''');
+
+        await db.execute('''
+          CREATE TABLE purchases(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            folio TEXT NOT NULL,
+            supplier_id INTEGER NOT NULL,
+            date TEXT NOT NULL,
+            FOREIGN KEY(supplier_id) REFERENCES suppliers(id)
+          );
+        ''');
+
+        await db.execute('''
+          CREATE TABLE purchase_items(
+            purchase_id INTEGER NOT NULL,
+            product_id INTEGER NOT NULL,
+            quantity INTEGER NOT NULL,
+            unit_cost REAL NOT NULL,
+            FOREIGN KEY(purchase_id) REFERENCES purchases(id) ON DELETE CASCADE
           );
         ''');
       },
+      onUpgrade: (db, oldV, newV) async {
+        if (oldV < 5) {
+          await db.execute('CREATE TABLE IF NOT EXISTS suppliers(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, phone TEXT DEFAULT "", address TEXT DEFAULT "");');
+          await db.execute('CREATE TABLE IF NOT EXISTS purchases(id INTEGER PRIMARY KEY AUTOINCREMENT, folio TEXT NOT NULL, supplier_id INTEGER NOT NULL, date TEXT NOT NULL);');
+          await db.execute('CREATE TABLE IF NOT EXISTS purchase_items(purchase_id INTEGER NOT NULL, product_id INTEGER NOT NULL, quantity INTEGER NOT NULL, unit_cost REAL NOT NULL);');
+          await db.execute('ALTER TABLE products ADD COLUMN last_purchase_price REAL NOT NULL DEFAULT 0;');
+          await db.execute('ALTER TABLE products ADD COLUMN last_purchase_date TEXT;');
+        }
+      },
     );
-    return _db!;
   }
 }

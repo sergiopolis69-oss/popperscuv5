@@ -1,17 +1,17 @@
+# PDV Flutter
 
-# PDV Flutter (popperscuv5)
+Punto de venta simple en Flutter con:
+- Ventas (cliente, forma de pago, envío, descuento, productos con live search o SKU)
+- Historial de ventas
+- Clientes (top clientes y alta rápida)
+- Utilidad promedio ponderada por periodo
+- Inventario (existencias, alta/baja)
+- Compras (folio → proveedor live search → productos live/SKU → totales → guarda y suma inventario)
+- XML por catálogo: clientes, productos, proveedores, ventas, compras
 
-- Android 11–15: Export/Import XML con selector del sistema (SAF).
-- Ventas: live search de productos/clientes, agregar cliente rápido, envío y descuento.
-- Historial: filtros + resumen con histograma simple.
-- Utilidad: promedio ponderado, descuentos prorrateados y envío excluido; histogramas diarios.
-- Inventario: altas/bajas por compras/ventas; agregar/eliminar; último costo/fecha.
-- Compras: actualiza stock y último costo/fecha.
-- Clientes: Top por # ventas, conteo, alta por formulario.
-
-## Correr
-```bash
-flutter create . --platforms=android   # solo si no existe /android
+## Compilación
+Usa el workflow `.github/workflows/android-build.yml` o en local:
+```
 flutter pub get
-flutter run
+flutter build apk --release
 ```
