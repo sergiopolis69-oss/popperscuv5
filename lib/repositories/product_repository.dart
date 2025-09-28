@@ -1,35 +1,40 @@
-
+import 'package:sqflite/sqflite.dart';
 import '../data/database.dart';
-import '../models/product.dart';
 
 class ProductRepository {
-  Future<int> insert(Product p) async {
-    final db = await AppDatabase().db();
-    return db.insert('products', p.toMap());
+  final _dbF = DatabaseHelper.instance;
+
+  Future<Map<String, dynamic>?> findBySku(String sku) async {
+    final db = await _dbF.db;
+    final r = await db.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
+    return r.isEmpty ? null : r.first;
   }
 
-  Future<int> update(Product p) async {
-    final db = await AppDatabase().db();
-    return db.update('products', p.toMap(), where: 'id=?', whereArgs: [p.id]);
+  Future<List<Map<String, dynamic>>> searchLite(String q, {int limit = 20}) async {
+    final db = await _dbF.db;
+    final r = await db.query(
+      'products',
+      columns: ['id','name','last_purchase_price'],
+      where: 'name LIKE ? OR category LIKE ? OR sku LIKE ?',
+      whereArgs: ['%$q%','%$q%','%$q%'],
+      orderBy: 'name ASC',
+      limit: limit,
+    );
+    return r;
   }
 
-  Future<int> delete(int id) async {
-    final db = await AppDatabase().db();
-    return db.delete('products', where: 'id=?', whereArgs: [id]);
+  Future<int> insert(Map<String, dynamic> map) async {
+    final db = await _dbF.db;
+    return db.insert('products', map, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
-  Future<List<Product>> search(String q) async {
-    final db = await AppDatabase().db();
-    final res = await db.query('products',
-      where: 'name LIKE ? OR category LIKE ?',
-      whereArgs: ['%$q%', '%$q%'],
-      orderBy: 'name ASC');
-    return res.map(Product.fromMap).toList();
+  Future<List<Map<String, dynamic>>> all() async {
+    final db = await _dbF.db;
+    return db.query('products', orderBy: 'name ASC');
   }
 
-  Future<List<Product>> all() async {
-    final db = await AppDatabase().db();
-    final res = await db.query('products', orderBy: 'name ASC');
-    return res.map(Product.fromMap).toList();
+  Future<void> delete(int id) async {
+    final db = await _dbF.db;
+    await db.delete('products', where: 'id=?', whereArgs: [id]);
   }
 }

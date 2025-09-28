@@ -3,11 +3,9 @@ plugins {
     id "org.jetbrains.kotlin.android"
     id "dev.flutter.flutter-gradle-plugin"
 }
-
 android {
     namespace "com.example.popperscuv5"
     compileSdk 35
-
     defaultConfig {
         applicationId "com.example.popperscuv5"
         minSdk 21
@@ -15,7 +13,6 @@ android {
         versionCode 1
         versionName "1.0.0"
     }
-
     buildTypes {
         release {
             shrinkResources false
@@ -27,14 +24,12 @@ android {
             minifyEnabled false
         }
     }
-
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
 }
-
 dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.24"
 }

@@ -1,63 +1,69 @@
-
 import 'package:flutter/material.dart';
 import '../repositories/product_repository.dart';
-import '../models/product.dart';
 
 class InventoryPage extends StatefulWidget {
   const InventoryPage({super.key});
-
   @override
   State<InventoryPage> createState() => _InventoryPageState();
 }
 
 class _InventoryPageState extends State<InventoryPage> {
   final _repo = ProductRepository();
-  String _q = '';
   final _name = TextEditingController();
+  final _sku = TextEditingController();
   final _cat = TextEditingController();
-  final _sale = TextEditingController();
-  final _cost = TextEditingController();
+
+  List<Map<String, dynamic>> _rows = [];
+
+  Future<void> _load() async {
+    final r = await _repo.all();
+    setState(()=> _rows = r);
+  }
+
+  Future<void> _add() async {
+    if (_name.text.trim().isEmpty) return;
+    await _repo.insert({
+      'name': _name.text.trim(),
+      'sku': _sku.text.trim().isEmpty ? null : _sku.text.trim(),
+      'category': _cat.text.trim(),
+      'stock': 0,
+      'last_purchase_price': 0,
+      'last_purchase_date': null,
+    });
+    _name.clear(); _sku.clear(); _cat.clear();
+    _load();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(12.0),
-      child: ListView(
-        children: [
-          TextField(decoration: const InputDecoration(labelText: 'Buscar'), onChanged: (v)=> setState(()=>_q=v)),
-          FutureBuilder(
-            future: _repo.search(_q),
-            builder: (context, snapshot){
-              if (!snapshot.hasData) return const SizedBox();
-              final data = snapshot.data!;
-              return Column(children: data.map((p)=> ListTile(
-                title: Text(p.name),
-                subtitle: Text('Cat: ${p.category}  Stock: ${p.stock}  PV: ${p.salePrice.toStringAsFixed(2)}  Costo: ${p.lastPurchasePrice.toStringAsFixed(2)}  Últ. compra: ${p.lastPurchaseDate ?? '-'}'),
-              )).toList());
-            },
-          ),
-          const Divider(),
-          const Text('Agregar/editar producto'),
-          TextField(controller: _name, decoration: const InputDecoration(labelText: 'Nombre')),
-          TextField(controller: _cat, decoration: const InputDecoration(labelText: 'Categoría')),
-          TextField(controller: _sale, decoration: const InputDecoration(labelText: 'Precio venta'), keyboardType: TextInputType.number),
-          TextField(controller: _cost, decoration: const InputDecoration(labelText: 'Último costo'), keyboardType: TextInputType.number),
-          const SizedBox(height: 8),
-          FilledButton(onPressed: () async {
-            final p = Product(
-              name: _name.text, category: _cat.text,
-              salePrice: double.tryParse(_sale.text) ?? 0,
-              lastPurchasePrice: double.tryParse(_cost.text) ?? 0,
-            );
-            await _repo.insert(p);
-            if (context.mounted){
-              _name.clear(); _cat.clear(); _sale.clear(); _cost.clear();
-              setState((){});
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Producto guardado')));
-            }
-          }, child: const Text('Guardar')),
-        ],
-      ),
+    return ListView(
+      padding: const EdgeInsets.all(12),
+      children: [
+        const Text('Agregar producto'),
+        const SizedBox(height: 6),
+        TextField(controller: _name, decoration: const InputDecoration(labelText: 'Nombre')), const SizedBox(height: 6),
+        TextField(controller: _sku, decoration: const InputDecoration(labelText: 'SKU (opcional)')), const SizedBox(height: 6),
+        TextField(controller: _cat, decoration: const InputDecoration(labelText: 'Categoría (opcional)')),
+        const SizedBox(height: 6),
+        FilledButton(onPressed: _add, child: const Text('Guardar')),
+        const Divider(),
+        const Text('Inventario'),
+        const SizedBox(height: 6),
+        ..._rows.map((r)=>ListTile(
+          title: Text(r['name']?.toString() ?? ''),
+          subtitle: Text('SKU: ${r['sku'] ?? '-'}  |  Cat: ${r['category'] ?? ''}\nStock: ${r['stock']}   Último costo: ${r['last_purchase_price']}'),
+          trailing: IconButton(icon: const Icon(Icons.delete_outline), onPressed: () async {
+            await _repo.delete(r['id'] as int);
+            _load();
+          }),
+        )),
+      ],
     );
   }
 }

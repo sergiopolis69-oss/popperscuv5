@@ -1,4 +1,3 @@
-
 import 'package:flutter/material.dart';
 import 'ui/sales_page.dart';
 import 'ui/sales_history_page.dart';
@@ -34,7 +33,7 @@ class _PDVAppState extends State<PDVApp> {
 
   @override
   Widget build(BuildContext context) {
-    final seed = const Color(0xFF3B5BA9); // acorde al logo
+    final seed = const Color(0xFF3B5BA9);
     final scheme = ColorScheme.fromSeed(seedColor: seed, brightness: Brightness.light);
     final theme = ThemeData(
       colorScheme: scheme,
