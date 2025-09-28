@@ -146,9 +146,11 @@ class _SupplierLiveSearch extends StatefulWidget {
   final TextEditingController controller;
   final void Function(int supplierId) onSelected;
   const _SupplierLiveSearch({required this.controller, required this.onSelected});
+
   @override
-  State<_SupplierLiveSearch> create() => _SupplierLiveSearchState();
+  State<_SupplierLiveSearch> createState() => _SupplierLiveSearchState(); // <-- corregido
 }
+
 class _SupplierLiveSearchState extends State<_SupplierLiveSearch> {
   final _repo = SupplierRepository();
   List<MapEntry<int,String>> _options = [];
