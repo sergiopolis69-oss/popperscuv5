@@ -3,33 +3,47 @@ plugins {
     id "org.jetbrains.kotlin.android"
     id "dev.flutter.flutter-gradle-plugin"
 }
+
 android {
-    namespace "com.example.popperscuv5"
+    namespace "com.example.popperscuv5"   // ⬅ Debe coincidir con el package en AndroidManifest.xml
     compileSdk 35
+
     defaultConfig {
         applicationId "com.example.popperscuv5"
         minSdk 21
         targetSdk 35
         versionCode 1
-        versionName "1.0.0"
+        versionName "1.0"
+        multiDexEnabled true
     }
+
     buildTypes {
         release {
+            // ⚡ Esto evita el error de shrinkResources
             shrinkResources false
             minifyEnabled false
-            proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+
+            signingConfig signingConfigs.debug
         }
         debug {
             shrinkResources false
             minifyEnabled false
         }
     }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
-    kotlinOptions { jvmTarget = "17" }
+    kotlinOptions {
+        jvmTarget = "17"
+    }
 }
+
+flutter {
+    source "../.."
+}
+
 dependencies {
-    implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.24"
+    implementation "androidx.multidex:multidex:2.0.1"
 }
