@@ -8,18 +8,21 @@ class BackupPage extends StatelessWidget {
   const BackupPage({super.key});
 
   Future<File?> _pickXmlAsFile() async {
-    final res = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['xml']);
+    final res = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['xml'],
+    );
     if (res == null) return null;
     final f = res.files.single;
     if (f.path != null) return File(f.path!);
-    // Si viene en memoria, lo escribimos a /tmp
+    // si viene en memoria
     final bytes = f.bytes;
     if (bytes == null) return null;
     final tmp = await getTemporaryDirectory();
     final file = File('${tmp.path}/${f.name}');
     await file.writeAsBytes(bytes);
     return file;
-    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -33,11 +36,11 @@ class BackupPage extends StatelessWidget {
       }
     }
 
-    Future<void> _import(void Function(File) importer) async {
+    Future<void> _import(Future<void> Function(File) importer) async {
       final file = await _pickXmlAsFile();
       if (file == null) return;
       try {
-        await importer(file);
+        await importer(file); // ahora sí es Future<void>
         if (!context.mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Importación completa')));
       } catch (e) {
