@@ -1,8 +1,25 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:path_provider/path_provider.dart';
 import '../utils/xml_backup.dart';
 
 class BackupPage extends StatelessWidget {
   const BackupPage({super.key});
+
+  Future<File?> _pickXmlAsFile() async {
+    final res = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['xml']);
+    if (res == null) return null;
+    final f = res.files.single;
+    if (f.path != null) return File(f.path!);
+    // Si viene en memoria, lo escribimos a /tmp
+    final bytes = f.bytes;
+    if (bytes == null) return null;
+    final tmp = await getTemporaryDirectory();
+    final file = File('${tmp.path}/${f.name}');
+    await file.writeAsBytes(bytes);
+    return file;
+    }
 
   @override
   Widget build(BuildContext context) {
@@ -13,6 +30,18 @@ class BackupPage extends StatelessWidget {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(ok)));
       } catch (e) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+      }
+    }
+
+    Future<void> _import(void Function(File) importer) async {
+      final file = await _pickXmlAsFile();
+      if (file == null) return;
+      try {
+        await importer(file);
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Importación completa')));
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error importando: $e')));
       }
     }
 
@@ -29,7 +58,13 @@ class BackupPage extends StatelessWidget {
           FilledButton(onPressed: ()=>_run(exportPurchasesXml, 'Compras exportadas'), child: const Text('Compras')),
         ]),
         const SizedBox(height: 24),
-        const Text('Importar XML (pendiente UI de selector de archivos)'),
+        const Text('Importar XML', style: TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        Wrap(spacing: 8, runSpacing: 8, children: [
+          OutlinedButton(onPressed: ()=>_import(importClientsXml), child: const Text('Clientes')),
+          OutlinedButton(onPressed: ()=>_import(importProductsXml), child: const Text('Productos')),
+          OutlinedButton(onPressed: ()=>_import(importSuppliersXml), child: const Text('Proveedores')),
+        ]),
       ],
     );
   }
