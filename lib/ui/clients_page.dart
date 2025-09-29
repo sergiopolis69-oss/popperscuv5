@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:contacts_service/contacts_service.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../repositories/client_repository.dart';
 
 class ClientsPage extends StatefulWidget {
@@ -29,6 +31,26 @@ class _ClientsPageState extends State<ClientsPage> {
     _refresh();
   }
 
+  Future<void> _importFromContacts() async {
+    final status = await Permission.contacts.request();
+    if (!status.isGranted) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Permiso de contactos denegado')));
+      return;
+    }
+    final contact = await ContactsService.openDeviceContactPicker();
+    if (contact == null) return;
+    final name = (contact.displayName ?? '').trim();
+    final phone = (contact.phones?.isNotEmpty == true) ? (contact.phones!.first.value ?? '').replaceAll(RegExp(r'\\s'), '') : '';
+    if (phone.isEmpty || name.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Contacto sin nombre o teléfono')));
+      return;
+    }
+    _nameCtrl.text = name;
+    _phoneCtrl.text = phone;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -44,13 +66,18 @@ class _ClientsPageState extends State<ClientsPage> {
           child: ListTile(
             title: const Text('Mejores clientes'),
             subtitle: Text('Total clientes: $_count'),
+            trailing: IconButton(
+              tooltip: 'Importar contacto',
+              icon: const Icon(Icons.contacts),
+              onPressed: _importFromContacts,
+            ),
           ),
         ),
         const SizedBox(height: 8),
         ..._top.map((c)=>ListTile(
           title: Text('${c['name']}'),
           subtitle: Text('${c['phone']}'),
-          trailing: Text('\$${(c['total'] as num?)?.toDouble().toString()}'),
+          trailing: Text('\\$${(c['total'] as num?)?.toDouble().toString()}'),
         )),
         const Divider(),
         const Text('Agregar cliente'),
