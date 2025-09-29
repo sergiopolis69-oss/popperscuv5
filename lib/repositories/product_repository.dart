@@ -10,11 +10,17 @@ class ProductRepository {
     return r.isEmpty ? null : r.first;
   }
 
+  Future<Map<String, dynamic>?> findById(int id) async {
+    final db = await _dbF.db;
+    final r = await db.query('products', where: 'id = ?', whereArgs: [id], limit: 1);
+    return r.isEmpty ? null : r.first;
+  }
+
   Future<List<Map<String, dynamic>>> searchLite(String q, {int limit = 20}) async {
     final db = await _dbF.db;
     final r = await db.query(
       'products',
-      columns: ['id','name','last_purchase_price'],
+      columns: ['id','name','last_purchase_price','default_sale_price'],
       where: 'name LIKE ? OR category LIKE ? OR sku LIKE ?',
       whereArgs: ['%$q%','%$q%','%$q%'],
       orderBy: 'name ASC',
