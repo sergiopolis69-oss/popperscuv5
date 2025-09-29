@@ -1,17 +1,35 @@
-// Top-level build file
+// android/build.gradle  (root)
+
 buildscript {
     repositories {
         google()
         mavenCentral()
     }
-    dependencies {
-        classpath "com.android.tools.build:gradle:8.1.2"
-        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.24"
-    }
 }
+
+plugins {
+    // Declaramos versiones aquí y se aplican en los módulos (apply false)
+    id "com.android.application" version "8.1.2" apply false
+    id "org.jetbrains.kotlin.android" version "1.9.24" apply false
+    // El plugin de Flutter se aplica en el módulo app:
+    // id "dev.flutter.flutter-gradle-plugin"  -> se aplica SIN versión dentro de app/build.gradle
+}
+
 allprojects {
     repositories {
         google()
         mavenCentral()
     }
 }
+
+// (Opcional, sólo si alguna librería antigua no declara namespace)
+// subprojects { sub ->
+//     afterEvaluate {
+//         def ext = sub.extensions.findByName("android")
+//         if (ext != null) {
+//             if (!ext.hasProperty("namespace") || ext.namespace == null) {
+//                 ext.namespace = "fix." + sub.name.replace('-', '_')
+//             }
+//         }
+//     }
+// }
