@@ -20,7 +20,7 @@ class _ClientsPageState extends State<ClientsPage> {
   Future<void> _refresh() async {
     final c = await _repo.count();
     final t = await _repo.topClients(limit: 10);
-    setState(() => {_count = c, _top = t});
+    setState(() { _count = c; _top = t; });
   }
 
   Future<void> _add() async {
@@ -45,15 +45,17 @@ class _ClientsPageState extends State<ClientsPage> {
       );
       return;
     }
-    // Abre el picker nativo
+    // Abre el picker externo
     final picked = await FlutterContacts.openExternalPick();
     if (picked == null) return;
 
-    // Asegura traer teléfonos
-    await picked.fetch(withProperties: true);
-    final name = picked.displayName.trim();
-    final phone = picked.phones.isNotEmpty
-        ? picked.phones.first.number.replaceAll(RegExp(r'\s'), '')
+    // Vuelve a cargar el contacto con propiedades
+    final full = await FlutterContacts.getContact(picked.id, withProperties: true);
+    if (full == null) return;
+
+    final name = full.displayName.trim();
+    final phone = full.phones.isNotEmpty
+        ? full.phones.first.number.replaceAll(RegExp(r'\s'), '')
         : '';
 
     if (name.isEmpty || phone.isEmpty) {
