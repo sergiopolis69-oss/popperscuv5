@@ -18,7 +18,7 @@ dependencies:
   fl_chart: ^0.68.0
   file_picker: ^8.0.0
   permission_handler: ^11.3.1
-  contacts_service: ^0.6.3
+  flutter_contacts: ^1.1.7
 
 dev_dependencies:
   flutter_test:
