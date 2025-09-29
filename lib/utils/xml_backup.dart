@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:xml/xml.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:file_saver/file_saver.dart';
@@ -25,7 +26,12 @@ Future<void> exportClientsXml() async {
   final dir = await getDownloadsDirectory();
   final file = File('${dir!.path}/clientes.xml');
   await file.writeAsString(xml);
-  await FileSaver.instance.saveFile(name: 'clientes', bytes: xml.codeUnits, ext: 'xml', mimeType: MimeType.text);
+  await FileSaver.instance.saveFile(
+    name: 'clientes',
+    bytes: Uint8List.fromList(xml.codeUnits),
+    ext: 'xml',
+    mimeType: MimeType.text,
+  );
 }
 
 Future<void> exportProductsXml() async {
@@ -52,7 +58,12 @@ Future<void> exportProductsXml() async {
   final dir = await getDownloadsDirectory();
   final file = File('${dir!.path}/productos.xml');
   await file.writeAsString(xml);
-  await FileSaver.instance.saveFile(name: 'productos', bytes: xml.codeUnits, ext: 'xml', mimeType: MimeType.text);
+  await FileSaver.instance.saveFile(
+    name: 'productos',
+    bytes: Uint8List.fromList(xml.codeUnits),
+    ext: 'xml',
+    mimeType: MimeType.text,
+  );
 }
 
 Future<void> exportSuppliersXml() async {
@@ -74,7 +85,12 @@ Future<void> exportSuppliersXml() async {
   final dir = await getDownloadsDirectory();
   final file = File('${dir!.path}/proveedores.xml');
   await file.writeAsString(xml);
-  await FileSaver.instance.saveFile(name: 'proveedores', bytes: xml.codeUnits, ext: 'xml', mimeType: MimeType.text);
+  await FileSaver.instance.saveFile(
+    name: 'proveedores',
+    bytes: Uint8List.fromList(xml.codeUnits),
+    ext: 'xml',
+    mimeType: MimeType.text,
+  );
 }
 
 Future<void> exportSalesXml() async {
@@ -109,7 +125,12 @@ Future<void> exportSalesXml() async {
   final dir = await getDownloadsDirectory();
   final file = File('${dir!.path}/ventas.xml');
   await file.writeAsString(xml);
-  await FileSaver.instance.saveFile(name: 'ventas', bytes: xml.codeUnits, ext: 'xml', mimeType: MimeType.text);
+  await FileSaver.instance.saveFile(
+    name: 'ventas',
+    bytes: Uint8List.fromList(xml.codeUnits),
+    ext: 'xml',
+    mimeType: MimeType.text,
+  );
 }
 
 Future<void> exportPurchasesXml() async {
@@ -141,7 +162,12 @@ Future<void> exportPurchasesXml() async {
   final dir = await getDownloadsDirectory();
   final file = File('${dir!.path}/compras.xml');
   await file.writeAsString(xml);
-  await FileSaver.instance.saveFile(name: 'compras', bytes: xml.codeUnits, ext: 'xml', mimeType: MimeType.text);
+  await FileSaver.instance.saveFile(
+    name: 'compras',
+    bytes: Uint8List.fromList(xml.codeUnits),
+    ext: 'xml',
+    mimeType: MimeType.text,
+  );
 }
 
 // ============ IMPORTS ============
