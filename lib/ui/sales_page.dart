@@ -4,6 +4,15 @@ import '../repositories/client_repository.dart';
 import '../repositories/sales_repository.dart';
 import '../models/sale.dart';
 
+class _CartItem {
+  final int productId;
+  final String name;
+  final int qty;
+  final double unitPrice;
+  final double lastCost;
+  _CartItem({required this.productId, required this.name, required this.qty, required this.unitPrice, required this.lastCost});
+}
+
 class SalesPage extends StatefulWidget {
   const SalesPage({super.key});
   @override
@@ -20,16 +29,29 @@ class _SalesPageState extends State<SalesPage> {
 
   String _payment = 'Efectivo';
   String? _clientPhone;
-  final _items = <SaleItem>[];
+  final _items = <_CartItem>[];
 
   final _prodRepo = ProductRepository();
   final _cliRepo = ClientRepository();
   final _saleRepo = SalesRepository();
 
-  double get subtotal => _items.fold(0.0, (a, b) => a + b.quantity * b.unitPrice);
+  double get subtotal => _items.fold(0.0, (a, b) => a + b.qty * b.unitPrice);
   double get shipping => double.tryParse(_shippingCtrl.text.replaceAll(',', '.')) ?? 0.0;
   double get discount => double.tryParse(_discountCtrl.text.replaceAll(',', '.')) ?? 0.0;
   double get total => (subtotal + shipping - discount).clamp(0, double.infinity);
+
+  double get liveProfit {
+    final gross = subtotal;
+    if (gross <= 0) return 0;
+    double totalRevenue = 0, totalCost = 0;
+    for (final it in _items) {
+      final itemGross = it.qty * it.unitPrice;
+      final itemDisc = discount * (itemGross / gross);
+      totalRevenue += (itemGross - itemDisc); // envío excluido
+      totalCost += it.qty * it.lastCost;
+    }
+    return totalRevenue - totalCost;
+  }
 
   Future<void> _addBySku() async {
     final sku = _skuCtrl.text.trim();
@@ -40,15 +62,25 @@ class _SalesPageState extends State<SalesPage> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('SKU no encontrado')));
       return;
     }
-    _promptQtyPriceAndAdd(p['id'] as int);
+    _promptQtyPriceAndAdd(
+      productId: p['id'] as int,
+      name: p['name'] as String,
+      suggestedPrice: (p['default_sale_price'] as num?)?.toDouble() ?? 0,
+      lastCost: (p['last_purchase_price'] as num?)?.toDouble() ?? 0,
+    );
   }
 
-  void _promptQtyPriceAndAdd(int productId) async {
+  void _promptQtyPriceAndAdd({
+    required int productId,
+    required String name,
+    required double suggestedPrice,
+    required double lastCost,
+  }) async {
     final qtyCtrl = TextEditingController(text: '1');
-    final priceCtrl = TextEditingController();
+    final priceCtrl = TextEditingController(text: suggestedPrice > 0 ? suggestedPrice.toStringAsFixed(2) : '');
     await showDialog(context: context, builder: (ctx){
       return AlertDialog(
-        title: const Text('Cantidad y precio de venta'),
+        title: Text('Agregar "$name"'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -63,8 +95,10 @@ class _SalesPageState extends State<SalesPage> {
             final q = int.tryParse(qtyCtrl.text) ?? 0;
             final p = double.tryParse(priceCtrl.text.replaceAll(',', '.')) ?? 0;
             if (q>0 && p>0) {
-              setState(()=> _items.add(SaleItem(productId: productId, quantity: q, unitPrice: p)) );
+              setState(()=> _items.add(_CartItem(productId: productId, name: name, qty: q, unitPrice: p, lastCost: lastCost)) );
               Navigator.pop(ctx);
+            } else {
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Cantidad y precio deben ser > 0')));
             }
           }, child: const Text('Agregar')),
         ],
@@ -77,6 +111,10 @@ class _SalesPageState extends State<SalesPage> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Agrega productos')));
       return;
     }
+    if (subtotal <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Importes deben ser > 0')));
+      return;
+    }
     final sale = Sale(
       customerPhone: _clientPhone,
       paymentMethod: _payment,
@@ -84,7 +122,7 @@ class _SalesPageState extends State<SalesPage> {
       shippingCost: shipping,
       discount: discount,
       date: DateTime.now(),
-      items: List.from(_items),
+      items: _items.map((e)=>SaleItem(productId: e.productId, quantity: e.qty, unitPrice: e.unitPrice)).toList(),
     );
     final id = await _saleRepo.createSale(sale);
     if (!mounted) return;
@@ -100,6 +138,7 @@ class _SalesPageState extends State<SalesPage> {
 
   @override
   Widget build(BuildContext context) {
+    final utilPct = subtotal > 0 ? (liveProfit / subtotal) * 100 : 0;
     return ListView(
       padding: const EdgeInsets.all(12),
       children: [
@@ -130,17 +169,23 @@ class _SalesPageState extends State<SalesPage> {
           ],
         ),
         const SizedBox(height: 8),
-        _ProductLiveSearch(controller: _searchCtrl, onPickProduct: (id)=>_promptQtyPriceAndAdd(id)),
+        _ProductLiveSearch(
+          controller: _searchCtrl,
+          onPickProduct: (id, name, lastCost, defaultPrice)=>_promptQtyPriceAndAdd(
+            productId: id, name: name, lastCost: lastCost ?? 0, suggestedPrice: defaultPrice ?? 0)),
         const SizedBox(height: 12),
         Card(
           child: Column(
             children: [
-              ListTile(title: const Text('Productos de la venta'), subtitle: Text('Subtotal: \$${subtotal.toStringAsFixed(2)} | Total: \$${total.toStringAsFixed(2)}')),
+              ListTile(
+                title: const Text('Productos de la venta'),
+                subtitle: Text('Subtotal: \$${subtotal.toStringAsFixed(2)} | Utilidad: \$${liveProfit.toStringAsFixed(2)} (${utilPct.toStringAsFixed(1)}%) | Total: \$${total.toStringAsFixed(2)}'),
+              ),
               const Divider(height: 1),
               ..._items.map((it)=>ListTile(
                 dense: true,
-                title: Text('ID ${it.productId} x${it.quantity}'),
-                subtitle: Text('P.U. \$${it.unitPrice.toStringAsFixed(2)}  Importe \$${(it.unitPrice*it.quantity).toStringAsFixed(2)}'),
+                title: Text('${it.name}  x${it.qty}'),
+                subtitle: Text('P.U. \$${it.unitPrice.toStringAsFixed(2)}  | Costo \$${it.lastCost.toStringAsFixed(2)}  | Importe \$${(it.unitPrice*it.qty).toStringAsFixed(2)}'),
                 trailing: IconButton(icon: const Icon(Icons.delete_outline), onPressed: ()=> setState(()=> _items.remove(it))),
               )),
               if (_items.isEmpty) const Padding(padding: EdgeInsets.all(12), child: Text('Sin productos aún'))
@@ -173,7 +218,19 @@ class _ClientLiveSearchState extends State<_ClientLiveSearch> {
   @override
   Widget build(BuildContext context) {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      const Text('Cliente (ID = teléfono)'),
+      Row(
+        children: [
+          const Expanded(child: Text('Cliente (ID = teléfono)')),
+          IconButton(
+            tooltip: 'Importar desde contactos',
+            icon: const Icon(Icons.contacts),
+            onPressed: () async {
+              // implementado en ClientsPage (para permisos/UX más completa)
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ve a Clientes → Importar contacto')));
+            },
+          )
+        ],
+      ),
       const SizedBox(height: 6),
       TextField(
         controller: widget.controller,
@@ -191,40 +248,13 @@ class _ClientLiveSearchState extends State<_ClientLiveSearch> {
         },
         trailing: const Icon(Icons.check),
       )),
-      const SizedBox(height: 6),
-      OutlinedButton.icon(onPressed: () async {
-        final nameCtrl = TextEditingController();
-        final phoneCtrl = TextEditingController();
-        final addrCtrl = TextEditingController();
-        await showDialog(context: context, builder: (ctx)=>AlertDialog(
-          title: const Text('Nuevo cliente'),
-          content: Column(mainAxisSize: MainAxisSize.min, children: [
-            TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Nombre')),
-            const SizedBox(height: 8),
-            TextField(controller: phoneCtrl, decoration: const InputDecoration(labelText: 'Teléfono (ID)')),
-            const SizedBox(height: 8),
-            TextField(controller: addrCtrl, decoration: const InputDecoration(labelText: 'Dirección')),
-          ]),
-          actions: [
-            TextButton(onPressed: ()=>Navigator.pop(ctx), child: const Text('Cancelar')),
-            FilledButton(onPressed: () async {
-              if (phoneCtrl.text.trim().isEmpty || nameCtrl.text.trim().isEmpty) return;
-              await ClientRepository().upsert(phoneCtrl.text.trim(), nameCtrl.text.trim(), addrCtrl.text.trim());
-              if (!mounted) return;
-              widget.controller.text = '${nameCtrl.text} (${phoneCtrl.text})';
-              widget.onSelected(phoneCtrl.text.trim());
-              Navigator.pop(ctx);
-            }, child: const Text('Guardar'))
-          ],
-        ));
-      }, icon: const Icon(Icons.person_add_alt), label: const Text('Agregar cliente rápido')),
     ]);
   }
 }
 
 class _ProductLiveSearch extends StatefulWidget {
   final TextEditingController controller;
-  final void Function(int productId) onPickProduct;
+  final void Function(int id, String name, double? lastCost, double? defaultPrice) onPickProduct;
   const _ProductLiveSearch({required this.controller, required this.onPickProduct});
   @override
   State<_ProductLiveSearch> createState() => _ProductLiveSearchState();
@@ -251,8 +281,16 @@ class _ProductLiveSearchState extends State<_ProductLiveSearch> {
       ..._results.take(6).map((r)=>ListTile(
         dense: true,
         title: Text(r['name'] as String? ?? ''),
-        subtitle: Text('Último costo: ${(r['last_purchase_price'] as num?)?.toDouble() ?? 0}'),
-        trailing: IconButton(icon: const Icon(Icons.add), onPressed: ()=> widget.onPickProduct(r['id'] as int)),
+        subtitle: Text('Últ. costo: ${((r['last_purchase_price'] as num?)?.toDouble() ?? 0).toStringAsFixed(2)}  |  Precio sug.: ${((r['default_sale_price'] as num?)?.toDouble() ?? 0).toStringAsFixed(2)}'),
+        trailing: IconButton(
+          icon: const Icon(Icons.add),
+          onPressed: ()=> widget.onPickProduct(
+            r['id'] as int,
+            r['name'] as String? ?? '',
+            (r['last_purchase_price'] as num?)?.toDouble(),
+            (r['default_sale_price'] as num?)?.toDouble(),
+          ),
+        ),
       )),
     ]);
   }
