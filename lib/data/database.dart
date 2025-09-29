@@ -12,7 +12,7 @@ class DatabaseHelper {
     final p = join(await getDatabasesPath(), 'pdv.db');
     return await openDatabase(
       p,
-      version: 5,
+      version: 7, // ⬅ subimos versión
       onCreate: (Database db, int version) async {
         await db.execute('''
           CREATE TABLE customers(
@@ -39,7 +39,9 @@ class DatabaseHelper {
             category TEXT DEFAULT '',
             stock INTEGER NOT NULL DEFAULT 0,
             last_purchase_price REAL NOT NULL DEFAULT 0,
-            last_purchase_date TEXT
+            last_purchase_date TEXT,
+            default_sale_price REAL NOT NULL DEFAULT 0,   -- ⬅ nuevo
+            initial_cost REAL NOT NULL DEFAULT 0          -- ⬅ nuevo
           );
         ''');
 
@@ -92,6 +94,10 @@ class DatabaseHelper {
           await db.execute('CREATE TABLE IF NOT EXISTS purchase_items(purchase_id INTEGER NOT NULL, product_id INTEGER NOT NULL, quantity INTEGER NOT NULL, unit_cost REAL NOT NULL);');
           await db.execute('ALTER TABLE products ADD COLUMN last_purchase_price REAL NOT NULL DEFAULT 0;');
           await db.execute('ALTER TABLE products ADD COLUMN last_purchase_date TEXT;');
+        }
+        if (oldV < 7) {
+          await db.execute('ALTER TABLE products ADD COLUMN default_sale_price REAL NOT NULL DEFAULT 0;');
+          await db.execute('ALTER TABLE products ADD COLUMN initial_cost REAL NOT NULL DEFAULT 0;');
         }
       },
     );
