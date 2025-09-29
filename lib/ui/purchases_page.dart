@@ -211,6 +211,38 @@ class _ProductLiveSearch extends StatefulWidget {
   @override
   State<_ProductLiveSearch> createState() => _ProductLiveSearchState();
 }
+
 class _ProductLiveSearchState extends State<_ProductLiveSearch> {
   final _repo = ProductRepository();
-  List<Map<String
+  List<Map<String, dynamic>> _results = [];
+
+  Future<void> _search(String q) async {
+    final r = await _repo.searchLite(q);
+    setState(()=> _results = r);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const Text('Agregar producto (live search)'),
+      const SizedBox(height: 6),
+      TextField(
+        controller: widget.controller,
+        decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'Nombre / categoría / SKU'),
+        onChanged: (q){ if(q.length>=2) _search(q); else setState(()=>_results=[]); },
+      ),
+      const SizedBox(height: 6),
+      ..._results.take(6).map((row){
+        final id = row['id'] as int;
+        final name = row['name'] as String? ?? '';
+        final lastCost = (row['last_purchase_price'] as num?)?.toDouble();
+        return ListTile(
+          dense: true,
+          title: Text(name),
+          subtitle: Text('Último costo: ${lastCost==null||lastCost==0 ? '—' : '\$'+lastCost.toStringAsFixed(2)}'),
+          trailing: IconButton(icon: const Icon(Icons.add), onPressed: (){ widget.onPickProduct(id, lastCost); }),
+        );
+      }),
+    ]);
+  }
+}
