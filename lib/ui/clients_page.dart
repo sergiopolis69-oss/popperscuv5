@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import '../repositories/client_repository.dart';
 
@@ -30,26 +31,25 @@ class _ClientsPageState extends State<ClientsPage> {
       _nameCtrl.text.trim(),
       _addrCtrl.text.trim(),
     );
-    _nameCtrl.clear();
-    _phoneCtrl.clear();
-    _addrCtrl.clear();
+    _nameCtrl.clear(); _phoneCtrl.clear(); _addrCtrl.clear();
     _refresh();
   }
 
   Future<void> _importFromContacts() async {
-    final granted = await FlutterContacts.requestPermission();
-    if (!granted) {
+    // 1) Pedir permiso con permission_handler
+    final status = await Permission.contacts.request();
+    if (!(status.isGranted || status.isLimited)) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Permiso de contactos denegado')),
       );
       return;
     }
-    // Abre el picker externo
+
+    // 2) Usar flutter_contacts
     final picked = await FlutterContacts.openExternalPick();
     if (picked == null) return;
 
-    // Vuelve a cargar el contacto con propiedades
     final full = await FlutterContacts.getContact(picked.id, withProperties: true);
     if (full == null) return;
 
@@ -103,21 +103,11 @@ class _ClientsPageState extends State<ClientsPage> {
         const Divider(),
         const Text('Agregar cliente'),
         const SizedBox(height: 6),
-        TextField(
-          controller: _nameCtrl,
-          decoration: const InputDecoration(labelText: 'Nombre'),
-        ),
+        TextField(controller: _nameCtrl, decoration: const InputDecoration(labelText: 'Nombre')),
         const SizedBox(height: 6),
-        TextField(
-          controller: _phoneCtrl,
-          decoration: const InputDecoration(labelText: 'Teléfono (ID)'),
-          keyboardType: TextInputType.phone,
-        ),
+        TextField(controller: _phoneCtrl, decoration: const InputDecoration(labelText: 'Teléfono (ID)'), keyboardType: TextInputType.phone),
         const SizedBox(height: 6),
-        TextField(
-          controller: _addrCtrl,
-          decoration: const InputDecoration(labelText: 'Dirección'),
-        ),
+        TextField(controller: _addrCtrl, decoration: const InputDecoration(labelText: 'Dirección')),
         const SizedBox(height: 6),
         FilledButton(onPressed: _add, child: const Text('Guardar')),
       ],
