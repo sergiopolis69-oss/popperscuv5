@@ -1,17 +1,6 @@
 import 'package:flutter/material.dart';
-import '../repositories/product_repository.dart';
-import '../repositories/client_repository.dart';
-import '../repositories/sales_repository.dart';
-import '../models/sale.dart';
-
-class _CartItem {
-  final int productId;
-  final String name;
-  final int qty;
-  final double unitPrice;
-  final double lastCost;
-  _CartItem({required this.productId, required this.name, required this.qty, required this.unitPrice, required this.lastCost});
-}
+import 'package:sqflite/sqflite.dart';
+import '../data/database.dart';
 
 class SalesPage extends StatefulWidget {
   const SalesPage({super.key});
@@ -21,277 +10,282 @@ class SalesPage extends StatefulWidget {
 
 class _SalesPageState extends State<SalesPage> {
   final _clientCtrl = TextEditingController();
+  final _productCtrl = TextEditingController();
+  final _paymentCtrl = TextEditingController(text: 'efectivo');
+  final _shippingCtrl = TextEditingController();
+  final _discountCtrl = TextEditingController();
   final _placeCtrl = TextEditingController();
-  final _skuCtrl = TextEditingController();
-  final _searchCtrl = TextEditingController();
-  final _shippingCtrl = TextEditingController(text: '0');
-  final _discountCtrl = TextEditingController(text: '0');
 
-  String _payment = 'Efectivo';
-  String? _clientPhone;
-  final _items = <_CartItem>[];
+  List<Map<String, dynamic>> _cart = [];
+  List<Map<String, dynamic>> _clients = [];
+  List<Map<String, dynamic>> _products = [];
 
-  final _prodRepo = ProductRepository();
-  final _cliRepo = ClientRepository();
-  final _saleRepo = SalesRepository();
-
-  double get subtotal => _items.fold(0.0, (a, b) => a + b.qty * b.unitPrice);
-  double get shipping => double.tryParse(_shippingCtrl.text.replaceAll(',', '.')) ?? 0.0;
-  double get discount => double.tryParse(_discountCtrl.text.replaceAll(',', '.')) ?? 0.0;
-  double get total => (subtotal + shipping - discount).clamp(0, double.infinity);
-
-  double get liveProfit {
-    final gross = subtotal;
-    if (gross <= 0) return 0;
-    double totalRevenue = 0, totalCost = 0;
-    for (final it in _items) {
-      final itemGross = it.qty * it.unitPrice;
-      final itemDisc = discount * (itemGross / gross);
-      totalRevenue += (itemGross - itemDisc); // envío excluido
-      totalCost += it.qty * it.lastCost;
-    }
-    return totalRevenue - totalCost;
+  @override
+  void initState() {
+    super.initState();
+    _loadData();
   }
 
-  Future<void> _addBySku() async {
-    final sku = _skuCtrl.text.trim();
-    if (sku.isEmpty) return;
-    final p = await _prodRepo.findBySku(sku);
-    if (p == null) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('SKU no encontrado')));
-      return;
-    }
-    _promptQtyPriceAndAdd(
-      productId: p['id'] as int,
-      name: p['name'] as String,
-      suggestedPrice: (p['default_sale_price'] as num?)?.toDouble() ?? 0,
-      lastCost: (p['last_purchase_price'] as num?)?.toDouble() ?? 0,
-    );
+  Future<void> _loadData() async {
+    final db = await DatabaseHelper.instance.db;
+    final cl = await db.query('customers');
+    final pr = await db.query('products');
+    setState(() {
+      _clients = cl;
+      _products = pr;
+    });
   }
 
-  void _promptQtyPriceAndAdd({
-    required int productId,
-    required String name,
-    required double suggestedPrice,
-    required double lastCost,
-  }) async {
-    final qtyCtrl = TextEditingController(text: '1');
-    final priceCtrl = TextEditingController(text: suggestedPrice > 0 ? suggestedPrice.toStringAsFixed(2) : '');
-    await showDialog(context: context, builder: (ctx){
-      return AlertDialog(
-        title: Text('Agregar "$name"'),
+  void _addQuickClient() async {
+    final phoneCtrl = TextEditingController();
+    final nameCtrl = TextEditingController();
+    final addrCtrl = TextEditingController();
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Nuevo cliente'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: qtyCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Piezas')),
-            const SizedBox(height: 8),
-            TextField(controller: priceCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Precio unitario')),
+            TextField(controller: phoneCtrl, decoration: const InputDecoration(labelText: 'Teléfono / ID')),
+            TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Nombre')),
+            TextField(controller: addrCtrl, decoration: const InputDecoration(labelText: 'Dirección')),
           ],
         ),
         actions: [
           TextButton(onPressed: ()=>Navigator.pop(ctx), child: const Text('Cancelar')),
-          FilledButton(onPressed: (){
-            final q = int.tryParse(qtyCtrl.text) ?? 0;
-            final p = double.tryParse(priceCtrl.text.replaceAll(',', '.')) ?? 0;
-            if (q>0 && p>0) {
-              setState(()=> _items.add(_CartItem(productId: productId, name: name, qty: q, unitPrice: p, lastCost: lastCost)) );
-              Navigator.pop(ctx);
-            } else {
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Cantidad y precio deben ser > 0')));
-            }
-          }, child: const Text('Agregar')),
+          FilledButton(
+            onPressed: () async {
+              final phone = phoneCtrl.text.trim();
+              if (phone.isEmpty) return;
+              final db = await DatabaseHelper.instance.db;
+              await db.insert('customers', {
+                'phone': phone,
+                'name': nameCtrl.text.trim(),
+                'address': addrCtrl.text.trim(),
+              }, conflictAlgorithm: ConflictAlgorithm.replace);
+              await _loadData();
+              _clientCtrl.text = phone;
+              if (context.mounted) Navigator.pop(ctx);
+            },
+            child: const Text('Guardar'),
+          ),
         ],
-      );
-    });
+      ),
+    );
   }
 
-  Future<void> _save() async {
-    if (_items.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Agrega productos')));
-      return;
-    }
-    if (subtotal <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Importes deben ser > 0')));
-      return;
-    }
-    final sale = Sale(
-      customerPhone: _clientPhone,
-      paymentMethod: _payment,
-      place: _placeCtrl.text.trim(),
-      shippingCost: shipping,
-      discount: discount,
-      date: DateTime.now(),
-      items: _items.map((e)=>SaleItem(productId: e.productId, quantity: e.qty, unitPrice: e.unitPrice)).toList(),
+  void _addToCart(Map<String, dynamic> p) async {
+    final qtyCtrl = TextEditingController(text: '1');
+    final priceCtrl = TextEditingController(text: p['default_sale_price']?.toString() ?? '0');
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(p['name'] ?? ''),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: qtyCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Cantidad')),
+            TextField(controller: priceCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Precio unitario')),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: ()=>Navigator.pop(ctx), child: const Text('Cancelar')),
+          FilledButton(
+            onPressed: () {
+              final qty = int.tryParse(qtyCtrl.text) ?? 0;
+              final price = double.tryParse(priceCtrl.text) ?? 0;
+              if (qty > 0 && price > 0) {
+                setState(() {
+                  _cart.add({
+                    'product_id': p['id'],
+                    'name': p['name'],
+                    'quantity': qty,
+                    'unit_price': price,
+                    'cost': p['last_purchase_price'] ?? 0.0,
+                  });
+                });
+              }
+              Navigator.pop(ctx);
+            },
+            child: const Text('Agregar'),
+          ),
+        ],
+      ),
     );
-    final id = await _saleRepo.createSale(sale);
-    if (!mounted) return;
-    setState(() {
-      _items.clear();
-      _skuCtrl.clear();
-      _searchCtrl.clear();
-      _shippingCtrl.text = '0';
-      _discountCtrl.text = '0';
+  }
+
+  double get _subtotalItems => _cart.fold(0.0, (a, it) => a + it['quantity'] * it['unit_price']);
+  double get _shipping => double.tryParse(_shippingCtrl.text.replaceAll(',', '.')) ?? 0.0;
+  double get _discount => double.tryParse(_discountCtrl.text.replaceAll(',', '.')) ?? 0.0;
+
+  double get _totalCobrar => (_subtotalItems - _discount + _shipping).clamp(0.0, double.infinity);
+
+  // utilidad sin considerar envío
+  double get _profit {
+    if (_cart.isEmpty) return 0.0;
+    final itemsProfit = _cart.fold(0.0, (a, it) {
+      final qty = it['quantity'] as int;
+      final unit = it['unit_price'] as double;
+      final cost = (it['cost'] ?? 0.0) as double;
+      return a + (unit - cost) * qty;
     });
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Venta guardada #$id')));
+    return itemsProfit - _discount;
+  }
+
+  Future<void> _saveSale() async {
+    if (_cart.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Carrito vacío')));
+      return;
+    }
+    if (_totalCobrar <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('El total debe ser mayor que 0')));
+      return;
+    }
+    final phone = _clientCtrl.text.trim();
+    if (phone.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Selecciona o agrega cliente')));
+      return;
+    }
+
+    final db = await DatabaseHelper.instance.db;
+    final batch = db.batch();
+
+    final sale = {
+      'customer_phone': phone,
+      'payment_method': _paymentCtrl.text,
+      'place': _placeCtrl.text,
+      'shipping_cost': _shipping,
+      'discount': _discount,
+      'date': DateTime.now().toIso8601String(),
+    };
+    final saleId = await db.insert('sales', sale);
+
+    for (final it in _cart) {
+      batch.insert('sale_items', {
+        'sale_id': saleId,
+        'product_id': it['product_id'],
+        'quantity': it['quantity'],
+        'unit_price': it['unit_price'],
+      });
+      batch.rawUpdate('UPDATE products SET stock = stock - ? WHERE id = ?', [it['quantity'], it['product_id']]);
+    }
+
+    await batch.commit(noResult: true);
+
+    setState(() => _cart.clear());
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Venta registrada')));
   }
 
   @override
   Widget build(BuildContext context) {
-    final utilPct = subtotal > 0 ? (liveProfit / subtotal) * 100 : 0;
     return ListView(
       padding: const EdgeInsets.all(12),
       children: [
-        _ClientLiveSearch(controller: _clientCtrl, onSelected: (phone){ _clientPhone = phone; }),
-        const SizedBox(height: 8),
-        TextField(controller: _placeCtrl, decoration: const InputDecoration(labelText: 'Lugar de venta', prefixIcon: Icon(Icons.place))),
-        const SizedBox(height: 8),
-        DropdownButtonFormField<String>(
-          value: _payment,
-          items: const ['Efectivo','Tarjeta','Transferencia','Otro'].map((e)=>DropdownMenuItem(value: e, child: Text(e))).toList(),
-          onChanged: (v)=> setState(()=>_payment = v ?? 'Efectivo'),
-          decoration: const InputDecoration(labelText: 'Forma de pago', prefixIcon: Icon(Icons.payment)),
-        ),
-        const SizedBox(height: 8),
         Row(
           children: [
-            Expanded(child: TextField(controller: _shippingCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Costo de envío'))),
+            Expanded(
+              child: TextField(
+                controller: _clientCtrl,
+                decoration: InputDecoration(
+                  labelText: 'Cliente (buscar por teléfono)',
+                  suffixIcon: IconButton(icon: const Icon(Icons.person_add), onPressed: _addQuickClient),
+                ),
+              ),
+            ),
             const SizedBox(width: 8),
-            Expanded(child: TextField(controller: _discountCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Descuento'))),
+            SizedBox(
+              width: 160,
+              child: DropdownButtonFormField<String>(
+                value: _paymentCtrl.text,
+                items: const [
+                  DropdownMenuItem(value: 'efectivo', child: Text('Efectivo')),
+                  DropdownMenuItem(value: 'tarjeta', child: Text('Tarjeta')),
+                  DropdownMenuItem(value: 'transferencia', child: Text('Transferencia')),
+                ],
+                onChanged: (v)=> setState(()=> _paymentCtrl.text = v ?? 'efectivo'),
+                decoration: const InputDecoration(labelText: 'Pago'),
+              ),
+            ),
           ],
         ),
         const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(child: TextField(controller: _skuCtrl, decoration: const InputDecoration(labelText: 'Agregar por SKU', prefixIcon: Icon(Icons.qr_code)), onSubmitted: (_)=>_addBySku(),)),
-            const SizedBox(width: 8),
-            FilledButton.icon(onPressed: _addBySku, icon: const Icon(Icons.add), label: const Text('Agregar')),
-          ],
+        TextField(
+          controller: _productCtrl,
+          decoration: const InputDecoration(labelText: 'Buscar producto'),
+          onChanged: (q) {
+            setState(() {
+              _products = _products.where((p) => (p['name'] ?? '').toString().toLowerCase().contains(q.toLowerCase())).toList();
+            });
+          },
         ),
         const SizedBox(height: 8),
-        _ProductLiveSearch(
-          controller: _searchCtrl,
-          onPickProduct: (id, name, lastCost, defaultPrice)=>_promptQtyPriceAndAdd(
-            productId: id, name: name, lastCost: lastCost ?? 0, suggestedPrice: defaultPrice ?? 0)),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: _products.take(8).map((p) =>
+              OutlinedButton(onPressed: ()=>_addToCart(p), child: Text(p['name'] ?? ''))).toList(),
+        ),
         const SizedBox(height: 12),
         Card(
           child: Column(
             children: [
-              ListTile(
-                title: const Text('Productos de la venta'),
-                subtitle: Text('Subtotal: \$${subtotal.toStringAsFixed(2)} | Utilidad: \$${liveProfit.toStringAsFixed(2)} (${utilPct.toStringAsFixed(1)}%) | Total: \$${total.toStringAsFixed(2)}'),
-              ),
-              const Divider(height: 1),
-              ..._items.map((it)=>ListTile(
-                dense: true,
-                title: Text('${it.name}  x${it.qty}'),
-                subtitle: Text('P.U. \$${it.unitPrice.toStringAsFixed(2)}  | Costo \$${it.lastCost.toStringAsFixed(2)}  | Importe \$${(it.unitPrice*it.qty).toStringAsFixed(2)}'),
-                trailing: IconButton(icon: const Icon(Icons.delete_outline), onPressed: ()=> setState(()=> _items.remove(it))),
+              const ListTile(title: Text('Carrito')),
+              ..._cart.map((it) => ListTile(
+                title: Text(it['name']),
+                subtitle: Text('x${it['quantity']}  •  \$${it['unit_price']}'),
+                trailing: IconButton(
+                  icon: const Icon(Icons.delete, color: Colors.redAccent),
+                  onPressed: ()=>setState(()=>_cart.remove(it)),
+                ),
               )),
-              if (_items.isEmpty) const Padding(padding: EdgeInsets.all(12), child: Text('Sin productos aún'))
+              if (_cart.isEmpty) const Padding(
+                padding: EdgeInsets.all(12),
+                child: Text('No hay productos agregados'),
+              ),
             ],
           ),
         ),
         const SizedBox(height: 12),
-        FilledButton.icon(onPressed: _save, icon: const Icon(Icons.save), label: const Text('Guardar venta')),
-      ],
-    );
-  }
-}
-
-class _ClientLiveSearch extends StatefulWidget {
-  final TextEditingController controller;
-  final void Function(String phone) onSelected;
-  const _ClientLiveSearch({required this.controller, required this.onSelected});
-  @override
-  State<_ClientLiveSearch> createState() => _ClientLiveSearchState();
-}
-class _ClientLiveSearchState extends State<_ClientLiveSearch> {
-  final _repo = ClientRepository();
-  List<Map<String, dynamic>> _results = [];
-
-  Future<void> _search(String q) async {
-    final r = await _repo.search(q);
-    setState(()=> _results = r);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Row(
-        children: [
-          const Expanded(child: Text('Cliente (ID = teléfono)')),
-          IconButton(
-            tooltip: 'Importar desde contactos',
-            icon: const Icon(Icons.contacts),
-            onPressed: () async {
-              // implementado en ClientsPage (para permisos/UX más completa)
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ve a Clientes → Importar contacto')));
-            },
-          )
-        ],
-      ),
-      const SizedBox(height: 6),
-      TextField(
-        controller: widget.controller,
-        decoration: const InputDecoration(prefixIcon: Icon(Icons.person_search), hintText: 'Nombre o teléfono…'),
-        onChanged: (q){ if(q.length>=2) _search(q); else setState(()=>_results=[]); },
-      ),
-      ..._results.take(6).map((r)=>ListTile(
-        dense: true,
-        title: Text(r['name'] as String? ?? ''),
-        subtitle: Text(r['phone'] as String? ?? ''),
-        onTap: (){
-          widget.controller.text = '${r['name']} (${r['phone']})';
-          widget.onSelected(r['phone'] as String);
-          setState(()=> _results = []);
-        },
-        trailing: const Icon(Icons.check),
-      )),
-    ]);
-  }
-}
-
-class _ProductLiveSearch extends StatefulWidget {
-  final TextEditingController controller;
-  final void Function(int id, String name, double? lastCost, double? defaultPrice) onPickProduct;
-  const _ProductLiveSearch({required this.controller, required this.onPickProduct});
-  @override
-  State<_ProductLiveSearch> createState() => _ProductLiveSearchState();
-}
-class _ProductLiveSearchState extends State<_ProductLiveSearch> {
-  final _repo = ProductRepository();
-  List<Map<String, dynamic>> _results = [];
-
-  Future<void> _search(String q) async {
-    final r = await _repo.searchLite(q);
-    setState(()=> _results = r);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      const Text('Agregar producto (live search)'),
-      const SizedBox(height: 6),
-      TextField(
-        controller: widget.controller,
-        decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'Nombre / categoría / SKU'),
-        onChanged: (q){ if(q.length>=2) _search(q); else setState(()=>_results=[]); },
-      ),
-      ..._results.take(6).map((r)=>ListTile(
-        dense: true,
-        title: Text(r['name'] as String? ?? ''),
-        subtitle: Text('Últ. costo: ${((r['last_purchase_price'] as num?)?.toDouble() ?? 0).toStringAsFixed(2)}  |  Precio sug.: ${((r['default_sale_price'] as num?)?.toDouble() ?? 0).toStringAsFixed(2)}'),
-        trailing: IconButton(
-          icon: const Icon(Icons.add),
-          onPressed: ()=> widget.onPickProduct(
-            r['id'] as int,
-            r['name'] as String? ?? '',
-            (r['last_purchase_price'] as num?)?.toDouble(),
-            (r['default_sale_price'] as num?)?.toDouble(),
+        TextField(
+          controller: _shippingCtrl,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(labelText: 'Costo de envío'),
+          onChanged: (_) => setState((){}),
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _discountCtrl,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(labelText: 'Descuento'),
+          onChanged: (_) => setState((){}),
+        ),
+        const SizedBox(height: 8),
+        TextField(controller: _placeCtrl, decoration: const InputDecoration(labelText: 'Lugar de venta')),
+        const SizedBox(height: 16),
+        Card(
+          child: Column(
+            children: [
+              ListTile(title: const Text('Subtotal'), trailing: Text('\$${_subtotalItems.toStringAsFixed(2)}')),
+              ListTile(title: const Text('Descuento'), trailing: Text('- \$${_discount.toStringAsFixed(2)}')),
+              ListTile(title: const Text('Envío'), trailing: Text('+ \$${_shipping.toStringAsFixed(2)}')),
+              const Divider(height: 1),
+              ListTile(
+                title: const Text('TOTAL A COBRAR'),
+                trailing: Text('\$${_totalCobrar.toStringAsFixed(2)}',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              ),
+              ListTile(
+                title: const Text('Utilidad estimada'),
+                trailing: Text('\$${_profit.toStringAsFixed(2)}',
+                    style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
+              ),
+            ],
           ),
         ),
-      )),
-    ]);
+        const SizedBox(height: 12),
+        FilledButton.icon(onPressed: _saveSale, icon: const Icon(Icons.check), label: const Text('Registrar venta')),
+      ],
+    );
   }
 }
