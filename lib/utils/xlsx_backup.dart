@@ -3,47 +3,61 @@ import 'dart:typed_data';
 import 'package:excel/excel.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:file_saver/file_saver.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:sqflite/sqflite.dart';
 import '../data/database.dart';
 
-/// -------- Helpers
+/// ----------------------------------------------------
+/// Helpers
+/// ----------------------------------------------------
 
-Future<void> _saveXlsxBytes(String baseName, List<int> bytes) async {
-  // Guardar en documentos de la app (si falla FileSaver al menos queda aquí)
-  try {
-    final docs = await getApplicationDocumentsDirectory();
-    final f = File('${docs.path}/$baseName.xlsx');
-    await f.writeAsBytes(bytes, flush: true);
-  } catch (_) {}
-
-  // Guardar con FileSaver (descarga/carpeta visible según Android)
-  await FileSaver.instance.saveFile(
-    name: baseName,
-    ext: 'xlsx',
-    mimeType: MimeType.other,
-    bytes: Uint8List.fromList(bytes),
-  );
+Future<void> _ensureStoragePermission() async {
+  // Defensivo: en Android 10+ no siempre es necesario, pero si el usuario lo niega, fallaría el picker/guardado.
+  final status = await Permission.storage.request();
+  // No forzamos error si está denegado, porque FileSaver puede usar SAF. Solo lo pedimos para mejorar tasa de éxito.
 }
 
 Excel _newBook() {
   final excel = Excel.createExcel();
-  // Elimina Sheet1 si existe para evitar confusión
-  if (excel.getDefaultSheet() != null) {
-    excel.delete(excel.getDefaultSheet()!);
+  final def = excel.getDefaultSheet();
+  if (def != null) {
+    excel.delete(def); // evita hoja "Sheet1"
   }
   return excel;
 }
 
 Sheet? _getSheetInsensitive(Excel excel, String name) {
-  // Busca hoja por nombre ignorando mayúsculas
   for (final n in excel.tables.keys) {
     if (n.toLowerCase() == name.toLowerCase()) return excel.tables[n];
   }
   return null;
 }
 
+String _cellStr(Data? d) => d?.value?.toString().trim() ?? '';
+int _cellInt(Data? d) => int.tryParse(_cellStr(d)) ?? 0;
+double _cellDouble(Data? d) => double.tryParse(_cellStr(d).replaceAll(',', '.')) ?? 0.0;
+
+/// Guarda usando FileSaver (preferido para Downloads / SAF) y además
+/// deja copia en Documentos de la app por si el FileSaver no muestra diálogo.
+Future<void> _saveAsXlsx(String baseName, List<int> bytes) async {
+  try {
+    // Copia local (no visible en Descargas, pero útil para depurar)
+    final dbDir = await getDatabasesPath(); // disponible vía sqflite
+    final f = File('$dbDir/$baseName.xlsx');
+    await f.writeAsBytes(bytes, flush: true);
+  } catch (_) {}
+
+  // Descarga / SAF
+  await FileSaver.instance.saveFile(
+    name: baseName,
+    ext: 'xlsx',
+    mimeType: MimeType.microsoftExcel,
+    bytes: Uint8List.fromList(bytes),
+  );
+}
+
 Future<Excel?> _pickExcel() async {
+  await _ensureStoragePermission();
   final res = await FilePicker.platform.pickFiles(
     type: FileType.custom,
     allowedExtensions: ['xlsx'],
@@ -54,12 +68,9 @@ Future<Excel?> _pickExcel() async {
   return Excel.decodeBytes(bytes);
 }
 
-String _cellStr(Data? d) => d?.value?.toString().trim() ?? '';
-int _cellInt(Data? d) => int.tryParse(_cellStr(d)) ?? 0;
-double _cellDouble(Data? d) =>
-    double.tryParse(_cellStr(d).replaceAll(',', '.')) ?? 0.0;
-
-/// -------- EXPORTS
+/// ----------------------------------------------------
+/// EXPORTS
+/// ----------------------------------------------------
 
 Future<void> exportClientsXlsx() async {
   final db = await DatabaseHelper.instance.db;
@@ -71,7 +82,7 @@ Future<void> exportClientsXlsx() async {
     sh.appendRow([r['phone'], r['name'], r['address']]);
   }
   final bytes = excel.encode()!;
-  await _saveXlsxBytes('clientes', bytes);
+  await _saveAsXlsx('clientes', bytes);
 }
 
 Future<void> exportProductsXlsx() async {
@@ -92,7 +103,7 @@ Future<void> exportProductsXlsx() async {
     ]);
   }
   final bytes = excel.encode()!;
-  await _saveXlsxBytes('productos', bytes);
+  await _saveAsXlsx('productos', bytes);
 }
 
 Future<void> exportSuppliersXlsx() async {
@@ -105,7 +116,7 @@ Future<void> exportSuppliersXlsx() async {
     sh.appendRow([r['id'], r['name'], r['phone'], r['address']]);
   }
   final bytes = excel.encode()!;
-  await _saveXlsxBytes('proveedores', bytes);
+  await _saveAsXlsx('proveedores', bytes);
 }
 
 Future<void> exportSalesXlsx() async {
@@ -127,7 +138,7 @@ Future<void> exportSalesXlsx() async {
     s2.appendRow([it['sale_id'], it['product_id'], it['quantity'], it['unit_price']]);
   }
   final bytes = excel.encode()!;
-  await _saveXlsxBytes('ventas', bytes);
+  await _saveAsXlsx('ventas', bytes);
 }
 
 Future<void> exportPurchasesXlsx() async {
@@ -146,10 +157,10 @@ Future<void> exportPurchasesXlsx() async {
     s2.appendRow([it['purchase_id'], it['product_id'], it['quantity'], it['unit_cost']]);
   }
   final bytes = excel.encode()!;
-  await _saveXlsxBytes('compras', bytes);
+  await _saveAsXlsx('compras', bytes);
 }
 
-/// Plantilla de productos para primeras cargas
+/// Plantilla de productos
 Future<void> exportProductsTemplateXlsx() async {
   final excel = _newBook();
   final sh = excel['productos'];
@@ -159,13 +170,14 @@ Future<void> exportProductsTemplateXlsx() async {
     'last_purchase_date(YYYY-MM-DD)',
     'default_sale_price', 'initial_cost'
   ]);
-  // Fila de ejemplo
   sh.appendRow([null, 'ABC-001', 'Gorra azul', 'Accesorios', 10, 80.0, '2025-01-15', 129.0, 70.0]);
   final bytes = excel.encode()!;
-  await _saveXlsxBytes('plantilla_productos', bytes);
+  await _saveAsXlsx('plantilla_productos', bytes);
 }
 
-/// -------- IMPORTS
+/// ----------------------------------------------------
+/// IMPORTS
+/// ----------------------------------------------------
 
 Future<void> importClientsXlsx() async {
   final excel = await _pickExcel();
@@ -197,14 +209,18 @@ Future<void> importProductsXlsx() async {
     final r = sh.row(i);
     final name = _cellStr(r.length>2 ? r[2] : null);
     if (name.isEmpty) continue;
+    final id = _cellInt(r.isNotEmpty ? r[0] : null);
     batch.insert('products', {
-      'id': _cellInt(r.isNotEmpty ? r[0] : null) == 0 ? null : _cellInt(r[0]),
+      'id': id == 0 ? null : id,
       'sku': _cellStr(r.length>1 ? r[1] : null),
       'name': name,
       'category': _cellStr(r.length>3 ? r[3] : null),
       'stock': _cellInt(r.length>4 ? r[4] : null),
       'last_purchase_price': _cellDouble(r.length>5 ? r[5] : null),
-      'last_purchase_date': _cellStr(r.length>6 ? r[6] : null).isEmpty ? null : _cellStr(r[6]),
+      'last_purchase_date': (() {
+        final s = _cellStr(r.length>6 ? r[6] : null);
+        return s.isEmpty ? null : s;
+      })(),
       'default_sale_price': _cellDouble(r.length>7 ? r[7] : null),
       'initial_cost': _cellDouble(r.length>8 ? r[8] : null),
     }, conflictAlgorithm: ConflictAlgorithm.replace);
@@ -223,8 +239,9 @@ Future<void> importSuppliersXlsx() async {
     final r = sh.row(i);
     final name = _cellStr(r.length>1 ? r[1] : null);
     if (name.isEmpty) continue;
+    final id = _cellInt(r.isNotEmpty ? r[0] : null);
     batch.insert('suppliers', {
-      'id': _cellInt(r.isNotEmpty ? r[0] : null) == 0 ? null : _cellInt(r[0]),
+      'id': id == 0 ? null : id,
       'name': name,
       'phone': _cellStr(r.length>2 ? r[2] : null),
       'address': _cellStr(r.length>3 ? r[3] : null),
