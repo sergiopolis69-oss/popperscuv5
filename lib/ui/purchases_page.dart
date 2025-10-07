@@ -17,11 +17,13 @@ class _PurchasesPageState extends State<PurchasesPage> {
   final _prodSearchCtrl = TextEditingController();
 
   int? _supplierId;
-  final _items = <PurchaseItem>[];
+  String? _supplierLabel;
 
   final _supRepo = SupplierRepository();
   final _prodRepo = ProductRepository();
   final _purRepo  = PurchaseRepository();
+
+  final _items = <PurchaseItem>[];
 
   int get totalPiezas => _items.fold(0, (a, b) => a + b.quantity);
   double get totalMonto => _items.fold(0.0, (a, b) => a + (b.quantity * b.unitCost));
@@ -97,6 +99,7 @@ class _PurchasesPageState extends State<PurchasesPage> {
       _folioCtrl.clear();
       _supplierCtrl.clear();
       _supplierId = null;
+      _supplierLabel = null;
       _skuCtrl.clear();
       _prodSearchCtrl.clear();
     });
@@ -112,7 +115,21 @@ class _PurchasesPageState extends State<PurchasesPage> {
         children: [
           TextField(controller: _folioCtrl, decoration: const InputDecoration(labelText: 'Folio de compra', prefixIcon: Icon(Icons.tag))),
           const SizedBox(height: 12),
-          _SupplierLiveSearch(controller: _supplierCtrl, onSelected: (id)=> _supplierId = id),
+          _SupplierLiveSearch(
+            controller: _supplierCtrl,
+            onSelected: (id, label) { _supplierId = id; _supplierLabel = label; setState((){}); },
+            onQuickAdd: (name, phone, address) async {
+              final id = await _supRepo.upsertByPhone(phone: phone, name: name, address: address);
+              _supplierId = id;
+              _supplierLabel = '$name ($phone)';
+              _supplierCtrl.text = _supplierLabel!;
+              setState((){});
+            },
+          ),
+          if (_supplierLabel != null) Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text('Proveedor: $_supplierLabel', style: const TextStyle(fontStyle: FontStyle.italic)),
+          ),
           const SizedBox(height: 12),
           Row(children: [
             Expanded(child: TextField(controller: _skuCtrl, decoration: const InputDecoration(labelText: 'Agregar por SKU', prefixIcon: Icon(Icons.qr_code)), onSubmitted: (_)=>_addProductBySku())),
@@ -143,8 +160,9 @@ class _PurchasesPageState extends State<PurchasesPage> {
 
 class _SupplierLiveSearch extends StatefulWidget {
   final TextEditingController controller;
-  final void Function(int supplierId) onSelected;
-  const _SupplierLiveSearch({required this.controller, required this.onSelected});
+  final void Function(int supplierId, String label) onSelected;
+  final Future<void> Function(String name, String phone, String address) onQuickAdd;
+  const _SupplierLiveSearch({required this.controller, required this.onSelected, required this.onQuickAdd});
 
   @override
   State<_SupplierLiveSearch> createState() => _SupplierLiveSearchState();
@@ -153,25 +171,52 @@ class _SupplierLiveSearch extends StatefulWidget {
 class _SupplierLiveSearchState extends State<_SupplierLiveSearch> {
   final _repo = SupplierRepository();
   final FocusNode _focus = FocusNode();
-  List<MapEntry<int,String>> _options = [];
+  List<Supplier> _options = [];
 
   @override
-  void dispose() {
-    _focus.dispose();
-    super.dispose();
-  }
+  void dispose() { _focus.dispose(); super.dispose(); }
 
   Future<void> _search(String q) async {
-    final res = await _repo.searchByName(q);
-    setState(()=>_options = res.map((s)=>MapEntry(s.id!, s.name)).toList());
+    final res = await _repo.searchByNameOrPhone(q);
+    setState(()=>_options = res);
+  }
+
+  Future<void> _quickAddDialog() async {
+    final name = TextEditingController();
+    final phone = TextEditingController();
+    final address = TextEditingController();
+    await showDialog(context: context, builder: (ctx) {
+      return AlertDialog(
+        title: const Text('Nuevo proveedor'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(controller: name, decoration: const InputDecoration(labelText: 'Nombre')),
+          const SizedBox(height: 8),
+          TextField(controller: phone, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Teléfono (ID)')),
+          const SizedBox(height: 8),
+          TextField(controller: address, decoration: const InputDecoration(labelText: 'Dirección')),
+        ]),
+        actions: [
+          TextButton(onPressed: ()=>Navigator.pop(ctx), child: const Text('Cancelar')),
+          FilledButton(onPressed: () async {
+            if (name.text.trim().isEmpty || phone.text.trim().isEmpty) return;
+            await widget.onQuickAdd(name.text.trim(), phone.text.trim(), address.text.trim());
+            if (mounted) Navigator.pop(ctx);
+          }, child: const Text('Guardar')),
+        ],
+      );
+    });
   }
 
   @override
   Widget build(BuildContext context) {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      const Text('Proveedor'),
-      const SizedBox(height: 6),
-      RawAutocomplete<MapEntry<int,String>>(
+      Row(
+        children: [
+          const Expanded(child: Text('Proveedor')),
+          TextButton.icon(onPressed: _quickAddDialog, icon: const Icon(Icons.add), label: const Text('Nuevo')),
+        ],
+      ),
+      RawAutocomplete<Supplier>(
         textEditingController: widget.controller,
         focusNode: _focus,
         optionsBuilder: (t) async {
@@ -180,12 +225,12 @@ class _SupplierLiveSearchState extends State<_SupplierLiveSearch> {
           await _search(q);
           return _options;
         },
-        displayStringForOption: (o)=>o.value,
+        displayStringForOption: (o)=>'${o.name} (${o.phone})',
         fieldViewBuilder: (ctx, ctrl, focus, onFieldSubmitted) {
           return TextField(
             controller: ctrl,
             focusNode: focus,
-            decoration: const InputDecoration(prefixIcon: Icon(Icons.store), hintText: 'Buscar proveedor…'),
+            decoration: const InputDecoration(prefixIcon: Icon(Icons.store), hintText: 'Nombre o teléfono…'),
           );
         },
         optionsViewBuilder: (ctx, onSelect, opts) => Material(
@@ -193,8 +238,9 @@ class _SupplierLiveSearchState extends State<_SupplierLiveSearch> {
           child: ListView(
             shrinkWrap: true,
             children: opts.map((o)=>ListTile(
-              title: Text(o.value),
-              onTap: (){ onSelect(o); widget.onSelected(o.key); },
+              title: Text(o.name),
+              subtitle: Text(o.phone),
+              onTap: (){ onSelect(o); widget.onSelected(o.id!, '${o.name} (${o.phone})'); },
             )).toList(),
           ),
         ),
@@ -211,7 +257,6 @@ class _ProductLiveSearch extends StatefulWidget {
   @override
   State<_ProductLiveSearch> createState() => _ProductLiveSearchState();
 }
-
 class _ProductLiveSearchState extends State<_ProductLiveSearch> {
   final _repo = ProductRepository();
   List<Map<String, dynamic>> _results = [];
