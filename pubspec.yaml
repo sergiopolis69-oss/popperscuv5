@@ -20,6 +20,8 @@ dependencies:
   permission_handler: ^11.3.1
   flutter_contacts: ^1.1.7
   excel: ^2.0.6
+  open_filex: ^4.4.0       # 👈 abrir el .xlsx que guardamos
+  share_plus: ^10.0.2      # 👈 compartir el .xlsx (alternativa muy estable)
 
 dev_dependencies:
   flutter_test:
