@@ -4,8 +4,19 @@ import '../data/database.dart';
 class ProductRepository {
   Future<Database> get _db async => DatabaseHelper.instance.db;
 
-  /// Busca por nombre, categoría o SKU (para live search ligero).
-  /// Devuelve solo columnas útiles para UI rápida.
+  /// Lista completa (compat con código existente).
+  Future<List<Map<String, dynamic>>> all({int limit = 200, int offset = 0}) async {
+    final db = await _db;
+    return db.query('products', orderBy: 'name COLLATE NOCASE ASC', limit: limit, offset: offset);
+  }
+
+  /// Insertar simple (compat con código existente). Devuelve ID.
+  Future<int> insert(Map<String, Object?> data) async {
+    final db = await _db;
+    return db.insert('products', data);
+  }
+
+  /// Búsqueda ligera por nombre, categoría o SKU (para live search).
   Future<List<Map<String, dynamic>>> searchLite(String query, {int limit = 25}) async {
     final db = await _db;
     final q = '%${query.trim()}%';
@@ -27,20 +38,15 @@ class ProductRepository {
     );
   }
 
-  /// Obtiene un producto por SKU exacto.
+  /// Obtiene por SKU exacto.
   Future<Map<String, dynamic>?> findBySku(String sku) async {
     final db = await _db;
-    final rows = await db.query(
-      'products',
-      where: 'sku = ?',
-      whereArgs: [sku.trim()],
-      limit: 1,
-    );
+    final rows = await db.query('products', where: 'sku = ?', whereArgs: [sku.trim()], limit: 1);
     if (rows.isEmpty) return null;
     return rows.first;
   }
 
-  /// Obtiene un producto por ID.
+  /// Obtiene por ID.
   Future<Map<String, dynamic>?> getById(int id) async {
     final db = await _db;
     final rows = await db.query('products', where: 'id = ?', whereArgs: [id], limit: 1);
@@ -48,9 +54,7 @@ class ProductRepository {
     return rows.first;
   }
 
-  /// Crea o actualiza un producto.
-  /// - Si [id] es null, inserta.
-  /// - Si [id] no es null, actualiza ese registro.
+  /// Crea/actualiza.
   Future<int> upsert({
     int? id,
     String? sku,
@@ -82,7 +86,7 @@ class ProductRepository {
     }
   }
 
-  /// Ajusta inventario por compra y actualiza último costo/fecha de compra.
+  /// Ajusta inventario tras compra.
   Future<void> applyPurchase({
     required int productId,
     required int quantity,
@@ -91,120 +95,28 @@ class ProductRepository {
   }) async {
     final db = await _db;
     final now = (date ?? DateTime.now()).toIso8601String();
-    await db.update(
-      'products',
-      {
-        'stock': DatabaseExpression('stock + $quantity'),
-        'last_purchase_price': unitCost,
-        'last_purchase_date': now,
-      },
-      where: 'id = ?',
-      whereArgs: [productId],
-      conflictAlgorithm: ConflictAlgorithm.abort,
+    // stock = stock + quantity, y actualiza último costo/fecha
+    await db.rawUpdate(
+      'UPDATE products SET stock = stock + ?, last_purchase_price = ?, last_purchase_date = ? WHERE id = ?',
+      [quantity, unitCost, now, productId],
     );
   }
 
-  /// Disminuye inventario por venta (cantidad positiva).
+  /// Ajusta inventario tras venta.
   Future<void> applySale({
     required int productId,
     required int quantity,
   }) async {
     final db = await _db;
-    await db.update(
-      'products',
-      {
-        'stock': DatabaseExpression('stock - $quantity'),
-      },
-      where: 'id = ?',
-      whereArgs: [productId],
-      conflictAlgorithm: ConflictAlgorithm.abort,
-    );
+    await db.rawUpdate('UPDATE products SET stock = stock - ? WHERE id = ?', [quantity, productId]);
   }
 
-  /// Lista simple (para catálogos o combos).
-  Future<List<Map<String, dynamic>>> list({int limit = 200, int offset = 0}) async {
-    final db = await _db;
-    return db.query(
-      'products',
-      orderBy: 'name COLLATE NOCASE ASC',
-      limit: limit,
-      offset: offset,
-    );
-  }
+  /// Lista (idéntico a all, por si prefieres semántica).
+  Future<List<Map<String, dynamic>>> list({int limit = 200, int offset = 0}) => all(limit: limit, offset: offset);
 
-  /// Elimina un producto por ID.
+  /// Elimina por ID.
   Future<void> delete(int id) async {
     final db = await _db;
     await db.delete('products', where: 'id = ?', whereArgs: [id]);
   }
-}
-
-/// Pequeño helper para expresiones SQL en updates (p.ej. stock = stock + 1)
-class DatabaseExpression {
-  final String expression;
-  const DatabaseExpression(this.expression);
-}
-
-/// Extiende sqflite.update para soportar DatabaseExpression como valor.
-extension _ExprUpdate on Database {
-  Future<int> update(
-    String table,
-    Map<String, Object?> values, {
-    String? where,
-    List<Object?>? whereArgs,
-    ConflictAlgorithm? conflictAlgorithm,
-  }) async {
-    // Detecta DatabaseExpression y genera setClause manual.
-    final exprEntries = <String, String>{};
-    final normal = <String, Object?>{};
-    values.forEach((k, v) {
-      if (v is DatabaseExpression) {
-        exprEntries[k] = v.expression;
-      } else {
-        normal[k] = v;
-      }
-    });
-
-    if (exprEntries.isEmpty) {
-      // Caso normal
-      return sqfliteUpdate(
-        table,
-        normal,
-        where: where,
-        whereArgs: whereArgs,
-        conflictAlgorithm: conflictAlgorithm,
-      );
-    }
-
-    // Armar UPDATE manual con expresiones + parámetros normales.
-    final sets = <String>[];
-    final args = <Object?>[];
-    normal.forEach((k, v) {
-      sets.add('$k = ?');
-      args.add(v);
-    });
-    exprEntries.forEach((k, expr) {
-      sets.add('$k = $expr');
-    });
-
-    final sql = StringBuffer()
-      ..write('UPDATE $table SET ')
-      ..write(sets.join(', '));
-    if (where != null && where.isNotEmpty) {
-      sql.write(' WHERE $where');
-    }
-    final dbClient = this;
-    return dbClient.rawUpdate(sql.toString(), [...args, if (whereArgs != null) ...whereArgs]);
-  }
-
-  // Renombra al update original de sqflite para seguir usándolo arriba
-  Future<int> sqfliteUpdate(
-    String table,
-    Map<String, Object?> values, {
-    String? where,
-    List<Object?>? whereArgs,
-    ConflictAlgorithm? conflictAlgorithm,
-  }) =>
-      (this as dynamic).update(table, values,
-          where: where, whereArgs: whereArgs, conflictAlgorithm: conflictAlgorithm);
 }
