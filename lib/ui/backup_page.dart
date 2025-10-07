@@ -10,6 +10,7 @@ class BackupPage extends StatelessWidget {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(ok)));
     } catch (e) {
+      if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
     }
   }
@@ -27,6 +28,7 @@ class BackupPage extends StatelessWidget {
           FilledButton(onPressed: ()=>_run(context, exportSuppliersXlsx, 'Proveedores exportados'), child: const Text('Proveedores')),
           FilledButton(onPressed: ()=>_run(context, exportSalesXlsx, 'Ventas exportadas'), child: const Text('Ventas')),
           FilledButton(onPressed: ()=>_run(context, exportPurchasesXlsx, 'Compras exportadas'), child: const Text('Compras')),
+          OutlinedButton.icon(onPressed: ()=>_run(context, exportProductsTemplateXlsx, 'Plantilla creada'), icon: const Icon(Icons.download), label: const Text('Plantilla productos')),
         ]),
         const SizedBox(height: 24),
         const Text('Importar XLSX', style: TextStyle(fontWeight: FontWeight.bold)),
@@ -38,6 +40,8 @@ class BackupPage extends StatelessWidget {
           OutlinedButton(onPressed: ()=>_run(context, importSalesXlsx, 'Ventas importadas'), child: const Text('Ventas')),
           OutlinedButton(onPressed: ()=>_run(context, importPurchasesXlsx, 'Compras importadas'), child: const Text('Compras')),
         ]),
+        const SizedBox(height: 16),
+        const Text('Notas: usa las hojas exactas "clientes", "productos", "proveedores", "ventas/venta_items", "compras/compra_items".'),
       ],
     );
   }
