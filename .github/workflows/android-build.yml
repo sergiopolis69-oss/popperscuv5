@@ -23,11 +23,21 @@ jobs:
           channel: stable
           flutter-version: "3.24.0"
 
+      - name: Env Check
+        run: |
+          flutter --version
+          flutter doctor -v
+
       - name: Clean & deps
         run: |
           rm -rf build android/app/build
           flutter clean
           flutter pub get
+
+      - name: Generate app icons
+        run: |
+          flutter pub get
+          dart run flutter_launcher_icons
 
       - name: Build APK release (universal)
         run: |
