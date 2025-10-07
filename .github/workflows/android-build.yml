@@ -23,62 +23,64 @@ jobs:
           channel: stable
           flutter-version: "3.24.0"
 
-      - name: Env Check
+      - name: Env check
         run: |
           flutter --version
           flutter doctor -v
 
       - name: Clean & deps
         run: |
-          rm -rf build android/app/build
+          rm -rf build android/app/build pubspec.lock .dart_tool
           flutter clean
           flutter pub get
 
+      # Genera los íconos a partir de flutter_launcher_icons (requiere estar en dev_dependencies)
       - name: Generate app icons
         run: |
           flutter pub get
-          dart run flutter_launcher_icons
+          flutter pub run flutter_launcher_icons:main
 
-      - name: Build APK release (universal)
+      # Build con Flutter (APK y AAB). No falla el job si alguno no se genera.
+      - name: Build with Flutter
         run: |
-          flutter build apk --release --target-platform=android-arm,android-arm64,android-x64 || true
-
-      - name: Build AAB release
-        run: |
+          set -e
+          flutter build apk --release || true
           flutter build appbundle --release || true
 
-      - name: Build APK debug
+      # Fallback con Gradle directo por si Flutter no recoge artefactos
+      - name: Build with Gradle (fallback)
+        working-directory: android
         run: |
-          flutter build apk --debug --no-tree-shake-icons || true
+          set -e
+          ./gradlew --version
+          ./gradlew :app:assembleRelease || true
+          ./gradlew :app:bundleRelease || true
 
-      - name: List outputs
+      - name: List outputs (debug)
         run: |
-          echo "::group::Outputs in build/"
+          echo "::group::Outputs under build/"
           find build -type f \( -name "*.apk" -o -name "*.aab" \) -print || true
           echo "::endgroup::"
-          echo "::group::Outputs in android/app/build/"
+          echo "::group::Outputs under android/app/build/"
           find android/app/build -type f \( -name "*.apk" -o -name "*.aab" \) -print || true
           echo "::endgroup::"
 
-      - name: Upload APKs
+      - name: Upload APKs (catch-all)
         uses: actions/upload-artifact@v4
         with:
           name: apks
           if-no-files-found: warn
           path: |
             build/app/outputs/flutter-apk/*release*.apk
-            build/app/outputs/flutter-apk/app-debug.apk
-            android/app/build/outputs/**/*.apk
             build/**/outputs/**/*.apk
-            build/**/*.apk
+            android/app/build/outputs/**/*.apk
 
-      - name: Upload AABs
+      - name: Upload AABs (catch-all)
         uses: actions/upload-artifact@v4
         with:
           name: aabs
           if-no-files-found: warn
           path: |
             build/app/outputs/bundle/release/*.aab
-            android/app/build/outputs/**/*.aab
             build/**/outputs/**/*.aab
-            build/**/*.aab
+            android/app/build/outputs/**/*.aab
