@@ -257,6 +257,7 @@ class _ProductLiveSearch extends StatefulWidget {
   @override
   State<_ProductLiveSearch> createState() => _ProductLiveSearchState();
 }
+
 class _ProductLiveSearchState extends State<_ProductLiveSearch> {
   final _repo = ProductRepository();
   List<Map<String, dynamic>> _results = [];
