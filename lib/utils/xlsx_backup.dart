@@ -6,6 +6,8 @@ import 'package:sqflite/sqflite.dart';
 import '../data/database.dart';
 import 'android_downloads.dart';
 
+/// ============== UTILIDADES ==============
+
 Excel _newBook() {
   final excel = Excel.createExcel();
   final def = excel.getDefaultSheet();
@@ -35,16 +37,19 @@ Future<Excel?> _pickExcel() async {
   return Excel.decodeBytes(bytes);
 }
 
-/// ------------------------------------------------------
-/// EXPORTAR DIRECTAMENTE A DESCARGAS
-/// ------------------------------------------------------
+/// Abre un URI content:// o una ruta local
+Future<void> openUriOrPath(String uriOrPath) async {
+  await OpenFilex.open(uriOrPath);
+}
+
+/// ============== EXPORTS (a Descargas) ==============
 
 Future<String> exportClientsXlsx() async {
   final db = await DatabaseHelper.instance.db;
   final rows = await db.query('customers');
   final excel = _newBook();
   final sh = excel['clientes'];
-  sh.appendRow(['phone', 'name', 'address']);
+  sh.appendRow(['phone','name','address']);
   for (final r in rows) {
     sh.appendRow([r['phone'], r['name'], r['address']]);
   }
@@ -96,8 +101,8 @@ Future<String> exportSalesXlsx() async {
   s1.appendRow(['id','customer_phone','payment_method','place','shipping_cost','discount','date']);
   for (final r in sales) {
     s1.appendRow([
-      r['id'], r['customer_phone'], r['payment_method'], r['place'],
-      r['shipping_cost'], r['discount'], r['date'],
+      r['id'], r['customer_phone'], r['payment_method'],
+      r['place'], r['shipping_cost'], r['discount'], r['date'],
     ]);
   }
   s2.appendRow(['sale_id','product_id','quantity','unit_price']);
@@ -140,6 +145,130 @@ Future<String> exportProductsTemplateXlsx() async {
   return await AndroidDownloads.saveBytes(baseName: 'plantilla_productos', bytes: bytes);
 }
 
-Future<void> openUriOrPath(String uriOrPath) async {
-  await OpenFilex.open(uriOrPath);
+/// ============== IMPORTS (desde selector de archivos) ==============
+/// Requiere que el schema/tablas ya existan en SQLite.
+/// Usa ConflictAlgorithm.replace para upsert básico.
+
+Future<void> importClientsXlsx() async {
+  final excel = await _pickExcel();
+  if (excel == null) throw 'No seleccionaste archivo';
+  final sh = _sheetInsensitive(excel, 'clientes') ?? (throw 'Hoja "clientes" no encontrada');
+  final db = await DatabaseHelper.instance.db;
+  final batch = db.batch();
+  for (var i=1; i<sh.maxRows; i++) {
+    final r = sh.row(i);
+    final phone = _s(r[0]);
+    if (phone.isEmpty) continue;
+    batch.insert('customers', {
+      'phone': phone,
+      'name': _s(r.length>1 ? r[1] : null),
+      'address': _s(r.length>2 ? r[2] : null),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+  await batch.commit(noResult:true);
+}
+
+Future<void> importProductsXlsx() async {
+  final excel = await _pickExcel();
+  if (excel == null) throw 'No seleccionaste archivo';
+  final sh = _sheetInsensitive(excel, 'productos') ?? (throw 'Hoja "productos" no encontrada');
+  final db = await DatabaseHelper.instance.db;
+  final batch = db.batch();
+  for (var i=1; i<sh.maxRows; i++) {
+    final r = sh.row(i);
+    final name = _s(r.length>2 ? r[2] : null);
+    if (name.isEmpty) continue;
+    final id = _i(r[0]);
+    batch.insert('products', {
+      'id': id == 0 ? null : id,
+      'sku': _s(r[1]),
+      'name': name,
+      'category': _s(r[3]),
+      'stock': _i(r[4]),
+      'last_purchase_price': _d(r[5]),
+      'last_purchase_date': _s(r[6]),
+      'default_sale_price': _d(r[7]),
+      'initial_cost': _d(r[8]),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+  await batch.commit(noResult:true);
+}
+
+Future<void> importSuppliersXlsx() async {
+  final excel = await _pickExcel();
+  if (excel == null) throw 'No seleccionaste archivo';
+  final sh = _sheetInsensitive(excel, 'proveedores') ?? (throw 'Hoja "proveedores" no encontrada');
+  final db = await DatabaseHelper.instance.db;
+  final batch = db.batch();
+  for (var i=1; i<sh.maxRows; i++) {
+    final r = sh.row(i);
+    batch.insert('suppliers', {
+      'id': _i(r[0]) == 0 ? null : _i(r[0]),
+      'name': _s(r[1]),
+      'phone': _s(r[2]),
+      'address': _s(r[3]),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+  await batch.commit(noResult:true);
+}
+
+Future<void> importSalesXlsx() async {
+  final excel = await _pickExcel();
+  if (excel == null) throw 'No seleccionaste archivo';
+  final s1 = _sheetInsensitive(excel, 'ventas') ?? (throw 'Hoja "ventas" no encontrada');
+  final s2 = _sheetInsensitive(excel, 'venta_items') ?? (throw 'Hoja "venta_items" no encontrada');
+  final db = await DatabaseHelper.instance.db;
+  final batch = db.batch();
+
+  for (var i=1; i<s1.maxRows; i++) {
+    final r = s1.row(i);
+    batch.insert('sales', {
+      'id': _i(r[0]) == 0 ? null : _i(r[0]),
+      'customer_phone': _s(r[1]),
+      'payment_method': _s(r[2]),
+      'place': _s(r[3]),
+      'shipping_cost': _d(r[4]),
+      'discount': _d(r[5]),
+      'date': _s(r[6]),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+  for (var i=1; i<s2.maxRows; i++) {
+    final r = s2.row(i);
+    batch.insert('sale_items', {
+      'sale_id': _i(r[0]),
+      'product_id': _i(r[1]),
+      'quantity': _i(r[2]),
+      'unit_price': _d(r[3]),
+    });
+  }
+  await batch.commit(noResult:true);
+}
+
+Future<void> importPurchasesXlsx() async {
+  final excel = await _pickExcel();
+  if (excel == null) throw 'No seleccionaste archivo';
+  final s1 = _sheetInsensitive(excel, 'compras') ?? (throw 'Hoja "compras" no encontrada');
+  final s2 = _sheetInsensitive(excel, 'compra_items') ?? (throw 'Hoja "compra_items" no encontrada');
+  final db = await DatabaseHelper.instance.db;
+  final batch = db.batch();
+
+  for (var i=1; i<s1.maxRows; i++) {
+    final r = s1.row(i);
+    batch.insert('purchases', {
+      'id': _i(r[0]) == 0 ? null : _i(r[0]),
+      'folio': _s(r[1]),
+      'supplier_id': _i(r[2]),
+      'date': _s(r[3]),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+  for (var i=1; i<s2.maxRows; i++) {
+    final r = s2.row(i);
+    batch.insert('purchase_items', {
+      'purchase_id': _i(r[0]),
+      'product_id': _i(r[1]),
+      'quantity': _i(r[2]),
+      'unit_cost': _d(r[3]),
+    });
+  }
+  await batch.commit(noResult:true);
 }
