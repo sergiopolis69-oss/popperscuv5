@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
+import 'package:sqflite/sqflite.dart'; // ⬅️ NECESARIO: Sqflite.firstIntValue y ConflictAlgorithm
 import '../data/database.dart';
 
 class ClientsPage extends StatefulWidget {
@@ -64,7 +65,7 @@ class _ClientsPageState extends State<ClientsPage> {
     final phone = contact.phones.isNotEmpty ? contact.phones.first.number.replaceAll(' ', '') : '';
     setState(() {
       _name.text = display;
-      _phone.text = phone; // obligatorio
+      _phone.text = phone; // obligatorio como ID
     });
   }
 
