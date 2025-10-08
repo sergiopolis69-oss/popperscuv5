@@ -1,11 +1,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.popperscuv5">
 
-    <!-- Permisos para compatibilidad con Android <10 -->
+    <!-- Compat < Android 10 para almacenamiento externo -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
+
+    <!-- Contactos (lectura) -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
 
     <application
         android:name="${applicationName}"
@@ -26,7 +29,6 @@
             </intent-filter>
         </activity>
 
-        <!-- Tema normal -->
         <meta-data android:name="io.flutter.embedding.android.NormalTheme"
             android:resource="@style/NormalTheme" />
 
