@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import '../utils/xlsx_backup.dart';
+import '../utils/xlsx_backup.dart'; // ⬅️ NECESARIO: export*Xlsx e import*Xlsx
 
 class BackupPage extends StatelessWidget {
   const BackupPage({super.key});
