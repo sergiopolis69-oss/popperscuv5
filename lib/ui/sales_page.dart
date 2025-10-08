@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:sqflite/sqflite.dart';
 import '../data/database.dart';
+import '../repositories/product_repository.dart';
 
 class SalesPage extends StatefulWidget {
   const SalesPage({super.key});
@@ -10,33 +11,43 @@ class SalesPage extends StatefulWidget {
 
 class _SalesPageState extends State<SalesPage> {
   final _clientCtrl = TextEditingController();
+  final _clientDisplayCtrl = TextEditingController(); // muestra Nombre (tel), guarda phone en _clientCtrl
   final _productCtrl = TextEditingController();
   final _paymentCtrl = TextEditingController(text: 'efectivo');
   final _shippingCtrl = TextEditingController();
   final _discountCtrl = TextEditingController();
   final _placeCtrl = TextEditingController();
 
+  final _prodRepo = ProductRepository();
+
   List<Map<String, dynamic>> _cart = [];
-  List<Map<String, dynamic>> _clients = [];
-  List<Map<String, dynamic>> _products = [];
+  List<Map<String, dynamic>> _clientOptions = [];
+  List<Map<String, dynamic>> _productOptions = [];
 
   @override
   void initState() {
     super.initState();
-    _loadData();
   }
 
-  Future<void> _loadData() async {
+  Future<void> _searchClients(String q) async {
     final db = await DatabaseHelper.instance.db;
-    final cl = await db.query('customers');
-    final pr = await db.query('products');
-    setState(() {
-      _clients = cl;
-      _products = pr;
-    });
+    final like = '%${q.trim()}%';
+    final rows = await db.query(
+      'customers',
+      where: 'name LIKE ? OR phone LIKE ?',
+      whereArgs: [like, like],
+      orderBy: 'name COLLATE NOCASE ASC',
+      limit: 20,
+    );
+    setState(()=> _clientOptions = rows);
   }
 
-  void _addQuickClient() async {
+  Future<void> _searchProducts(String q) async {
+    final rows = await _prodRepo.searchByNameOrSku(q, limit: 20);
+    setState(()=> _productOptions = rows);
+  }
+
+  Future<void> _addQuickClient() async {
     final phoneCtrl = TextEditingController();
     final nameCtrl = TextEditingController();
     final addrCtrl = TextEditingController();
@@ -47,7 +58,7 @@ class _SalesPageState extends State<SalesPage> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: phoneCtrl, decoration: const InputDecoration(labelText: 'Teléfono / ID')),
+            TextField(controller: phoneCtrl, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Teléfono / ID *')),
             TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Nombre')),
             TextField(controller: addrCtrl, decoration: const InputDecoration(labelText: 'Dirección')),
           ],
@@ -57,15 +68,18 @@ class _SalesPageState extends State<SalesPage> {
           FilledButton(
             onPressed: () async {
               final phone = phoneCtrl.text.trim();
-              if (phone.isEmpty) return;
+              if (phone.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('El teléfono/ID es obligatorio')));
+                return;
+              }
               final db = await DatabaseHelper.instance.db;
               await db.insert('customers', {
                 'phone': phone,
                 'name': nameCtrl.text.trim(),
                 'address': addrCtrl.text.trim(),
               }, conflictAlgorithm: ConflictAlgorithm.replace);
-              await _loadData();
               _clientCtrl.text = phone;
+              _clientDisplayCtrl.text = '${nameCtrl.text.trim().isEmpty ? 'Cliente' : nameCtrl.text.trim()} ($phone)';
               if (context.mounted) Navigator.pop(ctx);
             },
             child: const Text('Guardar'),
@@ -86,7 +100,8 @@ class _SalesPageState extends State<SalesPage> {
           mainAxisSize: MainAxisSize.min,
           children: [
             TextField(controller: qtyCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Cantidad')),
-            TextField(controller: priceCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Precio unitario')),
+            const SizedBox(height: 8),
+            TextField(controller: priceCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Precio unitario')),
           ],
         ),
         actions: [
@@ -94,7 +109,7 @@ class _SalesPageState extends State<SalesPage> {
           FilledButton(
             onPressed: () {
               final qty = int.tryParse(qtyCtrl.text) ?? 0;
-              final price = double.tryParse(priceCtrl.text) ?? 0;
+              final price = double.tryParse(priceCtrl.text.replaceAll(',', '.')) ?? 0;
               if (qty > 0 && price > 0) {
                 setState(() {
                   _cart.add({
@@ -118,10 +133,8 @@ class _SalesPageState extends State<SalesPage> {
   double get _subtotalItems => _cart.fold(0.0, (a, it) => a + it['quantity'] * it['unit_price']);
   double get _shipping => double.tryParse(_shippingCtrl.text.replaceAll(',', '.')) ?? 0.0;
   double get _discount => double.tryParse(_discountCtrl.text.replaceAll(',', '.')) ?? 0.0;
-
   double get _totalCobrar => (_subtotalItems - _discount + _shipping).clamp(0.0, double.infinity);
 
-  // utilidad sin considerar envío
   double get _profit {
     if (_cart.isEmpty) return 0.0;
     final itemsProfit = _cart.fold(0.0, (a, it) {
@@ -182,16 +195,47 @@ class _SalesPageState extends State<SalesPage> {
     return ListView(
       padding: const EdgeInsets.all(12),
       children: [
+        // Cliente (autocomplete por nombre/teléfono)
         Row(
           children: [
             Expanded(
-              child: TextField(
-                controller: _clientCtrl,
-                decoration: InputDecoration(
-                  labelText: 'Cliente (buscar por teléfono)',
-                  suffixIcon: IconButton(icon: const Icon(Icons.person_add), onPressed: _addQuickClient),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('Cliente'),
+                const SizedBox(height: 4),
+                RawAutocomplete<Map<String, dynamic>>(
+                  textEditingController: _clientDisplayCtrl,
+                  optionsBuilder: (t) async {
+                    final q = t.text.trim();
+                    if (q.isEmpty) return const Iterable.empty();
+                    await _searchClients(q);
+                    return _clientOptions;
+                  },
+                  displayStringForOption: (o)=> '${(o['name'] ?? '').toString()} (${(o['phone'] ?? '').toString()})',
+                  fieldViewBuilder: (ctx, ctrl, focus, onSubmit) => TextField(
+                    controller: ctrl,
+                    decoration: InputDecoration(
+                      hintText: 'Nombre o teléfono…',
+                      suffixIcon: IconButton(icon: const Icon(Icons.person_add), onPressed: _addQuickClient),
+                    ),
+                    onChanged: (_) {}, // solo UI
+                  ),
+                  optionsViewBuilder: (ctx, onSelect, opts) => Material(
+                    elevation: 4,
+                    child: ListView(
+                      shrinkWrap: true,
+                      children: opts.map((o)=> ListTile(
+                        title: Text(o['name'] ?? ''),
+                        subtitle: Text(o['phone'] ?? ''),
+                        onTap: (){
+                          onSelect(o);
+                          _clientCtrl.text = (o['phone'] ?? '').toString(); // guardar phone real
+                        },
+                      )).toList(),
+                    ),
+                  ),
+                  onSelected: (_) {},
                 ),
-              ),
+              ]),
             ),
             const SizedBox(width: 8),
             SizedBox(
@@ -210,22 +254,41 @@ class _SalesPageState extends State<SalesPage> {
           ],
         ),
         const SizedBox(height: 12),
-        TextField(
-          controller: _productCtrl,
-          decoration: const InputDecoration(labelText: 'Buscar producto'),
-          onChanged: (q) {
-            setState(() {
-              _products = _products.where((p) => (p['name'] ?? '').toString().toLowerCase().contains(q.toLowerCase())).toList();
-            });
+
+        // Buscar producto (sin sugerencias visibles por defecto hasta escribir)
+        const Text('Producto'),
+        const SizedBox(height: 4),
+        RawAutocomplete<Map<String, dynamic>>(
+          textEditingController: _productCtrl,
+          optionsBuilder: (t) async {
+            final q = t.text.trim();
+            if (q.length < 2) return const Iterable.empty();
+            await _searchProducts(q);
+            return _productOptions;
           },
+          displayStringForOption: (o)=> o['name']?.toString() ?? '',
+          fieldViewBuilder: (ctx, ctrl, focus, onSubmit) => TextField(
+            controller: ctrl,
+            decoration: const InputDecoration(hintText: 'Buscar por nombre o SKU…'),
+          ),
+          optionsViewBuilder: (ctx, onSelect, opts) => Material(
+            elevation: 4,
+            child: ListView(
+              shrinkWrap: true,
+              children: opts.map((o)=> ListTile(
+                title: Text(o['name'] ?? ''),
+                subtitle: Text('SKU: ${o['sku'] ?? '—'}  •  Últ. costo: ${(o['last_purchase_price'] ?? 0).toString()}'),
+                onTap: (){
+                  onSelect(o);
+                  _addToCart(o);
+                  _productCtrl.clear();
+                },
+              )).toList(),
+            ),
+          ),
+          onSelected: (_) {},
         ),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: _products.take(8).map((p) =>
-              OutlinedButton(onPressed: ()=>_addToCart(p), child: Text(p['name'] ?? ''))).toList(),
-        ),
+
         const SizedBox(height: 12),
         Card(
           child: Column(
@@ -247,6 +310,7 @@ class _SalesPageState extends State<SalesPage> {
           ),
         ),
         const SizedBox(height: 12),
+
         TextField(
           controller: _shippingCtrl,
           keyboardType: TextInputType.number,
@@ -263,6 +327,7 @@ class _SalesPageState extends State<SalesPage> {
         const SizedBox(height: 8),
         TextField(controller: _placeCtrl, decoration: const InputDecoration(labelText: 'Lugar de venta')),
         const SizedBox(height: 16),
+
         Card(
           child: Column(
             children: [
