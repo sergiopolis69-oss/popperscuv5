@@ -52,6 +52,16 @@ class BackupPage extends StatelessWidget {
             label: const Text('Plantilla productos'),
           ),
         ]),
+        const SizedBox(height: 24),
+        const Text('Importar desde XLSX', style: TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        Wrap(spacing: 8, runSpacing: 8, children: [
+          OutlinedButton(onPressed: ()=>_import(context, 'Clientes', importClientsXlsx), child: const Text('Clientes')),
+          OutlinedButton(onPressed: ()=>_import(context, 'Productos', importProductsXlsx), child: const Text('Productos')),
+          OutlinedButton(onPressed: ()=>_import(context, 'Proveedores', importSuppliersXlsx), child: const Text('Proveedores')),
+          OutlinedButton(onPressed: ()=>_import(context, 'Ventas', importSalesXlsx), child: const Text('Ventas')),
+          OutlinedButton(onPressed: ()=>_import(context, 'Compras', importPurchasesXlsx), child: const Text('Compras')),
+        ]),
       ],
     );
   }
