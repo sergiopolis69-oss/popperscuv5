@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:sqflite/sqflite.dart';
 import '../data/database.dart';
 
 class SalesHistoryPage extends StatefulWidget {
@@ -9,71 +8,68 @@ class SalesHistoryPage extends StatefulWidget {
 }
 
 class _SalesHistoryPageState extends State<SalesHistoryPage> {
-  final _phoneCtrl = TextEditingController();
-  DateTimeRange? _range;
-  String? _payment;
-  String? _productQuery;
+  final _clientDisplayCtrl = TextEditingController();
+  final _clientPhoneCtrl = TextEditingController(); // phone real
+  List<Map<String, dynamic>> _clientOptions = [];
 
   List<Map<String, dynamic>> _sales = [];
+  bool _loading = true;
 
-  Future<void> _pickRange() async {
-    final now = DateTime.now();
-    final picked = await showDateRangePicker(
-      context: context,
-      firstDate: DateTime(now.year - 3),
-      lastDate: DateTime(now.year + 1),
-      initialDateRange: _range,
-    );
-    if (picked != null) setState(()=>_range = picked);
+  @override
+  void initState() {
+    super.initState();
+    _loadAll();
   }
 
-  Future<void> _search() async {
-    final db = await DatabaseHelper.instance.db;
-    final where = <String>[];
-    final args = <Object?>[];
-
-    if (_phoneCtrl.text.trim().isNotEmpty) {
-      where.add('s.customer_phone = ?');
-      args.add(_phoneCtrl.text.trim());
-    }
-    if (_payment != null && _payment!.isNotEmpty) {
-      where.add('s.payment_method = ?');
-      args.add(_payment);
-    }
-    if (_range != null) {
-      where.add('date(s.date) BETWEEN ? AND ?');
-      args.add(_range!.start.toIso8601String().substring(0,10));
-      args.add(_range!.end.toIso8601String().substring(0,10));
-    }
-    if (_productQuery != null && _productQuery!.trim().isNotEmpty) {
-      // filtra ventas que contengan un producto cuyo nombre haga match
-      where.add('EXISTS(SELECT 1 FROM sale_items si JOIN products p ON p.id=si.product_id WHERE si.sale_id=s.id AND p.name LIKE ?)');
-      args.add('%${_productQuery!.trim()}%');
-    }
-
-    final sql = '''
-      SELECT s.id, s.customer_phone, s.payment_method, s.place, s.shipping_cost, s.discount, s.date,
-             (SELECT SUM(si.quantity*si.unit_price) FROM sale_items si WHERE si.sale_id = s.id) AS items_total
-      FROM sales s
-      ${where.isEmpty ? '' : 'WHERE ${where.join(' AND ')}'}
-      ORDER BY s.date DESC, s.id DESC
-      LIMIT 500
-    ''';
-
-    final rows = await db.rawQuery(sql, args);
-    setState(()=>_sales = rows);
-  }
-
-  Future<List<Map<String, dynamic>>> _loadItems(int saleId) async {
+  Future<void> _loadAll() async {
+    setState(()=>_loading = true);
     final db = await DatabaseHelper.instance.db;
     final rows = await db.rawQuery('''
-      SELECT si.product_id, si.quantity, si.unit_price, p.name
+      SELECT s.*, c.name AS customer_name
+      FROM sales s
+      LEFT JOIN customers c ON c.phone = s.customer_phone
+      ORDER BY datetime(s.date) DESC
+    ''');
+    setState(() {
+      _sales = rows;
+      _loading = false;
+    });
+  }
+
+  Future<void> _searchClients(String q) async {
+    final db = await DatabaseHelper.instance.db;
+    final like = '%${q.trim()}%';
+    final rows = await db.query('customers',
+        where: 'name LIKE ? OR phone LIKE ?', whereArgs: [like, like], orderBy: 'name COLLATE NOCASE ASC', limit: 20);
+    setState(()=> _clientOptions = rows);
+  }
+
+  Future<List<Map<String, dynamic>>> _itemsForSale(int saleId) async {
+    final db = await DatabaseHelper.instance.db;
+    return db.rawQuery('''
+      SELECT si.*, p.name AS product_name
       FROM sale_items si
       LEFT JOIN products p ON p.id = si.product_id
       WHERE si.sale_id = ?
-      ORDER BY si.rowid
     ''', [saleId]);
-    return rows;
+  }
+
+  Future<void> _applyFilter() async {
+    final phone = _clientPhoneCtrl.text.trim();
+    if (phone.isEmpty) { await _loadAll(); return; }
+    setState(()=>_loading = true);
+    final db = await DatabaseHelper.instance.db;
+    final rows = await db.rawQuery('''
+      SELECT s.*, c.name AS customer_name
+      FROM sales s
+      LEFT JOIN customers c ON c.phone = s.customer_phone
+      WHERE s.customer_phone = ?
+      ORDER BY datetime(s.date) DESC
+    ''', [phone]);
+    setState(() {
+      _sales = rows;
+      _loading = false;
+    });
   }
 
   @override
@@ -81,84 +77,101 @@ class _SalesHistoryPageState extends State<SalesHistoryPage> {
     return ListView(
       padding: const EdgeInsets.all(12),
       children: [
-        const Text('Filtros'),
-        const SizedBox(height: 6),
-        Row(children: [
-          Expanded(child: TextField(controller: _phoneCtrl, decoration: const InputDecoration(labelText: 'Cliente (teléfono / ID)', prefixIcon: Icon(Icons.person)))),
-          const SizedBox(width: 8),
-          SizedBox(
-            width: 160,
-            child: DropdownButtonFormField<String>(
-              value: _payment,
-              items: const [
-                DropdownMenuItem(value: '', child: Text('Pago (todos)')),
-                DropdownMenuItem(value: 'efectivo', child: Text('Efectivo')),
-                DropdownMenuItem(value: 'tarjeta', child: Text('Tarjeta')),
-                DropdownMenuItem(value: 'transferencia', child: Text('Transferencia')),
-              ],
-              onChanged: (v)=> setState(()=> _payment = (v??'').isEmpty ? null : v),
-              decoration: const InputDecoration(labelText: 'Forma de pago'),
+        const Text('Filtrar por cliente'),
+        const SizedBox(height: 4),
+        RawAutocomplete<Map<String, dynamic>>(
+          textEditingController: _clientDisplayCtrl,
+          optionsBuilder: (t) async {
+            final q = t.text.trim();
+            if (q.isEmpty) return const Iterable.empty();
+            await _searchClients(q);
+            return _clientOptions;
+          },
+          displayStringForOption: (o)=> '${(o['name'] ?? '').toString()} (${(o['phone'] ?? '').toString()})',
+          fieldViewBuilder: (ctx, ctrl, focus, onSubmit) => TextField(
+            controller: ctrl,
+            decoration: InputDecoration(
+              hintText: 'Nombre o teléfono…',
+              suffixIcon: IconButton(icon: const Icon(Icons.clear), onPressed: (){
+                _clientDisplayCtrl.clear();
+                _clientPhoneCtrl.clear();
+                _applyFilter();
+              }),
+            ),
+            onSubmitted: (_)=> _applyFilter(),
+          ),
+          optionsViewBuilder: (ctx, onSelect, opts) => Material(
+            elevation: 4,
+            child: ListView(
+              shrinkWrap: true,
+              children: opts.map((o)=> ListTile(
+                title: Text(o['name'] ?? ''),
+                subtitle: Text(o['phone'] ?? ''),
+                onTap: (){
+                  onSelect(o);
+                  _clientPhoneCtrl.text = (o['phone'] ?? '').toString();
+                  _applyFilter();
+                },
+              )).toList(),
             ),
           ),
-        ]),
-        const SizedBox(height: 6),
-        Row(children: [
-          Expanded(child: TextField(
-            decoration: const InputDecoration(labelText: 'Producto contiene...', prefixIcon: Icon(Icons.search)),
-            onChanged: (v)=> _productQuery = v,
-          )),
-          const SizedBox(width: 8),
-          OutlinedButton.icon(onPressed: _pickRange, icon: const Icon(Icons.date_range), label: Text(_range == null ? 'Rango fechas' : '${_range!.start.toString().substring(0,10)} → ${_range!.end.toString().substring(0,10)}')),
-          const SizedBox(width: 8),
-          FilledButton.icon(onPressed: _search, icon: const Icon(Icons.search), label: const Text('Buscar')),
-        ]),
+          onSelected: (_){},
+        ),
         const SizedBox(height: 12),
-        const Divider(),
-        ..._sales.map((s){
-          final saleId = s['id'] as int;
-          final itemsTotal = (s['items_total'] as num?)?.toDouble() ?? 0.0;
-          final discount = (s['discount'] as num?)?.toDouble() ?? 0.0;
-          final shipping = (s['shipping_cost'] as num?)?.toDouble() ?? 0.0;
-          final totalCobrar = (itemsTotal - discount + shipping).clamp(0.0, double.infinity);
 
-          return ExpansionTile(
-            tilePadding: EdgeInsets.zero,
-            title: Text('Venta #$saleId  |  Cliente: ${s['customer_phone'] ?? '—'}'),
-            subtitle: Text('${s['date']}  •  Pago: ${s['payment_method'] ?? '—'}  •  Total: \$${totalCobrar.toStringAsFixed(2)}'),
-            children: [
-              FutureBuilder(
-                future: _loadItems(saleId),
-                builder: (ctx, snap) {
-                  if (snap.connectionState != ConnectionState.done) {
-                    return const Padding(
-                      padding: EdgeInsets.all(12),
-                      child: CircularProgressIndicator(),
-                    );
-                  }
-                  final items = snap.data as List<Map<String,dynamic>>? ?? [];
-                  if (items.isEmpty) {
-                    return const ListTile(title: Text('Sin productos'));
-                  }
-                  return Column(
-                    children: items.map((it){
-                      final name = it['name'] ?? 'Producto ${it['product_id']}';
-                      final qty = (it['quantity'] as num?)?.toInt() ?? 0;
-                      final up  = (it['unit_price'] as num?)?.toDouble() ?? 0.0;
-                      return ListTile(
-                        dense: true,
-                        title: Text(name.toString()),
-                        subtitle: Text('x$qty  •  \$${up.toStringAsFixed(2)}  •  Importe \$${(qty*up).toStringAsFixed(2)}'),
-                      );
-                    }).toList(),
-                  );
-                },
-              ),
-              const SizedBox(height: 8),
-            ],
-          );
-        }),
-        if (_sales.isEmpty) const Padding(padding: EdgeInsets.all(12), child: Text('Sin resultados todavía')),
+        if (_loading) const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator())),
+        if (!_loading) ..._sales.map((s) => _SaleTile(sale: s, itemsLoader: _itemsForSale)),
       ],
+    );
+  }
+}
+
+class _SaleTile extends StatefulWidget {
+  final Map<String, dynamic> sale;
+  final Future<List<Map<String, dynamic>>> Function(int saleId) itemsLoader;
+  const _SaleTile({required this.sale, required this.itemsLoader});
+
+  @override
+  State<_SaleTile> createState() => _SaleTileState();
+}
+
+class _SaleTileState extends State<_SaleTile> {
+  List<Map<String, dynamic>>? _items;
+
+  Future<void> _loadItems() async {
+    final rows = await widget.itemsLoader(widget.sale['id'] as int);
+    setState(()=> _items = rows);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = widget.sale;
+    final total = (s['shipping_cost'] as num?)?.toDouble() ?? 0.0;
+    final discount = (s['discount'] as num?)?.toDouble() ?? 0.0;
+
+    return Card(
+      child: ExpansionTile(
+        title: Text('${s['customer_name'] ?? s['customer_phone']} • ${s['payment_method'] ?? ''}'),
+        subtitle: Text(s['date']?.toString() ?? ''),
+        onExpansionChanged: (open){ if (open && _items == null) _loadItems(); },
+        children: [
+          if (_items == null) const Padding(padding: EdgeInsets.all(12), child: LinearProgressIndicator()),
+          if (_items != null) ...[
+            const Divider(height: 1),
+            ..._items!.map((it) => ListTile(
+              dense: true,
+              title: Text(it['product_name'] ?? 'Producto ${it['product_id']}'),
+              subtitle: Text('x${it['quantity']} • \$${(it['unit_price'] as num).toStringAsFixed(2)}'),
+            )),
+          ],
+          const Divider(height: 1),
+          ListTile(
+            dense: true,
+            title: const Text('Envío / Descuento'),
+            trailing: Text('+ \$${total.toStringAsFixed(2)}   •   - \$${discount.toStringAsFixed(2)}'),
+          ),
+        ],
+      ),
     );
   }
 }
