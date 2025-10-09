@@ -6,7 +6,8 @@ import 'package:file_picker/file_picker.dart';
 import 'package:sqflite/sqflite.dart';
 import '../data/database.dart';
 
-// Helpers para excel 4.x
+// ====================== Helpers ======================
+
 CellValue _cv(dynamic v) {
   if (v == null) return TextCellValue('');
   if (v is int) return IntCellValue(v);
@@ -14,7 +15,38 @@ CellValue _cv(dynamic v) {
   return TextCellValue(v.toString());
 }
 
-// =============== EXPORT SALES ===============
+Future<void> _saveExcel(String baseName, Excel excel) async {
+  // excel.encode() puede devolver null si algo raro pasa
+  final list = excel.encode();
+  if (list == null || list.isEmpty) {
+    throw 'No se generó contenido XLSX (excel.encode() vacío).';
+  }
+  final bytes = Uint8List.fromList(list);
+  final out = await FileSaver.instance.saveFile(
+    name: baseName,
+    bytes: bytes,
+    ext: 'xlsx',
+    mimeType: MimeType.microsoftExcel,
+  );
+  // Algunos entornos devuelven cadena vacía; lo tratamos como error visible
+  if (out == null || (out is String && out.trim().isEmpty)) {
+    throw 'El sistema no devolvió una ruta/URI al guardar.';
+  }
+}
+
+Future<Excel?> _pickExcel() async {
+  final res = await FilePicker.platform.pickFiles(
+    type: FileType.custom,
+    allowedExtensions: ['xlsx'],
+  );
+  if (res == null || res.files.isEmpty) return null;
+  final path = res.files.single.path;
+  if (path == null) return null;
+  final bytes = await File(path).readAsBytes();
+  return Excel.decodeBytes(bytes);
+}
+
+// ====================== EXPORT ======================
 
 Future<void> exportSalesXlsx() async {
   final db = await DatabaseHelper.instance.db;
@@ -68,16 +100,8 @@ Future<void> exportSalesXlsx() async {
     ]);
   }
 
-  final bytes = Uint8List.fromList(excel.encode()!);
-  await FileSaver.instance.saveFile(
-    name: 'ventas',
-    bytes: bytes,
-    ext: 'xlsx',
-    mimeType: MimeType.microsoftExcel,
-  );
+  await _saveExcel('ventas', excel);
 }
-
-// =============== EXPORT PURCHASES ===============
 
 Future<void> exportPurchasesXlsx() async {
   final db = await DatabaseHelper.instance.db;
@@ -125,16 +149,8 @@ Future<void> exportPurchasesXlsx() async {
     ]);
   }
 
-  final bytes = Uint8List.fromList(excel.encode()!);
-  await FileSaver.instance.saveFile(
-    name: 'compras',
-    bytes: bytes,
-    ext: 'xlsx',
-    mimeType: MimeType.microsoftExcel,
-  );
+  await _saveExcel('compras', excel);
 }
-
-// =============== EXPORT PRODUCTS ===============
 
 Future<void> exportProductsXlsx() async {
   final db = await DatabaseHelper.instance.db;
@@ -156,7 +172,6 @@ Future<void> exportProductsXlsx() async {
     TextCellValue('stock'),
     TextCellValue('last_purchase_date'),
   ]);
-
   for (final p in products) {
     sh.appendRow([
       _cv(p['id']),
@@ -170,16 +185,8 @@ Future<void> exportProductsXlsx() async {
     ]);
   }
 
-  final bytes = Uint8List.fromList(excel.encode()!);
-  await FileSaver.instance.saveFile(
-    name: 'productos',
-    bytes: bytes,
-    ext: 'xlsx',
-    mimeType: MimeType.microsoftExcel,
-  );
+  await _saveExcel('productos', excel);
 }
-
-// =============== EXPORT CLIENTS ===============
 
 Future<void> exportClientsXlsx() async {
   final db = await DatabaseHelper.instance.db;
@@ -196,7 +203,6 @@ Future<void> exportClientsXlsx() async {
     TextCellValue('name'),
     TextCellValue('address'),
   ]);
-
   for (final c in rows) {
     sh.appendRow([
       _cv(c['phone']),
@@ -205,16 +211,8 @@ Future<void> exportClientsXlsx() async {
     ]);
   }
 
-  final bytes = Uint8List.fromList(excel.encode()!);
-  await FileSaver.instance.saveFile(
-    name: 'clientes',
-    bytes: bytes,
-    ext: 'xlsx',
-    mimeType: MimeType.microsoftExcel,
-  );
+  await _saveExcel('clientes', excel);
 }
-
-// =============== EXPORT SUPPLIERS ===============
 
 Future<void> exportSuppliersXlsx() async {
   final db = await DatabaseHelper.instance.db;
@@ -231,7 +229,6 @@ Future<void> exportSuppliersXlsx() async {
     TextCellValue('name'),
     TextCellValue('address'),
   ]);
-
   for (final s in rows) {
     sh.appendRow([
       _cv(s['phone']),
@@ -240,38 +237,20 @@ Future<void> exportSuppliersXlsx() async {
     ]);
   }
 
-  final bytes = Uint8List.fromList(excel.encode()!);
-  await FileSaver.instance.saveFile(
-    name: 'proveedores',
-    bytes: bytes,
-    ext: 'xlsx',
-    mimeType: MimeType.microsoftExcel,
-  );
+  await _saveExcel('proveedores', excel);
 }
 
-// =============== IMPORT HELPERS ===============
-
-Future<Excel?> _pickExcel() async {
-  final res = await FilePicker.platform.pickFiles(
-    type: FileType.custom,
-    allowedExtensions: ['xlsx'],
-  );
-  if (res == null || res.files.isEmpty) return null;
-  final path = res.files.single.path;
-  if (path == null) return null;
-  final bytes = await File(path).readAsBytes();
-  return Excel.decodeBytes(bytes);
-}
-
-// =============== IMPORT SALES ===============
+// ====================== IMPORT ======================
 
 Future<void> importSalesXlsx() async {
   final excel = await _pickExcel();
-  if (excel == null) return;
+  if (excel == null) throw 'No se eligió archivo .xlsx';
 
   final db = await DatabaseHelper.instance.db;
   final header = excel['sales'];
   final items  = excel['sale_items'];
+  if (header.maxRows <= 1) throw 'La hoja "sales" no tiene datos.';
+  if (items.maxRows <= 1) throw 'La hoja "sale_items" no tiene datos.';
 
   final idMap = <int, int>{};
 
@@ -323,15 +302,15 @@ Future<void> importSalesXlsx() async {
   }
 }
 
-// =============== IMPORT PURCHASES ===============
-
 Future<void> importPurchasesXlsx() async {
   final excel = await _pickExcel();
-  if (excel == null) return;
+  if (excel == null) throw 'No se eligió archivo .xlsx';
 
   final db = await DatabaseHelper.instance.db;
   final header = excel['purchases'];
   final items  = excel['purchase_items'];
+  if (header.maxRows <= 1) throw 'La hoja "purchases" no tiene datos.';
+  if (items.maxRows <= 1) throw 'La hoja "purchase_items" no tiene datos.';
 
   final idMap = <int, int>{};
 
@@ -385,14 +364,13 @@ Future<void> importPurchasesXlsx() async {
   }
 }
 
-// =============== IMPORT PRODUCTS ===============
-
 Future<void> importProductsXlsx() async {
   final excel = await _pickExcel();
-  if (excel == null) return;
+  if (excel == null) throw 'No se eligió archivo .xlsx';
 
   final db = await DatabaseHelper.instance.db;
   final sh = excel['products'];
+  if (sh.maxRows <= 1) throw 'La hoja "products" no tiene datos.';
 
   for (final r in sh.rows.skip(1)) {
     final sku = r[1]?.value?.toString();
@@ -435,14 +413,13 @@ Future<void> importProductsXlsx() async {
   }
 }
 
-// =============== IMPORT CLIENTS ===============
-
 Future<void> importClientsXlsx() async {
   final excel = await _pickExcel();
-  if (excel == null) return;
+  if (excel == null) throw 'No se eligió archivo .xlsx';
 
   final db = await DatabaseHelper.instance.db;
   final sh = excel['customers'];
+  if (sh.maxRows <= 1) throw 'La hoja "customers" no tiene datos.';
 
   for (final r in sh.rows.skip(1)) {
     final phone = r[0]?.value?.toString();
@@ -473,14 +450,13 @@ Future<void> importClientsXlsx() async {
   }
 }
 
-// =============== IMPORT SUPPLIERS ===============
-
 Future<void> importSuppliersXlsx() async {
   final excel = await _pickExcel();
-  if (excel == null) return;
+  if (excel == null) throw 'No se eligió archivo .xlsx';
 
   final db = await DatabaseHelper.instance.db;
   final sh = excel['suppliers'];
+  if (sh.maxRows <= 1) throw 'La hoja "suppliers" no tiene datos.';
 
   for (final r in sh.rows.skip(1)) {
     final phone = r[0]?.value?.toString();
