@@ -56,10 +56,10 @@ class _PDVAppState extends State<PDVApp> {
     );
 
     return MaterialApp(
-      title: 'PoppersCU - Control de activos'
+      title: 'PDV Flutter'
       theme: theme,
       home: Scaffold(
-        appBar: AppBar(title: const Text('PDV Flutter')),
+        appBar: AppBar(title: const Text('PoppersCU ventas POS')),
         body: AnimatedSwitcher(
           duration: const Duration(milliseconds: 250),
           child: _pages[_index],
