@@ -18,6 +18,7 @@ class _ProfitPageState extends State<ProfitPage> {
   double _totalEnvio = 0;
   double _totalDesc = 0;
   double _utilidad = 0;
+  List<Map<String,dynamic>> _porMetodo = [];
 
   @override
   void initState() {
@@ -33,7 +34,7 @@ class _ProfitPageState extends State<ProfitPage> {
         final to = from.add(const Duration(days: 1));
         return (from, to);
       case ProfitRange.semana:
-        final weekday = now.weekday; // 1=Lunes
+        final weekday = now.weekday;
         final from = DateTime(now.year, now.month, now.day).subtract(Duration(days: weekday - 1));
         final to = from.add(const Duration(days: 7));
         return (from, to);
@@ -59,14 +60,14 @@ class _ProfitPageState extends State<ProfitPage> {
     final toIso = to.toIso8601String();
     final db = await DatabaseHelper.instance.db;
 
-    // 1) Ventas dentro del rango
+    // Ventas en rango
     final sales = await db.rawQuery('''
-      SELECT id, shipping_cost, discount
+      SELECT id, payment_method, shipping_cost, discount
       FROM sales
       WHERE date >= ? AND date < ?
     ''', [fromIso, toIso]);
 
-    // 2) Items + costo actual del producto (aprox)
+    // Items de venta con costo actual (último costo de compra)
     final items = await db.rawQuery('''
       SELECT si.sale_id, si.quantity, si.unit_price, IFNULL(p.last_purchase_price, 0) AS cost
       FROM sale_items si
@@ -75,47 +76,59 @@ class _ProfitPageState extends State<ProfitPage> {
       WHERE s.date >= ? AND s.date < ?
     ''', [fromIso, toIso]);
 
-    double subtotal = 0;
-    double descTotal = 0;
-    double envioTotal = 0;
+    // Totales
+    double subtotalVentas = 0;   // Σ precio_venta * qty
+    double descTotal = 0;        // Σ descuentos
+    double envioTotal = 0;       // Σ envío (solo informativo, NO para utilidad)
+    double costoTotal = 0;       // Σ último costo compra * qty
 
-    final discountsBySale = <int,double>{};
     for (final s in sales) {
-      final id = (s['id'] as int);
-      final d = (s['discount'] as num?)?.toDouble() ?? 0.0;
-      final ship = (s['shipping_cost'] as num?)?.toDouble() ?? 0.0;
-      discountsBySale[id] = d;
-      descTotal += d;
-      envioTotal += ship;
+      descTotal += (s['discount'] as num?)?.toDouble() ?? 0.0;
+      envioTotal += (s['shipping_cost'] as num?)?.toDouble() ?? 0.0;
+    }
+    for (final it in items) {
+      final qty = (it['quantity'] as num).toInt();
+      final pv  = (it['unit_price'] as num).toDouble();
+      final cst = (it['cost'] as num).toDouble();
+      subtotalVentas += pv * qty;
+      costoTotal     += cst * qty;
     }
 
-    double utilidadBrutaItems = 0;
-    // acumulamos por venta para distribuir descuento proporcional a monto de esa venta
-    final totalsBySale = <int,double>{};
-    for (final it in items) {
-      final saleId = (it['sale_id'] as int);
-      final qty = (it['quantity'] as num).toInt();
-      final price = (it['unit_price'] as num).toDouble();
-      subtotal += price * qty;
-      totalsBySale.update(saleId, (v)=> v + price * qty, ifAbsent: ()=> price * qty);
-    }
-    // utilidad bruta por ítem (sin descuento)
-    for (final it in items) {
-      final saleId = (it['sale_id'] as int);
-      final qty = (it['quantity'] as num).toInt();
-      final price = (it['unit_price'] as num).toDouble();
-      final cost = (it['cost'] as num).toDouble();
-      final discSale = discountsBySale[saleId] ?? 0.0;
-      final totalSale = totalsBySale[saleId] ?? 1.0;
-      final discPart = totalSale <= 0 ? 0.0 : discSale * ((price * qty) / totalSale); // distribución proporcional
-      utilidadBrutaItems += (price - cost) * qty - discPart;
-    }
+    final utilidad = subtotalVentas - descTotal - costoTotal; // envío excluido
+    // Desglose por método de pago (total cobrado): (Σ pv*qty) - descuentos + envío, agrupado por método
+    final porMetodo = await db.rawQuery('''
+      SELECT s.payment_method,
+             IFNULL(SUM(si.quantity * si.unit_price), 0) AS subtotal,
+             IFNULL(SUM(CASE WHEN si.rowid IS NOT NULL THEN 0 END), 0) AS dummy, -- truco para forzar group by correcto en sqflite
+             SUM(DISTINCT s.discount) AS descuentos_totales,
+             SUM(DISTINCT s.shipping_cost) AS envios_totales
+      FROM sales s
+      LEFT JOIN sale_items si ON si.sale_id = s.id
+      WHERE s.date >= ? AND s.date < ?
+      GROUP BY s.payment_method
+      ORDER BY s.payment_method
+    ''', [fromIso, toIso]);
+
+    // Calcula total por método: subtotal - descuentos + envío
+    final metodoLista = porMetodo.map((m) {
+      final sub = (m['subtotal'] as num?)?.toDouble() ?? 0.0;
+      final dsc = (m['descuentos_totales'] as num?)?.toDouble() ?? 0.0;
+      final env = (m['envios_totales'] as num?)?.toDouble() ?? 0.0;
+      return {
+        'payment_method': m['payment_method'] ?? '—',
+        'total': sub - dsc + env,
+        'subtotal': sub,
+        'descuento': dsc,
+        'envio': env,
+      };
+    }).toList();
 
     setState(() {
-      _totalVentas = subtotal - descTotal + envioTotal;
-      _totalEnvio = envioTotal;
-      _totalDesc  = descTotal;
-      _utilidad   = utilidadBrutaItems; // envío excluido; descuentos ya restados
+      _totalVentas = subtotalVentas - descTotal + envioTotal;
+      _totalEnvio  = envioTotal;
+      _totalDesc   = descTotal;
+      _utilidad    = utilidad;
+      _porMetodo   = metodoLista;
     });
   }
 
@@ -181,6 +194,22 @@ class _ProfitPageState extends State<ProfitPage> {
                 title: const Text('Utilidad'),
                 trailing: Text('\$${_utilidad.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
               ),
+            ],
+          ),
+        ),
+
+        const SizedBox(height: 12),
+        Card(
+          child: Column(
+            children: [
+              const ListTile(title: Text('Ventas por método de pago')),
+              ..._porMetodo.map((m) => ListTile(
+                title: Text(m['payment_method'].toString()),
+                subtitle: Text('Subtotal: \$${(m['subtotal'] as num).toStringAsFixed(2)}  •  Desc: \$${(m['descuento'] as num).toStringAsFixed(2)}  •  Env: \$${(m['envio'] as num).toStringAsFixed(2)}'),
+                trailing: Text('\$${(m['total'] as num).toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.w600)),
+              )),
+              if (_porMetodo.isEmpty)
+                const Padding(padding: EdgeInsets.all(12), child: Text('Sin ventas en el rango seleccionado')),
             ],
           ),
         ),
