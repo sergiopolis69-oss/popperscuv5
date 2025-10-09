@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
-import 'ui/sales_page.dart';
-import 'ui/sales_history_page.dart';
-import 'ui/clients_page.dart';
-import 'ui/profit_page.dart';
-import 'ui/inventory_page.dart';
-import 'ui/purchases_page.dart';
-import 'ui/backup_page.dart';
+
+// IMPORTS de UI (asegúrate que los paths existan)
+import 'ui/sales_page.dart' show SalesPage;
+import 'ui/sales_history_page.dart' show SalesHistoryPage;
+import 'ui/clients_page.dart' show ClientsPage;
+import 'ui/profit_page.dart' show ProfitPage;
+import 'ui/inventory_page.dart' show InventoryPage;
+import 'ui/purchases_page.dart' show PurchasesPage;
+import 'ui/backup_page.dart' show BackupPage;
 
 void main() {
   runApp(const PDVApp());
@@ -57,18 +59,7 @@ class _PDVAppState extends State<PDVApp> {
       title: 'PDV Flutter',
       theme: theme,
       home: Scaffold(
-        appBar: AppBar(
-          title: Row(
-            children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: Image.asset('assets/images/logo.jpg', width: 32, height: 32, fit: BoxFit.cover),
-              ),
-              const SizedBox(width: 8),
-              const Text('PDV Flutter'),
-            ],
-          ),
-        ),
+        appBar: AppBar(title: const Text('PDV Flutter')),
         body: AnimatedSwitcher(
           duration: const Duration(milliseconds: 250),
           child: _pages[_index],
@@ -82,7 +73,7 @@ class _PDVAppState extends State<PDVApp> {
             NavigationDestination(icon: Icon(Icons.percent), label: 'Utilidad'),
             NavigationDestination(icon: Icon(Icons.inventory), label: 'Inventario'),
             NavigationDestination(icon: Icon(Icons.shopping_cart), label: 'Compras'),
-            NavigationDestination(icon: Icon(Icons.import_export), label: 'XML'),
+            NavigationDestination(icon: Icon(Icons.import_export), label: 'XLSX'),
           ],
           onDestinationSelected: (i){ setState(()=>_index=i); },
         ),
