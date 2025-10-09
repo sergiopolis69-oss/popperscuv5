@@ -11,7 +11,6 @@ class PurchasesPage extends StatefulWidget {
 }
 
 class _PurchasesPageState extends State<PurchasesPage> {
-  // --- Registrar ---
   final _folioCtrl = TextEditingController();
   final _supplierSearchCtrl = TextEditingController();
   final _productSearchCtrl = TextEditingController();
@@ -26,7 +25,6 @@ class _PurchasesPageState extends State<PurchasesPage> {
   Timer? _debSup;
   Timer? _debProd;
 
-  // --- Historial ---
   List<Map<String, dynamic>> _purchases = [];
 
   @override
@@ -40,12 +38,11 @@ class _PurchasesPageState extends State<PurchasesPage> {
     _folioCtrl.dispose();
     _supplierSearchCtrl.dispose();
     _productSearchCtrl.dispose();
-    _debSup?.cancel(); 
+    _debSup?.cancel();
     _debProd?.cancel();
     super.dispose();
   }
 
-  // ---------- REGISTRAR ----------
   void _onSupplierChanged(String q) {
     _debSup?.cancel();
     _debSup = Timer(const Duration(milliseconds: 250), () async {
@@ -128,6 +125,7 @@ class _PurchasesPageState extends State<PurchasesPage> {
             if (q>0 && c>0) {
               setState(()=> _items.add({
                 'product_id': p['id'],
+                'sku': p['sku'], // << SKU
                 'name': p['name'],
                 'quantity': q,
                 'unit_cost': c,
@@ -171,6 +169,7 @@ class _PurchasesPageState extends State<PurchasesPage> {
       batch.insert('purchase_items', {
         'purchase_id': purchaseId,
         'product_id': it['product_id'],
+        'sku': it['sku'], // << SKU
         'quantity': it['quantity'],
         'unit_cost': it['unit_cost'],
       });
@@ -179,7 +178,6 @@ class _PurchasesPageState extends State<PurchasesPage> {
     }
     await batch.commit(noResult: true);
 
-    // Confirmación con detalle
     final lines = _items.map((it) => '• ${it['name']}  x${it['quantity']}  @ \$${(it['unit_cost'] as num).toString()}').join('\n');
     await showDialog(context: context, builder: (ctx){
       return AlertDialog(
@@ -198,11 +196,9 @@ class _PurchasesPageState extends State<PurchasesPage> {
       _selectedSupplierId = null;
     });
 
-    // refresca historial
     _loadHistory();
   }
 
-  // ---------- HISTORIAL ----------
   Future<void> _loadHistory() async {
     final db = await DatabaseHelper.instance.db;
     final rows = await db.rawQuery('''
@@ -218,14 +214,13 @@ class _PurchasesPageState extends State<PurchasesPage> {
   Future<List<Map<String,dynamic>>> _itemsOfPurchase(int purchaseId) async {
     final db = await DatabaseHelper.instance.db;
     return db.rawQuery('''
-      SELECT pi.quantity, pi.unit_cost, pr.name
+      SELECT pi.quantity, pi.unit_cost, pr.name, pi.sku
       FROM purchase_items pi
       JOIN products pr ON pr.id = pi.product_id
       WHERE pi.purchase_id = ?
     ''', [purchaseId]);
   }
 
-  // ---------- UI ----------
   Widget _buildRegisterTab() {
     return ListView(
       padding: const EdgeInsets.all(12),
@@ -235,40 +230,34 @@ class _PurchasesPageState extends State<PurchasesPage> {
         TextField(controller: _folioCtrl, decoration: const InputDecoration(hintText: 'Escribe el folio…')),
 
         const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('Proveedor (buscar por nombre o teléfono)'),
-              const SizedBox(height: 4),
-              TextField(
-                controller: _supplierSearchCtrl,
-                decoration: InputDecoration(
-                  hintText: 'Ej. Logística MX / 5512345678',
-                  suffixIcon: IconButton(icon: const Icon(Icons.person_add), onPressed: _addQuickSupplier),
-                ),
-                onChanged: (q) { _selectedSupplierId = null; _onSupplierChanged(q); },
-              ),
-              if (_supplierResults.isNotEmpty)
-                Card(
-                  margin: const EdgeInsets.only(top:6),
-                  child: Column(
-                    children: _supplierResults.map((s)=> ListTile(
-                      dense: true,
-                      title: Text(s['name'] ?? s['phone'] ?? ''),
-                      subtitle: Text('Tel: ${s['phone'] ?? ''}'),
-                      onTap: (){
-                        setState(() {
-                          _selectedSupplierId = s['id'] as int?;
-                          _supplierSearchCtrl.text = (s['name'] as String?)?.isEmpty == true ? (s['phone'] ?? '') : (s['name'] ?? '');
-                          _supplierResults.clear();
-                        });
-                      },
-                    )).toList(),
-                  ),
-                ),
-            ])),
-          ],
+        const Text('Proveedor (buscar por nombre o teléfono)'),
+        const SizedBox(height: 4),
+        TextField(
+          controller: _supplierSearchCtrl,
+          decoration: InputDecoration(
+            hintText: 'Ej. Logística MX / 5512345678',
+            suffixIcon: IconButton(icon: const Icon(Icons.person_add), onPressed: _addQuickSupplier),
+          ),
+          onChanged: (q) { _selectedSupplierId = null; _onSupplierChanged(q); },
         ),
+        if (_supplierResults.isNotEmpty)
+          Card(
+            margin: const EdgeInsets.only(top:6),
+            child: Column(
+              children: _supplierResults.map((s)=> ListTile(
+                dense: true,
+                title: Text(s['name'] ?? s['phone'] ?? ''),
+                subtitle: Text('Tel: ${s['phone'] ?? ''}'),
+                onTap: (){
+                  setState(() {
+                    _selectedSupplierId = s['id'] as int?;
+                    _supplierSearchCtrl.text = (s['name'] as String?)?.isEmpty == true ? (s['phone'] ?? '') : (s['name'] ?? '');
+                    _supplierResults.clear();
+                  });
+                },
+              )).toList(),
+            ),
+          ),
 
         const SizedBox(height: 16),
         const Text('Producto (buscar por nombre / SKU)'),
@@ -293,14 +282,13 @@ class _PurchasesPageState extends State<PurchasesPage> {
           ),
 
         const SizedBox(height: 12),
-
         Card(
           child: Column(
             children: [
               const ListTile(title: Text('Productos de la compra')),
               ..._items.map((it)=> ListTile(
                 title: Text(it['name'] ?? ''),
-                subtitle: Text('x${it['quantity']}  •  \$${it['unit_cost']}'),
+                subtitle: Text('SKU: ${it['sku']}  •  x${it['quantity']}  •  \$${it['unit_cost']}'),
                 trailing: IconButton(
                   icon: const Icon(Icons.delete, color: Colors.redAccent),
                   onPressed: ()=> setState(()=> _items.remove(it)),
@@ -350,7 +338,7 @@ class _PurchasesPageState extends State<PurchasesPage> {
                   return Column(children: items.map((it)=> ListTile(
                     dense: true,
                     title: Text(it['name'] ?? ''),
-                    subtitle: Text('x${it['quantity']}  •  \$${(it['unit_cost'] as num).toString()}'),
+                    subtitle: Text('SKU: ${it['sku']} • x${it['quantity']}  •  \$${(it['unit_cost'] as num).toString()}'),
                   )).toList());
                 },
               ),
@@ -371,7 +359,7 @@ class _PurchasesPageState extends State<PurchasesPage> {
           const TabBar(
             tabs: [
               Tab(icon: Icon(Icons.add_shopping_cart), text: 'Registrar'),
-           	  Tab(icon: Icon(Icons.history), text: 'Historial'),
+              Tab(icon: Icon(Icons.history), text: 'Historial'),
             ],
             isScrollable: false,
             dividerColor: Colors.transparent,
