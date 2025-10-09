@@ -4,211 +4,175 @@ import 'package:sqflite/sqflite.dart';
 import '../data/database.dart';
 import '../repositories/product_repository.dart';
 
-class SalesPage extends StatefulWidget {
-  const SalesPage({super.key});
+class PurchasesPage extends StatefulWidget {
+  const PurchasesPage({super.key});
   @override
-  State<SalesPage> createState() => _SalesPageState();
+  State<PurchasesPage> createState() => _PurchasesPageState();
 }
 
-class _SalesPageState extends State<SalesPage> {
-  final _clientSearchCtrl = TextEditingController();
+class _PurchasesPageState extends State<PurchasesPage> {
+  final _folioCtrl = TextEditingController();
+  final _supplierSearchCtrl = TextEditingController();
   final _productSearchCtrl = TextEditingController();
-  final _paymentCtrl = TextEditingController(text: 'efectivo');
-  final _shippingCtrl = TextEditingController();
-  final _discountCtrl = TextEditingController();
-  final _placeCtrl = TextEditingController();
 
-  List<Map<String, dynamic>> _clientResults = [];
+  List<Map<String, dynamic>> _supplierResults = [];
   List<Map<String, dynamic>> _productResults = [];
-  String? _selectedClientPhone;
-  final _repo = ProductRepository();
-  final List<Map<String, dynamic>> _cart = [];
+  int? _selectedSupplierId;
 
-  Timer? _debounceC;
-  Timer? _debounceP;
+  final _repo = ProductRepository();
+  final List<Map<String, dynamic>> _items = [];
+
+  Timer? _debSup;
+  Timer? _debProd;
 
   @override
   void dispose() {
-    _clientSearchCtrl.dispose();
+    _folioCtrl.dispose();
+    _supplierSearchCtrl.dispose();
     _productSearchCtrl.dispose();
-    _paymentCtrl.dispose();
-    _shippingCtrl.dispose();
-    _discountCtrl.dispose();
-    _placeCtrl.dispose();
-    _debounceC?.cancel(); _debounceP?.cancel();
+    _debSup?.cancel(); _debProd?.cancel();
     super.dispose();
   }
 
-  void _onClientChanged(String q) {
-    _debounceC?.cancel();
-    _debounceC = Timer(const Duration(milliseconds: 250), () async {
+  void _onSupplierChanged(String q) {
+    _debSup?.cancel();
+    _debSup = Timer(const Duration(milliseconds: 250), () async {
       final db = await DatabaseHelper.instance.db;
       final like = '%${q.trim()}%';
       final rows = await db.query(
-        'customers',
+        'suppliers',
         where: 'name LIKE ? OR phone LIKE ?',
         whereArgs: [like, like],
         orderBy: 'name COLLATE NOCASE ASC',
         limit: 20,
       );
-      setState(() => _clientResults = rows);
+      setState(()=> _supplierResults = rows);
     });
   }
 
   void _onProductChanged(String q) {
-    _debounceP?.cancel();
-    _debounceP = Timer(const Duration(milliseconds: 250), () async {
+    _debProd?.cancel();
+    _debProd = Timer(const Duration(milliseconds: 250), () async {
       if (q.trim().isEmpty) { setState(()=>_productResults=[]); return; }
-      final rows = await _repo.searchByNameOrSku(q, limit: 25);
-      setState(() => _productResults = rows);
+      final r = await _repo.searchLite(q, limit: 25);
+      setState(()=> _productResults = r);
     });
   }
 
-  Future<void> _addQuickClient() async {
-    final phoneCtrl = TextEditingController();
-    final nameCtrl = TextEditingController();
-    final addrCtrl = TextEditingController();
-    await showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Nuevo cliente'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(controller: phoneCtrl, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Teléfono / ID *')),
-            TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Nombre')),
-            TextField(controller: addrCtrl, decoration: const InputDecoration(labelText: 'Dirección')),
-          ],
-        ),
+  Future<void> _addQuickSupplier() async {
+    final name = TextEditingController();
+    final phone = TextEditingController();
+    final addr = TextEditingController();
+    await showDialog(context: context, builder: (ctx){
+      return AlertDialog(
+        title: const Text('Nuevo proveedor'),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(controller: name, decoration: const InputDecoration(labelText: 'Nombre')),
+          TextField(controller: phone, decoration: const InputDecoration(labelText: 'Teléfono (ID)*'), keyboardType: TextInputType.phone),
+          TextField(controller: addr, decoration: const InputDecoration(labelText: 'Dirección')),
+        ]),
         actions: [
           TextButton(onPressed: ()=>Navigator.pop(ctx), child: const Text('Cancelar')),
-          FilledButton(
-            onPressed: () async {
-              final phone = phoneCtrl.text.trim();
-              if (phone.isEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('El teléfono/ID es obligatorio')));
-                return;
-              }
-              final db = await DatabaseHelper.instance.db;
-              await db.insert('customers', {
-                'phone': phone,
-                'name': nameCtrl.text.trim(),
-                'address': addrCtrl.text.trim(),
-              }, conflictAlgorithm: ConflictAlgorithm.replace);
-              setState(() {
-                _selectedClientPhone = phone;
-                _clientSearchCtrl.text = phone;
-                _clientResults.clear();
-              });
-              if (context.mounted) Navigator.pop(ctx);
-            },
-            child: const Text('Guardar'),
-          ),
+          FilledButton(onPressed: () async {
+            final tel = phone.text.trim();
+            if (tel.isEmpty) {
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('El teléfono (ID) es obligatorio')));
+              return;
+            }
+            final db = await DatabaseHelper.instance.db;
+            final id = await db.insert('suppliers', {
+              'name': name.text.trim(),
+              'phone': tel,
+              'address': addr.text.trim(),
+            }, conflictAlgorithm: ConflictAlgorithm.replace);
+            setState(() {
+              _selectedSupplierId = id;
+              _supplierSearchCtrl.text = name.text.trim().isEmpty ? tel : name.text.trim();
+              _supplierResults.clear();
+            });
+            if (context.mounted) Navigator.pop(ctx);
+          }, child: const Text('Guardar')),
         ],
-      ),
-    );
+      );
+    });
   }
 
   Future<void> _promptAddProduct(Map<String, dynamic> p) async {
-    final qtyCtrl = TextEditingController(text: '1');
-    final priceCtrl = TextEditingController(text: (p['default_sale_price'] as num?)?.toString() ?? '0');
-    await showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
+    final qty = TextEditingController(text: '1');
+    final cost = TextEditingController(text: '0');
+    await showDialog(context: context, builder: (ctx){
+      return AlertDialog(
         title: Text(p['name'] ?? ''),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(controller: qtyCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Cantidad')),
-            const SizedBox(height: 8),
-            TextField(controller: priceCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Precio unitario')),
-          ],
-        ),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(controller: qty, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Cantidad')),
+          const SizedBox(height: 8),
+          TextField(controller: cost, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Costo unitario')),
+        ]),
         actions: [
           TextButton(onPressed: ()=>Navigator.pop(ctx), child: const Text('Cancelar')),
-          FilledButton(
-            onPressed: () {
-              final qty = int.tryParse(qtyCtrl.text) ?? 0;
-              final price = double.tryParse(priceCtrl.text.replaceAll(',', '.')) ?? 0;
-              if (qty > 0 && price > 0) {
-                setState(() {
-                  _cart.add({
-                    'product_id': p['id'],
-                    'name': p['name'],
-                    'quantity': qty,
-                    'unit_price': price,
-                    'cost': (p['last_purchase_price'] as num?)?.toDouble() ?? 0.0,
-                  });
-                });
-              }
-              Navigator.pop(ctx);
-            },
-            child: const Text('Agregar'),
-          ),
+          FilledButton(onPressed: (){
+            final q = int.tryParse(qty.text) ?? 0;
+            final c = double.tryParse(cost.text.replaceAll(',', '.')) ?? 0;
+            if (q>0 && c>0) {
+              setState(()=> _items.add({
+                'product_id': p['id'],
+                'name': p['name'],
+                'quantity': q,
+                'unit_cost': c,
+              }));
+            }
+            Navigator.pop(ctx);
+          }, child: const Text('Agregar')),
         ],
-      ),
-    );
-  }
-
-  double get _subtotalItems => _cart.fold(0.0, (a, it) => a + it['quantity'] * it['unit_price']);
-  double get _shipping => double.tryParse(_shippingCtrl.text.replaceAll(',', '.')) ?? 0.0;
-  double get _discount => double.tryParse(_discountCtrl.text.replaceAll(',', '.')) ?? 0.0;
-  double get _totalCobrar => (_subtotalItems - _discount + _shipping).clamp(0.0, double.infinity);
-
-  double get _profit {
-    if (_cart.isEmpty) return 0.0;
-    final itemsProfit = _cart.fold(0.0, (a, it) {
-      final qty = it['quantity'] as int;
-      final unit = it['unit_price'] as double;
-      final cost = (it['cost'] ?? 0.0) as double;
-      return a + (unit - cost) * qty;
+      );
     });
-    return (itemsProfit - _discount).clamp(0.0, double.infinity);
   }
 
-  Future<void> _saveSale() async {
-    if (_cart.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Carrito vacío')));
+  double get _totalPzas => _items.fold(0.0, (a,it)=> a + (it['quantity'] as int));
+  double get _totalMonto => _items.fold(0.0, (a,it)=> a + (it['quantity'] as int) * (it['unit_cost'] as double));
+
+  Future<void> _savePurchase() async {
+    final folio = _folioCtrl.text.trim();
+    if (folio.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Folio obligatorio')));
       return;
     }
-    if (_totalCobrar <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('El total debe ser mayor que 0')));
+    if (_selectedSupplierId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Selecciona o agrega proveedor')));
       return;
     }
-    if ((_selectedClientPhone ?? '').isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Selecciona o agrega cliente')));
+    if (_items.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Agrega al menos un producto')));
       return;
     }
 
     final db = await DatabaseHelper.instance.db;
     final batch = db.batch();
 
-    final saleId = await db.insert('sales', {
-      'customer_phone': _selectedClientPhone,
-      'payment_method': _paymentCtrl.text,
-      'place': _placeCtrl.text,
-      'shipping_cost': _shipping,
-      'discount': _discount,
+    final purchaseId = await db.insert('purchases', {
+      'folio': folio,
+      'supplier_id': _selectedSupplierId,
       'date': DateTime.now().toIso8601String(),
     });
 
-    for (final it in _cart) {
-      batch.insert('sale_items', {
-        'sale_id': saleId,
+    for (final it in _items) {
+      batch.insert('purchase_items', {
+        'purchase_id': purchaseId,
         'product_id': it['product_id'],
         'quantity': it['quantity'],
-        'unit_price': it['unit_price'],
+        'unit_cost': it['unit_cost'],
       });
-      batch.rawUpdate('UPDATE products SET stock = stock - ? WHERE id = ?', [it['quantity'], it['product_id']]);
+      batch.rawUpdate('UPDATE products SET stock = stock + ?, last_purchase_price = ?, last_purchase_date = ? WHERE id = ?',
+        [it['quantity'], it['unit_cost'], DateTime.now().toIso8601String(), it['product_id']]);
     }
 
     await batch.commit(noResult: true);
     setState(() {
-      _cart.clear();
+      _items.clear();
       _productSearchCtrl.clear();
       _productResults.clear();
     });
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Venta registrada')));
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Compra registrada')));
   }
 
   @override
@@ -216,60 +180,48 @@ class _SalesPageState extends State<SalesPage> {
     return ListView(
       padding: const EdgeInsets.all(12),
       children: [
-        const Text('Cliente (buscar por nombre o teléfono)'),
+        const Text('Folio de compra'),
         const SizedBox(height: 4),
-        TextField(
-          controller: _clientSearchCtrl,
-          decoration: InputDecoration(
-            hintText: 'Ej. Juan / 5512345678',
-            suffixIcon: IconButton(icon: const Icon(Icons.person_add), onPressed: _addQuickClient),
-          ),
-          onChanged: (q) { _selectedClientPhone = null; _onClientChanged(q); },
-        ),
-        if (_clientResults.isNotEmpty)
-          Card(
-            margin: const EdgeInsets.only(top: 6),
-            child: Column(
-              children: _clientResults.map((c) => ListTile(
-                dense: true,
-                title: Text(c['name']?.toString().isEmpty == true ? c['phone'] : c['name']),
-                subtitle: Text(c['phone'] ?? ''),
-                onTap: (){
-                  setState(() {
-                    _selectedClientPhone = c['phone'] as String?;
-                    _clientSearchCtrl.text = _selectedClientPhone!;
-                    _clientResults.clear();
-                  });
-                },
-              )).toList(),
-            ),
-          ),
+        TextField(controller: _folioCtrl, decoration: const InputDecoration(hintText: 'Escribe el folio…')),
 
         const SizedBox(height: 12),
-
         Row(
           children: [
-            SizedBox(
-              width: 160,
-              child: DropdownButtonFormField<String>(
-                value: _paymentCtrl.text,
-                items: const [
-                  DropdownMenuItem(value: 'efectivo', child: Text('Efectivo')),
-                  DropdownMenuItem(value: 'tarjeta', child: Text('Tarjeta')),
-                  DropdownMenuItem(value: 'transferencia', child: Text('Transferencia')),
-                ],
-                onChanged: (v)=> setState(()=> _paymentCtrl.text = v ?? 'efectivo'),
-                decoration: const InputDecoration(labelText: 'Pago'),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Proveedor (buscar por nombre o teléfono)'),
+              const SizedBox(height: 4),
+              TextField(
+                controller: _supplierSearchCtrl,
+                decoration: InputDecoration(
+                  hintText: 'Ej. Logística MX / 5512345678',
+                  suffixIcon: IconButton(icon: const Icon(Icons.person_add), onPressed: _addQuickSupplier),
+                ),
+                onChanged: (q) { _selectedSupplierId = null; _onSupplierChanged(q); },
               ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(child: TextField(controller: _placeCtrl, decoration: const InputDecoration(labelText: 'Lugar de venta'))),
+              if (_supplierResults.isNotEmpty)
+                Card(
+                  margin: const EdgeInsets.only(top:6),
+                  child: Column(
+                    children: _supplierResults.map((s)=> ListTile(
+                      dense: true,
+                      title: Text(s['name'] ?? s['phone'] ?? ''),
+                      subtitle: Text('Tel: ${s['phone'] ?? ''}'),
+                      onTap: (){
+                        setState(() {
+                          _selectedSupplierId = s['id'] as int?;
+                          _supplierSearchCtrl.text = (s['name'] as String?)?.isEmpty == true ? (s['phone'] ?? '') : (s['name'] ?? '');
+                          _supplierResults.clear();
+                        });
+                      },
+                    )).toList(),
+                  ),
+                ),
+            ])),
           ],
         ),
 
         const SizedBox(height: 16),
-
-        const Text('Producto (buscar por nombre / categoría / SKU)'),
+        const Text('Producto (buscar por nombre / SKU)'),
         const SizedBox(height: 4),
         TextField(
           controller: _productSearchCtrl,
@@ -278,14 +230,14 @@ class _SalesPageState extends State<SalesPage> {
         ),
         if (_productResults.isNotEmpty)
           Card(
-            margin: const EdgeInsets.only(top: 6),
+            margin: const EdgeInsets.only(top:6),
             child: Column(
-              children: _productResults.map((p) => ListTile(
+              children: _productResults.map((p)=> ListTile(
                 dense: true,
                 title: Text(p['name'] ?? ''),
-                subtitle: Text('SKU: ${p['sku'] ?? '—'}  •  Stock: ${p['stock'] ?? 0}  •  Últ. costo: ${(p['last_purchase_price'] ?? 0).toString()}'),
+                subtitle: Text('SKU: ${p['sku'] ?? '—'}'),
                 trailing: const Icon(Icons.add),
-                onTap: () => _promptAddProduct(p),
+                onTap: ()=> _promptAddProduct(p),
               )).toList(),
             ),
           ),
@@ -295,45 +247,35 @@ class _SalesPageState extends State<SalesPage> {
         Card(
           child: Column(
             children: [
-              const ListTile(title: Text('Carrito')),
-              ..._cart.map((it) => ListTile(
-                title: Text(it['name']),
-                subtitle: Text('x${it['quantity']}  •  \$${it['unit_price']}'),
+              const ListTile(title: Text('Productos de la compra')),
+              ..._items.map((it)=> ListTile(
+                title: Text(it['name'] ?? ''),
+                subtitle: Text('x${it['quantity']}  •  \$${it['unit_cost']}'),
                 trailing: IconButton(
                   icon: const Icon(Icons.delete, color: Colors.redAccent),
-                  onPressed: ()=>setState(()=>_cart.remove(it)),
+                  onPressed: ()=> setState(()=> _items.remove(it)),
                 ),
               )),
-              if (_cart.isEmpty) const Padding(
+              if (_items.isEmpty) const Padding(
                 padding: EdgeInsets.all(12),
-                child: Text('No hay productos agregados'),
+                child: Text('Sin productos'),
               ),
             ],
           ),
         ),
 
         const SizedBox(height: 12),
-
-        TextField(controller: _shippingCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Costo de envío'), onChanged: (_)=>setState((){})),
-        const SizedBox(height: 8),
-        TextField(controller: _discountCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Descuento'), onChanged: (_)=>setState((){})),
-
-        const SizedBox(height: 16),
-
         Card(
           child: Column(
             children: [
-              ListTile(title: const Text('Subtotal'), trailing: Text('\$${_subtotalItems.toStringAsFixed(2)}')),
-              ListTile(title: const Text('Descuento'), trailing: Text('- \$${_discount.toStringAsFixed(2)}')),
-              ListTile(title: const Text('Envío'), trailing: Text('+ \$${_shipping.toStringAsFixed(2)}')),
-              const Divider(height: 1),
-              ListTile(title: const Text('TOTAL A COBRAR'), trailing: Text('\$${_totalCobrar.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
-              ListTile(title: const Text('Utilidad estimada'), trailing: Text('\$${_profit.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green))),
+              ListTile(title: const Text('Total piezas'), trailing: Text('${_totalPzas.toStringAsFixed(0)}')),
+              ListTile(title: const Text('Total monetario'), trailing: Text('\$${_totalMonto.toStringAsFixed(2)}')),
             ],
           ),
         ),
+
         const SizedBox(height: 12),
-        FilledButton.icon(onPressed: _saveSale, icon: const Icon(Icons.check), label: const Text('Registrar venta')),
+        FilledButton.icon(onPressed: _savePurchase, icon: const Icon(Icons.check), label: const Text('Registrar compra')),
       ],
     );
   }
