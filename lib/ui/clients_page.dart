@@ -44,36 +44,33 @@ class _ClientsPageState extends State<ClientsPage> {
   }
 
   Future<void> _pickFromContacts() async {
-    // 1) Estado actual
-    final status = await FlutterContacts.permissionStatus();
-    if (status.isDenied) {
-      final granted = await FlutterContacts.requestPermission(readonly: true);
-      if (!granted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Permiso de contactos denegado')));
-        return;
-      }
-    } else if (status.isPermanentlyDenied) {
-      // Abre ajustes para que el usuario habilite el permiso
-      await FlutterContacts.openExternalAppSettings();
+    // En esta versión del plugin usamos solo requestPermission()
+    final granted = await FlutterContacts.requestPermission(readonly: true);
+    if (!granted) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Permiso de contactos denegado. Actívalo en Ajustes del sistema.'),
+      ));
       return;
     }
 
-    // 2) Abrir selector nativo
-    final picked = await FlutterContacts.openExternalPick();
+    final picked = await FlutterContacts.openExternalPick(); // selector nativo
     if (picked == null) return;
+
     final contact = await FlutterContacts.getContact(picked.id, withProperties: true);
     if (contact == null) return;
 
     final display = (contact.displayName ?? '').trim();
     final phone = (contact.phones.isNotEmpty ? contact.phones.first.number : '').replaceAll(' ', '');
     if (phone.isEmpty) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('El contacto no tiene teléfono')));
       return;
     }
 
     final db = await DatabaseHelper.instance.db;
     await db.insert('customers', {
-      'phone': phone,
+      'phone': phone, // ID = teléfono
       'name': display,
       'address': '',
     }, conflictAlgorithm: ConflictAlgorithm.replace);
