@@ -35,7 +35,8 @@ class _SalesPageState extends State<SalesPage> {
     _shippingCtrl.dispose();
     _discountCtrl.dispose();
     _placeCtrl.dispose();
-    _debounceC?.cancel(); _debounceP?.cancel();
+    _debounceC?.cancel();
+    _debounceP?.cancel();
     super.dispose();
   }
 
@@ -134,6 +135,7 @@ class _SalesPageState extends State<SalesPage> {
                 setState(() {
                   _cart.add({
                     'product_id': p['id'],
+                    'sku': p['sku'],  // << SKU
                     'name': p['name'],
                     'quantity': qty,
                     'unit_price': price,
@@ -192,6 +194,7 @@ class _SalesPageState extends State<SalesPage> {
       batch.insert('sale_items', {
         'sale_id': saleId,
         'product_id': it['product_id'],
+        'sku': it['sku'], // << SKU
         'quantity': it['quantity'],
         'unit_price': it['unit_price'],
       });
@@ -199,7 +202,6 @@ class _SalesPageState extends State<SalesPage> {
     }
     await batch.commit(noResult: true);
 
-    // Cuadro de confirmación con detalle
     final lines = _cart.map((it) => '• ${it['name']}  x${it['quantity']}  @ \$${(it['unit_price'] as num).toString()}').join('\n');
     final totalTxt = _totalCobrar.toStringAsFixed(2);
     await showDialog(context: context, builder: (ctx){
@@ -305,7 +307,7 @@ class _SalesPageState extends State<SalesPage> {
               const ListTile(title: Text('Carrito')),
               ..._cart.map((it) => ListTile(
                 title: Text(it['name']),
-                subtitle: Text('x${it['quantity']}  •  \$${it['unit_price']}'),
+                subtitle: Text('SKU: ${it['sku']}  •  x${it['quantity']}  @ \$${it['unit_price']}'),
                 trailing: IconButton(
                   icon: const Icon(Icons.delete, color: Colors.redAccent),
                   onPressed: ()=>setState(()=>_cart.remove(it)),
