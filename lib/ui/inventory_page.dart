@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:sqflite/sqflite.dart';
+import '../repositories/product_repository.dart';
 import '../data/database.dart';
 import '../utils/sku.dart';
 
@@ -10,266 +11,282 @@ class InventoryPage extends StatefulWidget {
 }
 
 class _InventoryPageState extends State<InventoryPage> {
-  List<Map<String, dynamic>> _rows = [];
-  List<String> _categories = [];
-  String? _filterCategory;
+  final _formKey = GlobalKey<FormState>();
+  final _repo = ProductRepository();
 
-  // Form (alta/edición)
   final _skuCtrl = TextEditingController();
   final _nameCtrl = TextEditingController();
-  String? _category;
-  final _stockCtrl = TextEditingController(text: '0');
-  final _priceCtrl = TextEditingController(text: '0');
-  final _costCtrl = TextEditingController(text: '0');
+  final _catCtrl  = TextEditingController();
+  final _saleCtrl = TextEditingController();
+  final _costCtrl = TextEditingController();
+  final _stockCtrl= TextEditingController(text: '0');
 
-  int? _editingId; // si es edición, id del producto
+  String _filterCategory = '';
+  List<Map<String, dynamic>> _list = [];
+  List<String> _cats = [];
 
   @override
   void initState() {
     super.initState();
-    _reload();
     if (_skuCtrl.text.isEmpty) _skuCtrl.text = generateSku8();
+    _refresh();
   }
 
-  Future<void> _reload() async {
-    final db = await DatabaseHelper.instance.db;
-    final rows = await db.query(
-      'products',
-      where: _filterCategory == null ? null : 'category = ?',
-      whereArgs: _filterCategory == null ? null : [_filterCategory],
-      orderBy: 'name COLLATE NOCASE ASC',
-    );
-    final catsRaw = await db.rawQuery('SELECT DISTINCT IFNULL(category,"") AS c FROM products ORDER BY c COLLATE NOCASE;');
-    final cats = catsRaw.map((e) => (e['c'] as String?)?.trim() ?? '')
-      .where((c) => c.isNotEmpty).toList();
-    setState(() {
-      _rows = rows;
-      _categories = cats;
-      // si no hay categoría seleccionada y existe al menos una, deja null (=todas)
-    });
+  @override
+  void dispose() {
+    _skuCtrl.dispose();
+    _nameCtrl.dispose();
+    _catCtrl.dispose();
+    _saleCtrl.dispose();
+    _costCtrl.dispose();
+    _stockCtrl.dispose();
+    super.dispose();
   }
 
-  Future<void> _newCategoryDialog() async {
-    final ctrl = TextEditingController();
-    await showDialog(context: context, builder: (ctx) {
-      return AlertDialog(
-        title: const Text('Nueva categoría'),
-        content: TextField(controller: ctrl, decoration: const InputDecoration(labelText: 'Nombre de categoría')),
-        actions: [
-          TextButton(onPressed: ()=>Navigator.pop(ctx), child: const Text('Cancelar')),
-          FilledButton(onPressed: (){
-            final v = ctrl.text.trim();
-            if (v.isNotEmpty && !_categories.contains(v)) {
-              setState(()=>_categories = [..._categories, v]);
-              _category ??= v;
-            }
-            Navigator.pop(ctx);
-          }, child: const Text('Agregar')),
-        ],
-      );
-    });
+  Future<void> _refresh() async {
+    _cats = await _repo.categories();
+    _list = await _repo.all(category: _filterCategory.isEmpty ? null : _filterCategory);
+    setState(() {});
   }
 
-  Future<void> _save() async {
-    final sku = _skuCtrl.text.trim();
-    final name = _nameCtrl.text.trim();
-    final cat = (_category ?? '').trim();
-    if (sku.isEmpty || name.isEmpty || cat.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('SKU, Nombre y Categoría son obligatorios')));
-      return;
-    }
-    final db = await DatabaseHelper.instance.db;
-    final stock = int.tryParse(_stockCtrl.text) ?? 0;
-    final price = double.tryParse(_priceCtrl.text.replaceAll(',', '.')) ?? 0.0;
-    final cost = double.tryParse(_costCtrl.text.replaceAll(',', '.')) ?? 0.0;
-
-    final data = {
-      'sku': sku,
-      'name': name,
-      'category': cat,
-      'stock': stock,
-      'default_sale_price': price,
-      'initial_cost': cost,
-      'last_purchase_price': cost == 0 ? null : cost,
-      'last_purchase_date': DateTime.now().toIso8601String(),
+  Map<String, dynamic> _productFromForm() {
+    return {
+      'sku': _skuCtrl.text.trim(),
+      'name': _nameCtrl.text.trim(),
+      'category': _catCtrl.text.trim(),
+      'default_sale_price': double.tryParse(_saleCtrl.text.replaceAll(',', '.')) ?? 0.0,
+      'last_purchase_price': double.tryParse(_costCtrl.text.replaceAll(',', '.')) ?? 0.0,
+      'stock': int.tryParse(_stockCtrl.text) ?? 0,
     };
+  }
 
-    if (_editingId == null) {
-      await db.insert('products', data);
-    } else {
-      await db.update('products', data, where: 'id = ?', whereArgs: [_editingId]);
-    }
-
-    _clearForm();
-    await _reload();
-    if (mounted) {
+  Future<void> _saveNew() async {
+    if (!_formKey.currentState!.validate()) return;
+    try {
+      final data = _productFromForm();
+      await _repo.insert(data);
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Producto guardado')));
+      await _refresh();
+      _skuCtrl.text = generateSku8();
+      _nameCtrl.clear(); _saleCtrl.clear(); _costCtrl.clear(); _stockCtrl.text = '0';
+    } on DatabaseException catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error BD: ${e.resultCode} ${e.isUniqueConstraintError() ? "(SKU duplicado)" : ""}')));
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
     }
-  }
-
-  Future<void> _deleteEditing() async {
-    if (_editingId == null) return;
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx)=> AlertDialog(
-        title: const Text('Eliminar producto'),
-        content: const Text('¿Seguro que deseas eliminar este producto? Esta acción no se puede deshacer.'),
-        actions: [
-          TextButton(onPressed: ()=>Navigator.pop(ctx, false), child: const Text('Cancelar')),
-          FilledButton(onPressed: ()=>Navigator.pop(ctx, true), child: const Text('Eliminar')),
-        ],
-      ),
-    );
-    if (ok != true) return;
-
-    final db = await DatabaseHelper.instance.db;
-    await db.delete('products', where: 'id = ?', whereArgs: [_editingId]);
-    _clearForm();
-    await _reload();
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Producto eliminado')));
-    }
-  }
-
-  void _clearForm() {
-    _editingId = null;
-    _skuCtrl.text = generateSku8();
-    _nameCtrl.clear();
-    _category = null;
-    _stockCtrl.text = '0';
-    _priceCtrl.text = '0';
-    _costCtrl.text = '0';
   }
 
   Future<void> _loadBySku() async {
     final sku = _skuCtrl.text.trim();
     if (sku.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Escribe un SKU para cargar')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Pon un SKU para cargar')));
       return;
     }
-    final db = await DatabaseHelper.instance.db;
-    final rows = await db.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
-    if (rows.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No se encontró producto con ese SKU')));
+    final p = await _repo.findBySku(sku);
+    if (p == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No existe ese SKU')));
       return;
     }
-    final p = rows.first;
-    setState(() {
-      _editingId = p['id'] as int?;
-      _nameCtrl.text = (p['name'] ?? '').toString();
-      _category = (p['category'] ?? '').toString().isEmpty ? null : (p['category'] as String);
-      _stockCtrl.text = (p['stock'] ?? 0).toString();
-      _priceCtrl.text = ((p['default_sale_price'] as num?)?.toString() ?? '0');
-      _costCtrl.text = ((p['initial_cost'] as num?)?.toString() ?? '0');
-      if (_category != null && !_categories.contains(_category!)) {
-        _categories.add(_category!);
-      }
-    });
+    _nameCtrl.text = (p['name'] ?? '').toString();
+    _catCtrl.text  = (p['category'] ?? '').toString();
+    _saleCtrl.text = (p['default_sale_price'] ?? 0).toString();
+    _costCtrl.text = (p['last_purchase_price'] ?? 0).toString();
+    _stockCtrl.text= (p['stock'] ?? 0).toString();
+    setState(() {});
+  }
+
+  Future<void> _updateBySku() async {
+    if (!_formKey.currentState!.validate()) return;
+    final sku = _skuCtrl.text.trim();
+    if (sku.isEmpty) return;
+    try {
+      await _repo.updateBySku(sku, _productFromForm());
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Producto actualizado')));
+      await _refresh();
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+    }
+  }
+
+  Future<void> _deleteBySku() async {
+    final sku = _skuCtrl.text.trim();
+    if (sku.isEmpty) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('Eliminar producto'),
+        content: Text('¿Eliminar SKU $sku? Esta acción no se puede deshacer.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancelar')),
+          FilledButton(onPressed: () => Navigator.pop(c, true), child: const Text('Eliminar')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await _repo.deleteBySku(sku);
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Producto eliminado')));
+    await _refresh();
+    _skuCtrl.text = generateSku8();
+    _nameCtrl.clear(); _catCtrl.clear(); _saleCtrl.clear(); _costCtrl.clear(); _stockCtrl.text = '0';
+  }
+
+  Future<void> _newCategoryDialog() async {
+    final tmp = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('Nueva categoría'),
+        content: TextField(controller: tmp, decoration: const InputDecoration(labelText: 'Nombre de categoría')),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Cancelar')),
+          FilledButton(onPressed: () => Navigator.pop(c, true), child: const Text('Agregar')),
+        ],
+      ),
+    );
+    if (ok == true && tmp.text.trim().isNotEmpty) {
+      _catCtrl.text = tmp.text.trim();
+      if (!_cats.contains(_catCtrl.text)) _cats.add(_catCtrl.text);
+      setState(() {});
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    final catsForDropdown = [''] + _cats;
     return ListView(
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(16),
       children: [
-        // Filtro por categoría
-        Row(
-          children: [
-            const Text('Inventario', style: TextStyle(fontWeight: FontWeight.bold)),
-            const Spacer(),
-            SizedBox(
-              width: 220,
-              child: DropdownButtonFormField<String?>(
-                value: _filterCategory,
-                items: [
-                  const DropdownMenuItem(value: null, child: Text('Todas las categorías')),
-                  ..._categories.map((c)=>DropdownMenuItem(value: c, child: Text(c))),
+        Form(
+          key: _formKey,
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: TextFormField(
+                      controller: _skuCtrl,
+                      decoration: InputDecoration(
+                        labelText: 'SKU (8)',
+                        suffixIcon: IconButton(
+                          icon: const Icon(Icons.autorenew),
+                          onPressed: () => setState(() => _skuCtrl.text = generateSku8()),
+                          tooltip: 'Generar SKU',
+                        ),
+                      ),
+                      validator: (v) => (v == null || v.trim().isEmpty) ? 'SKU obligatorio' : null,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton.tonal(onPressed: _loadBySku, child: const Text('Cargar por SKU')),
                 ],
-                onChanged: (v){ setState(()=>_filterCategory=v); _reload(); },
-                decoration: const InputDecoration(isDense: true),
               ),
-            ),
-          ],
+              const SizedBox(height: 8),
+              TextFormField(
+                controller: _nameCtrl,
+                decoration: const InputDecoration(labelText: 'Nombre'),
+                validator: (v) => (v == null || v.trim().isEmpty) ? 'Nombre obligatorio' : null,
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    flex: 3,
+                    child: DropdownButtonFormField<String>(
+                      value: catsForDropdown.contains(_catCtrl.text) ? _catCtrl.text : '',
+                      items: catsForDropdown.map((e) => DropdownMenuItem(value: e, child: Text(e.isEmpty ? '— sin categoría —' : e))).toList(),
+                      onChanged: (v) => setState(() => _catCtrl.text = (v ?? '')),
+                      decoration: const InputDecoration(labelText: 'Categoría'),
+                      validator: (_) => (_catCtrl.text.trim().isEmpty) ? 'Categoría obligatoria' : null,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    flex: 2,
+                    child: TextFormField(
+                      controller: _saleCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(labelText: 'Precio Venta'),
+                      validator: (v) => (double.tryParse((v ?? '').replaceAll(',', '.')) == null) ? 'Num' : null,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    flex: 2,
+                    child: TextFormField(
+                      controller: _costCtrl,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      decoration: const InputDecoration(labelText: 'Último Costo'),
+                      validator: (v) => (double.tryParse((v ?? '').replaceAll(',', '.')) == null) ? 'Num' : null,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextFormField(
+                      controller: _stockCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(labelText: 'Stock'),
+                      validator: (v) => (int.tryParse(v ?? '') == null) ? 'Int' : null,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  FilledButton(onPressed: _saveNew, child: const Text('Guardar nuevo')),
+                  const SizedBox(width: 8),
+                  OutlinedButton(onPressed: _updateBySku, child: const Text('Actualizar por SKU')),
+                  const SizedBox(width: 8),
+                  OutlinedButton(onPressed: _newCategoryDialog, child: const Text('Nueva categoría')),
+                  const Spacer(),
+                  TextButton.icon(
+                    onPressed: _deleteBySku,
+                    icon: const Icon(Icons.delete_outline),
+                    label: const Text('Eliminar por SKU'),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
-        const SizedBox(height: 8),
-
-        ..._rows.map((p)=>ListTile(
-          title: Text(p['name'] ?? ''),
-          subtitle: Text('SKU: ${p['sku'] ?? '—'} • Cat: ${p['category'] ?? '—'} • Stock: ${p['stock'] ?? 0}'),
-          trailing: Text('\$${(p['default_sale_price'] as num?)?.toStringAsFixed(2) ?? '0.00'}'),
-          onTap: (){
-            // Cargar al formulario para edición rápida al tocar un item
-            setState(() {
-              _editingId = p['id'] as int?;
-              _skuCtrl.text = (p['sku'] ?? '').toString();
-              _nameCtrl.text = (p['name'] ?? '').toString();
-              _category = (p['category'] ?? '').toString().isEmpty ? null : (p['category'] as String);
-              _stockCtrl.text = (p['stock'] ?? 0).toString();
-              _priceCtrl.text = ((p['default_sale_price'] as num?)?.toString() ?? '0');
-              _costCtrl.text = ((p['initial_cost'] as num?)?.toString() ?? '0');
-              if (_category != null && !_categories.contains(_category!)) {
-                _categories.add(_category!);
-              }
-            });
-          },
-        )),
-        if (_rows.isEmpty) const Padding(padding: EdgeInsets.all(12), child: Text('Sin productos')),
-
         const Divider(height: 24),
-
-        // Editar por SKU
-        const Text('Editar por SKU', style: TextStyle(fontWeight: FontWeight.bold)),
-        const SizedBox(height: 8),
         Row(
           children: [
-            Expanded(child: TextField(controller: _skuCtrl, decoration: const InputDecoration(labelText: 'SKU *'))),
-            const SizedBox(width: 8),
-            OutlinedButton.icon(onPressed: _loadBySku, icon: const Icon(Icons.search), label: const Text('Cargar')),
-          ],
-        ),
-
-        const SizedBox(height: 16),
-        const Text('Formulario de producto'),
-        const SizedBox(height: 6),
-        TextField(controller: _nameCtrl, decoration: const InputDecoration(labelText: 'Nombre *')),
-        const SizedBox(height: 6),
-        Row(
-          children: [
-            Expanded(
-              child: DropdownButtonFormField<String>(
-                isExpanded: true,
-                value: _category,
-                items: _categories.map((c)=>DropdownMenuItem(value: c, child: Text(c))).toList(),
-                onChanged: (v)=> setState(()=> _category = v),
-                decoration: const InputDecoration(labelText: 'Categoría *'),
-              ),
+            const Text('Filtrar por categoría:'),
+            const SizedBox(width: 12),
+            DropdownButton<String>(
+              value: _filterCategory.isEmpty ? '' : _filterCategory,
+              items: ([''] + _cats).map((e) => DropdownMenuItem(value: e, child: Text(e.isEmpty ? 'Todas' : e))).toList(),
+              onChanged: (v) async {
+                _filterCategory = v ?? '';
+                await _refresh();
+              },
             ),
-            const SizedBox(width: 8),
-            OutlinedButton.icon(onPressed: _newCategoryDialog, icon: const Icon(Icons.add), label: const Text('Nueva')),
-          ],
-        ),
-        const SizedBox(height: 6),
-        TextField(controller: _stockCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Stock')),
-        const SizedBox(height: 6),
-        TextField(controller: _costCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Costo inicial')),
-        const SizedBox(height: 6),
-        TextField(controller: _priceCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Precio venta (default)')),
-
-        const SizedBox(height: 10),
-        Row(
-          children: [
-            FilledButton(onPressed: _save, child: Text(_editingId == null ? 'Guardar' : 'Actualizar')),
-            const SizedBox(width: 8),
-            if (_editingId != null)
-              OutlinedButton.icon(
-                onPressed: _deleteEditing,
-                icon: const Icon(Icons.delete, color: Colors.red),
-                label: const Text('Eliminar'),
-              ),
             const Spacer(),
-            OutlinedButton(onPressed: _clearForm, child: const Text('Limpiar')),
+            IconButton(onPressed: _refresh, tooltip: 'Recargar', icon: const Icon(Icons.refresh)),
           ],
         ),
+        const SizedBox(height: 8),
+        ..._list.map((p) => Card(
+          child: ListTile(
+            title: Text('${p['name']}'),
+            subtitle: Text('SKU ${p['sku']}  •  Cat: ${p['category'] ?? "-"}\nP. Venta: ${p['default_sale_price'] ?? 0}  •  Últ. Costo: ${p['last_purchase_price'] ?? 0}  •  Stock: ${p['stock'] ?? 0}'),
+            trailing: IconButton(
+              icon: const Icon(Icons.edit),
+              onPressed: () {
+                _skuCtrl.text  = (p['sku'] ?? '').toString();
+                _nameCtrl.text = (p['name'] ?? '').toString();
+                _catCtrl.text  = (p['category'] ?? '').toString();
+                _saleCtrl.text = (p['default_sale_price'] ?? 0).toString();
+                _costCtrl.text = (p['last_purchase_price'] ?? 0).toString();
+                _stockCtrl.text= (p['stock'] ?? 0).toString();
+                setState(() {});
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Cargado en el formulario para editar')));
+              },
+            ),
+          ),
+        )),
+        const SizedBox(height: 24),
       ],
     );
   }
