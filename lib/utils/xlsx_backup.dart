@@ -6,8 +6,6 @@ import 'package:file_picker/file_picker.dart';
 import 'package:sqflite/sqflite.dart';
 import '../data/database.dart';
 
-// ====================== Helpers ======================
-
 CellValue _cv(dynamic v) {
   if (v == null) return TextCellValue('');
   if (v is int) return IntCellValue(v);
@@ -16,7 +14,6 @@ CellValue _cv(dynamic v) {
 }
 
 Future<void> _saveExcel(String baseName, Excel excel) async {
-  // excel.encode() puede devolver null si algo raro pasa
   final list = excel.encode();
   if (list == null || list.isEmpty) {
     throw 'No se generó contenido XLSX (excel.encode() vacío).';
@@ -28,7 +25,6 @@ Future<void> _saveExcel(String baseName, Excel excel) async {
     ext: 'xlsx',
     mimeType: MimeType.microsoftExcel,
   );
-  // Algunos entornos devuelven cadena vacía; lo tratamos como error visible
   if (out == null || (out is String && out.trim().isEmpty)) {
     throw 'El sistema no devolvió una ruta/URI al guardar.';
   }
@@ -46,7 +42,7 @@ Future<Excel?> _pickExcel() async {
   return Excel.decodeBytes(bytes);
 }
 
-// ====================== EXPORT ======================
+// --------------------- EXPORT ---------------------
 
 Future<void> exportSalesXlsx() async {
   final db = await DatabaseHelper.instance.db;
@@ -240,7 +236,7 @@ Future<void> exportSuppliersXlsx() async {
   await _saveExcel('proveedores', excel);
 }
 
-// ====================== IMPORT ======================
+// --------------------- IMPORT ---------------------
 
 Future<void> importSalesXlsx() async {
   final excel = await _pickExcel();
@@ -438,10 +434,7 @@ Future<void> importClientsXlsx() async {
     } else {
       await db.update(
         'customers',
-        {
-          'name': name,
-          'address': address,
-        },
+        {'name': name, 'address': address},
         where: 'phone = ?',
         whereArgs: [phone],
         conflictAlgorithm: ConflictAlgorithm.replace,
@@ -475,10 +468,7 @@ Future<void> importSuppliersXlsx() async {
     } else {
       await db.update(
         'suppliers',
-        {
-          'name': name,
-          'address': address,
-        },
+        {'name': name, 'address': address},
         where: 'phone = ?',
         whereArgs: [phone],
         conflictAlgorithm: ConflictAlgorithm.replace,
