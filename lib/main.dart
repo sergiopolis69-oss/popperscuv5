@@ -54,7 +54,7 @@ class _PDVAppState extends State<PDVApp> {
     );
 
     return MaterialApp(
-      title: 'PDV Flutter',
+      title: 'PoppersCU',
       theme: theme,
       home: Scaffold(
         appBar: AppBar(
