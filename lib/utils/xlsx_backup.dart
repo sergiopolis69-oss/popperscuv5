@@ -1,274 +1,182 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:excel/excel.dart';
-import 'package:file_picker/file_picker.dart';
-import 'package:open_filex/open_filex.dart';
 import 'package:sqflite/sqflite.dart';
+import 'package:downloads_path_provider_28/downloads_path_provider_28.dart';
 import '../data/database.dart';
-import 'android_downloads.dart';
 
-/// ============== UTILIDADES ==============
+Future<String> _downloadsPath() async {
+  final dir = await DownloadsPathProvider.downloadsDirectory;
+  return dir?.path ?? '/storage/emulated/0/Download';
+}
 
-Excel _newBook() {
+// ------------------ EXPORT ------------------
+
+Future<void> exportSalesXlsx() async {
+  final db = await DatabaseHelper.instance.db;
   final excel = Excel.createExcel();
-  final def = excel.getDefaultSheet();
-  if (def != null) excel.delete(def);
-  return excel;
-}
 
-Sheet? _sheetInsensitive(Excel e, String n) {
-  for (final k in e.tables.keys) {
-    if (k.toLowerCase() == n.toLowerCase()) return e.tables[k];
+  final sales = await db.rawQuery('SELECT id, customer_phone, payment_method, place, shipping_cost, discount, date FROM sales ORDER BY date DESC');
+  final items = await db.rawQuery('SELECT sale_id, sku, quantity, unit_price FROM sale_items');
+
+  final shSales = excel['sales'];
+  shSales.appendRow(['id','customer_phone','payment_method','place','shipping_cost','discount','date']);
+  for (final s in sales) {
+    shSales.appendRow([s['id'], s['customer_phone'], s['payment_method'], s['place'], s['shipping_cost'], s['discount'], s['date']]);
   }
-  return null;
-}
 
-String _s(Data? d) => d?.value?.toString().trim() ?? '';
-int _i(Data? d) => int.tryParse(_s(d)) ?? 0;
-double _d(Data? d) => double.tryParse(_s(d).replaceAll(',', '.')) ?? 0.0;
-
-Future<Excel?> _pickExcel() async {
-  final res = await FilePicker.platform.pickFiles(
-    type: FileType.custom,
-    allowedExtensions: ['xlsx'],
-  );
-  if (res == null) return null;
-  final file = res.files.single;
-  final bytes = file.bytes ?? await File(file.path!).readAsBytes();
-  return Excel.decodeBytes(bytes);
-}
-
-/// Abre un URI content:// o una ruta local
-Future<void> openUriOrPath(String uriOrPath) async {
-  await OpenFilex.open(uriOrPath);
-}
-
-/// ============== EXPORTS (a Descargas) ==============
-
-Future<String> exportClientsXlsx() async {
-  final db = await DatabaseHelper.instance.db;
-  final rows = await db.query('customers');
-  final excel = _newBook();
-  final sh = excel['clientes'];
-  sh.appendRow(['phone','name','address']);
-  for (final r in rows) {
-    sh.appendRow([r['phone'], r['name'], r['address']]);
+  final shItems = excel['sale_items'];
+  shItems.appendRow(['sale_id','sku','quantity','unit_price']);
+  for (final it in items) {
+    shItems.appendRow([it['sale_id'], it['sku'], it['quantity'], it['unit_price']]);
   }
-  final bytes = excel.encode()!;
-  return await AndroidDownloads.saveBytes(baseName: 'clientes', bytes: bytes);
+
+  final bytes = Uint8List.fromList(excel.encode()!);
+  final path = await _downloadsPath();
+  final file = File('$path/ventas.xlsx');
+  await file.writeAsBytes(bytes, flush: true);
 }
 
-Future<String> exportProductsXlsx() async {
+Future<void> exportPurchasesXlsx() async {
   final db = await DatabaseHelper.instance.db;
-  final rows = await db.query('products');
-  final excel = _newBook();
-  final sh = excel['productos'];
-  sh.appendRow([
-    'id','sku','name','category','stock',
-    'last_purchase_price','last_purchase_date',
-    'default_sale_price','initial_cost'
-  ]);
-  for (final r in rows) {
-    sh.appendRow([
-      r['id'], r['sku'], r['name'], r['category'], r['stock'],
-      r['last_purchase_price'], r['last_purchase_date'],
-      r['default_sale_price'], r['initial_cost'],
-    ]);
+  final excel = Excel.createExcel();
+
+  final purchases = await db.rawQuery('SELECT id, supplier_id, folio, date FROM purchases ORDER BY date DESC');
+  final items = await db.rawQuery('SELECT purchase_id, sku, quantity, unit_cost FROM purchase_items');
+
+  final shP = excel['purchases'];
+  shP.appendRow(['id','supplier_id','folio','date']);
+  for (final p in purchases) {
+    shP.appendRow([p['id'], p['supplier_id'], p['folio'], p['date']]);
   }
-  final bytes = excel.encode()!;
-  return await AndroidDownloads.saveBytes(baseName: 'productos', bytes: bytes);
-}
 
-Future<String> exportSuppliersXlsx() async {
-  final db = await DatabaseHelper.instance.db;
-  final rows = await db.query('suppliers');
-  final excel = _newBook();
-  final sh = excel['proveedores'];
-  sh.appendRow(['id','name','phone','address']);
-  for (final r in rows) {
-    sh.appendRow([r['id'], r['name'], r['phone'], r['address']]);
+  final shI = excel['purchase_items'];
+  shI.appendRow(['purchase_id','sku','quantity','unit_cost']);
+  for (final it in items) {
+    shI.appendRow([ it['purchase_id'], it['sku'], it['quantity'], it['unit_cost'] ]);
   }
-  final bytes = excel.encode()!;
-  return await AndroidDownloads.saveBytes(baseName: 'proveedores', bytes: bytes);
+
+  final bytes = Uint8List.fromList(excel.encode()!);
+  final path = await _downloadsPath();
+  final file = File('$path/compras.xlsx');
+  await file.writeAsBytes(bytes, flush: true);
 }
 
-Future<String> exportSalesXlsx() async {
+// ------------------ IMPORT ------------------
+
+Future<void> importSalesXlsx(File file) async {
+  final bytes = await file.readAsBytes();
+  final excel = Excel.decodeBytes(bytes);
   final db = await DatabaseHelper.instance.db;
-  final sales = await db.query('sales');
-  final items = await db.query('sale_items');
-  final excel = _newBook();
-  final s1 = excel['ventas'];
-  final s2 = excel['venta_items'];
-  s1.appendRow(['id','customer_phone','payment_method','place','shipping_cost','discount','date']);
+  final batch = db.batch();
+
+  final sales = excel['sales'].rows.skip(1);
+  final items = excel['sale_items'].rows.skip(1);
+
+  final Map<int,int> idMap = {};
   for (final r in sales) {
-    s1.appendRow([
-      r['id'], r['customer_phone'], r['payment_method'],
-      r['place'], r['shipping_cost'], r['discount'], r['date'],
-    ]);
+    final oldId = (r[0]?.value as num).toInt();
+    final newId = await db.insert('sales', {
+      'customer_phone': r[1]?.value?.toString(),
+      'payment_method': r[2]?.value?.toString(),
+      'place': r[3]?.value?.toString(),
+      'shipping_cost': (r[4]?.value as num?)?.toDouble() ?? 0.0,
+      'discount': (r[5]?.value as num?)?.toDouble() ?? 0.0,
+      'date': r[6]?.value?.toString(),
+    });
+    idMap[oldId] = newId;
   }
-  s2.appendRow(['sale_id','product_id','quantity','unit_price']);
-  for (final it in items) {
-    s2.appendRow([it['sale_id'], it['product_id'], it['quantity'], it['unit_price']]);
-  }
-  final bytes = excel.encode()!;
-  return await AndroidDownloads.saveBytes(baseName: 'ventas', bytes: bytes);
-}
 
-Future<String> exportPurchasesXlsx() async {
-  final db = await DatabaseHelper.instance.db;
-  final purchases = await db.query('purchases');
-  final items = await db.query('purchase_items');
-  final excel = _newBook();
-  final s1 = excel['compras'];
-  final s2 = excel['compra_items'];
-  s1.appendRow(['id','folio','supplier_id','date']);
-  for (final r in purchases) {
-    s1.appendRow([r['id'], r['folio'], r['supplier_id'], r['date']]);
-  }
-  s2.appendRow(['purchase_id','product_id','quantity','unit_cost']);
-  for (final it in items) {
-    s2.appendRow([it['purchase_id'], it['product_id'], it['quantity'], it['unit_cost']]);
-  }
-  final bytes = excel.encode()!;
-  return await AndroidDownloads.saveBytes(baseName: 'compras', bytes: bytes);
-}
+  for (final r in items) {
+    final oldSale = (r[0]?.value as num).toInt();
+    final sku = r[1]?.value?.toString();
+    final qty = (r[2]?.value as num?)?.toInt() ?? 0;
+    final price = (r[3]?.value as num?)?.toDouble() ?? 0.0;
+    if (sku == null || sku.isEmpty || qty<=0) continue;
 
-Future<String> exportProductsTemplateXlsx() async {
-  final excel = _newBook();
-  final sh = excel['productos'];
-  sh.appendRow([
-    'id (opcional)','sku','name*','category',
-    'stock','last_purchase_price','last_purchase_date',
-    'default_sale_price','initial_cost'
-  ]);
-  sh.appendRow([null,'ABC-001','Ejemplo','Categoría',10,100,'2025-01-01',150,80]);
-  final bytes = excel.encode()!;
-  return await AndroidDownloads.saveBytes(baseName: 'plantilla_productos', bytes: bytes);
-}
+    final prod = await db.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
+    int productId;
+    if (prod.isEmpty) {
+      productId = await db.insert('products', {
+        'sku': sku,
+        'name': 'SKU $sku',
+        'default_sale_price': price,
+        'last_purchase_price': 0.0,
+        'stock': 0,
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      if (productId == 0) {
+        final again = await db.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
+        productId = again.first['id'] as int;
+      }
+    } else {
+      productId = prod.first['id'] as int;
+    }
 
-/// ============== IMPORTS (desde selector de archivos) ==============
-/// Requiere que el schema/tablas ya existan en SQLite.
-/// Usa ConflictAlgorithm.replace para upsert básico.
-
-Future<void> importClientsXlsx() async {
-  final excel = await _pickExcel();
-  if (excel == null) throw 'No seleccionaste archivo';
-  final sh = _sheetInsensitive(excel, 'clientes') ?? (throw 'Hoja "clientes" no encontrada');
-  final db = await DatabaseHelper.instance.db;
-  final batch = db.batch();
-  for (var i=1; i<sh.maxRows; i++) {
-    final r = sh.row(i);
-    final phone = _s(r[0]);
-    if (phone.isEmpty) continue;
-    batch.insert('customers', {
-      'phone': phone,
-      'name': _s(r.length>1 ? r[1] : null),
-      'address': _s(r.length>2 ? r[2] : null),
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
-  }
-  await batch.commit(noResult:true);
-}
-
-Future<void> importProductsXlsx() async {
-  final excel = await _pickExcel();
-  if (excel == null) throw 'No seleccionaste archivo';
-  final sh = _sheetInsensitive(excel, 'productos') ?? (throw 'Hoja "productos" no encontrada');
-  final db = await DatabaseHelper.instance.db;
-  final batch = db.batch();
-  for (var i=1; i<sh.maxRows; i++) {
-    final r = sh.row(i);
-    final name = _s(r.length>2 ? r[2] : null);
-    if (name.isEmpty) continue;
-    final id = _i(r[0]);
-    batch.insert('products', {
-      'id': id == 0 ? null : id,
-      'sku': _s(r[1]),
-      'name': name,
-      'category': _s(r[3]),
-      'stock': _i(r[4]),
-      'last_purchase_price': _d(r[5]),
-      'last_purchase_date': _s(r[6]),
-      'default_sale_price': _d(r[7]),
-      'initial_cost': _d(r[8]),
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
-  }
-  await batch.commit(noResult:true);
-}
-
-Future<void> importSuppliersXlsx() async {
-  final excel = await _pickExcel();
-  if (excel == null) throw 'No seleccionaste archivo';
-  final sh = _sheetInsensitive(excel, 'proveedores') ?? (throw 'Hoja "proveedores" no encontrada');
-  final db = await DatabaseHelper.instance.db;
-  final batch = db.batch();
-  for (var i=1; i<sh.maxRows; i++) {
-    final r = sh.row(i);
-    batch.insert('suppliers', {
-      'id': _i(r[0]) == 0 ? null : _i(r[0]),
-      'name': _s(r[1]),
-      'phone': _s(r[2]),
-      'address': _s(r[3]),
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
-  }
-  await batch.commit(noResult:true);
-}
-
-Future<void> importSalesXlsx() async {
-  final excel = await _pickExcel();
-  if (excel == null) throw 'No seleccionaste archivo';
-  final s1 = _sheetInsensitive(excel, 'ventas') ?? (throw 'Hoja "ventas" no encontrada');
-  final s2 = _sheetInsensitive(excel, 'venta_items') ?? (throw 'Hoja "venta_items" no encontrada');
-  final db = await DatabaseHelper.instance.db;
-  final batch = db.batch();
-
-  for (var i=1; i<s1.maxRows; i++) {
-    final r = s1.row(i);
-    batch.insert('sales', {
-      'id': _i(r[0]) == 0 ? null : _i(r[0]),
-      'customer_phone': _s(r[1]),
-      'payment_method': _s(r[2]),
-      'place': _s(r[3]),
-      'shipping_cost': _d(r[4]),
-      'discount': _d(r[5]),
-      'date': _s(r[6]),
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
-  }
-  for (var i=1; i<s2.maxRows; i++) {
-    final r = s2.row(i);
     batch.insert('sale_items', {
-      'sale_id': _i(r[0]),
-      'product_id': _i(r[1]),
-      'quantity': _i(r[2]),
-      'unit_price': _d(r[3]),
+      'sale_id': idMap[oldSale],
+      'product_id': productId,
+      'sku': sku,
+      'quantity': qty,
+      'unit_price': price,
     });
   }
-  await batch.commit(noResult:true);
+  await batch.commit(noResult: true);
 }
 
-Future<void> importPurchasesXlsx() async {
-  final excel = await _pickExcel();
-  if (excel == null) throw 'No seleccionaste archivo';
-  final s1 = _sheetInsensitive(excel, 'compras') ?? (throw 'Hoja "compras" no encontrada');
-  final s2 = _sheetInsensitive(excel, 'compra_items') ?? (throw 'Hoja "compra_items" no encontrada');
+Future<void> importPurchasesXlsx(File file) async {
+  final bytes = await file.readAsBytes();
+  final excel = Excel.decodeBytes(bytes);
   final db = await DatabaseHelper.instance.db;
   final batch = db.batch();
 
-  for (var i=1; i<s1.maxRows; i++) {
-    final r = s1.row(i);
-    batch.insert('purchases', {
-      'id': _i(r[0]) == 0 ? null : _i(r[0]),
-      'folio': _s(r[1]),
-      'supplier_id': _i(r[2]),
-      'date': _s(r[3]),
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
-  }
-  for (var i=1; i<s2.maxRows; i++) {
-    final r = s2.row(i);
-    batch.insert('purchase_items', {
-      'purchase_id': _i(r[0]),
-      'product_id': _i(r[1]),
-      'quantity': _i(r[2]),
-      'unit_cost': _d(r[3]),
+  final purchases = excel['purchases'].rows.skip(1);
+  final items = excel['purchase_items'].rows.skip(1);
+
+  final Map<int,int> idMap = {};
+  for (final r in purchases) {
+    final oldId = (r[0]?.value as num).toInt();
+    final newId = await db.insert('purchases', {
+      'supplier_id': (r[1]?.value as num?)?.toInt(),
+      'folio': r[2]?.value?.toString(),
+      'date': r[3]?.value?.toString(),
     });
+    idMap[oldId] = newId;
   }
-  await batch.commit(noResult:true);
+
+  for (final r in items) {
+    final oldPur = (r[0]?.value as num).toInt();
+    final sku = r[1]?.value?.toString();
+    final qty = (r[2]?.value as num?)?.toInt() ?? 0;
+    final cost = (r[3]?.value as num?)?.toDouble() ?? 0.0;
+    if (sku == null || sku.isEmpty || qty<=0) continue;
+
+    final prod = await db.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
+    int productId;
+    if (prod.isEmpty) {
+      productId = await db.insert('products', {
+        'sku': sku,
+        'name': 'SKU $sku',
+        'last_purchase_price': cost,
+        'default_sale_price': 0.0,
+        'stock': 0,
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      if (productId == 0) {
+        final again = await db.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
+        productId = again.first['id'] as int;
+      }
+    } else {
+      productId = prod.first['id'] as int;
+    }
+
+    batch.insert('purchase_items', {
+      'purchase_id': idMap[oldPur],
+      'product_id': productId,
+      'sku': sku,
+      'quantity': qty,
+      'unit_cost': cost,
+    });
+    batch.rawUpdate('UPDATE products SET stock = stock + ?, last_purchase_price = ?, last_purchase_date = ? WHERE id = ?',
+      [qty, cost, DateTime.now().toIso8601String(), productId]);
+  }
+  await batch.commit(noResult: true);
 }
