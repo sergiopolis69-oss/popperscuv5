@@ -157,13 +157,9 @@ class _SalesPageState extends State<SalesPage> {
 
   double get _profit {
     if (_cart.isEmpty) return 0.0;
-    final itemsProfit = _cart.fold(0.0, (a, it) {
-      final qty = it['quantity'] as int;
-      final unit = it['unit_price'] as double;
-      final cost = (it['cost'] ?? 0.0) as double;
-      return a + (unit - cost) * qty;
-    });
-    return (itemsProfit - _discount).clamp(0.0, double.infinity);
+    final costSum = _cart.fold(0.0, (a, it) => a + (it['cost'] as double) * (it['quantity'] as int));
+    final util = _subtotalItems - _discount - costSum; // envío excluido
+    return util.clamp(0.0, double.infinity);
   }
 
   Future<void> _saveSale() async {
@@ -201,8 +197,19 @@ class _SalesPageState extends State<SalesPage> {
       });
       batch.rawUpdate('UPDATE products SET stock = stock - ? WHERE id = ?', [it['quantity'], it['product_id']]);
     }
-
     await batch.commit(noResult: true);
+
+    // Cuadro de confirmación con detalle
+    final lines = _cart.map((it) => '• ${it['name']}  x${it['quantity']}  @ \$${(it['unit_price'] as num).toString()}').join('\n');
+    final totalTxt = _totalCobrar.toStringAsFixed(2);
+    await showDialog(context: context, builder: (ctx){
+      return AlertDialog(
+        title: const Text('Venta registrada'),
+        content: Text('$lines\n\nDescuento: \$${_discount.toStringAsFixed(2)}\nEnvío: \$${_shipping.toStringAsFixed(2)}\n\nTOTAL: \$${totalTxt}'),
+        actions: [ FilledButton(onPressed: ()=>Navigator.pop(ctx), child: const Text('OK')) ],
+      );
+    });
+
     setState(() {
       _cart.clear();
       _productSearchCtrl.clear();
