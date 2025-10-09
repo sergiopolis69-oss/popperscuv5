@@ -1,13 +1,11 @@
 import 'package:flutter/material.dart';
-
-// IMPORTS de UI (asegúrate que los paths existan)
-import 'ui/sales_page.dart' show SalesPage;
-import 'ui/sales_history_page.dart' show SalesHistoryPage;
-import 'ui/clients_page.dart' show ClientsPage;
-import 'ui/profit_page.dart' show ProfitPage;
-import 'ui/inventory_page.dart' show InventoryPage;
-import 'ui/purchases_page.dart' show PurchasesPage;
-import 'ui/backup_page.dart' show BackupPage;
+import 'ui/sales_page.dart';
+import 'ui/sales_history_page.dart';
+import 'ui/clients_page.dart';
+import 'ui/profit_page.dart';
+import 'ui/inventory_page.dart';
+import 'ui/purchases_page.dart';
+import 'ui/backup_page.dart';
 
 void main() {
   runApp(const PDVApp());
@@ -35,7 +33,7 @@ class _PDVAppState extends State<PDVApp> {
 
   @override
   Widget build(BuildContext context) {
-    final seed = const Color(0xFF3B5BA9);
+    final seed = const Color(0xFF3B5BA9); // acorde al logo
     final scheme = ColorScheme.fromSeed(seedColor: seed, brightness: Brightness.light);
     final theme = ThemeData(
       colorScheme: scheme,
@@ -56,10 +54,26 @@ class _PDVAppState extends State<PDVApp> {
     );
 
     return MaterialApp(
-      title: 'PDV Flutter',
+      title: 'PoppersCU Ventas',
       theme: theme,
       home: Scaffold(
-        appBar: AppBar(title: const Text('PoppersCU ventas POS')),
+        appBar: AppBar(
+          title: Row(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Image.asset(
+                  'assets/images/logo.jpg',
+                  width: 32,
+                  height: 32,
+                  fit: BoxFit.cover,
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Text('PoppersCU Ventas'),
+            ],
+          ),
+        ),
         body: AnimatedSwitcher(
           duration: const Duration(milliseconds: 250),
           child: _pages[_index],
@@ -75,7 +89,7 @@ class _PDVAppState extends State<PDVApp> {
             NavigationDestination(icon: Icon(Icons.shopping_cart), label: 'Compras'),
             NavigationDestination(icon: Icon(Icons.import_export), label: 'XLSX'),
           ],
-          onDestinationSelected: (i){ setState(()=>_index=i); },
+          onDestinationSelected: (i) => setState(() => _index = i),
         ),
       ),
     );
