@@ -6,16 +6,15 @@ import 'package:file_picker/file_picker.dart';
 import 'package:sqflite/sqflite.dart';
 import '../data/database.dart';
 
-const _xlsxMime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-
+// Conversión segura a CellValue para excel 4.x
 CellValue _cv(dynamic v) {
-  if (v == null) return const TextCellValue('');
+  if (v == null) return TextCellValue('');
   if (v is int) return IntCellValue(v);
   if (v is num) return DoubleCellValue(v.toDouble());
   return TextCellValue(v.toString());
 }
 
-// ----------------- EXPORT -----------------
+// ===================== EXPORT =====================
 
 Future<void> exportSalesXlsx() async {
   final db = await DatabaseHelper.instance.db;
@@ -25,13 +24,14 @@ Future<void> exportSalesXlsx() async {
     SELECT id, customer_phone, payment_method, place, shipping_cost, discount, date
     FROM sales ORDER BY date DESC
   ''');
+
   final items = await db.rawQuery('''
     SELECT sale_id, sku, quantity, unit_price
     FROM sale_items
   ''');
 
   final shSales = excel['sales'];
-  shSales.appendRow(const [
+  shSales.appendRow([
     TextCellValue('id'),
     TextCellValue('customer_phone'),
     TextCellValue('payment_method'),
@@ -53,7 +53,7 @@ Future<void> exportSalesXlsx() async {
   }
 
   final shItems = excel['sale_items'];
-  shItems.appendRow(const [
+  shItems.appendRow([
     TextCellValue('sale_id'),
     TextCellValue('sku'),
     TextCellValue('quantity'),
@@ -73,7 +73,7 @@ Future<void> exportSalesXlsx() async {
     name: 'ventas',
     bytes: bytes,
     ext: 'xlsx',
-    mimeType: _xlsxMime,
+    mimeType: MimeType.microsoftExcel, // ✅ correcto para file_saver ^0.2.x
   );
 }
 
@@ -85,13 +85,14 @@ Future<void> exportPurchasesXlsx() async {
     SELECT id, supplier_id, folio, date
     FROM purchases ORDER BY date DESC
   ''');
+
   final items = await db.rawQuery('''
     SELECT purchase_id, sku, quantity, unit_cost
     FROM purchase_items
   ''');
 
   final shP = excel['purchases'];
-  shP.appendRow(const [
+  shP.appendRow([
     TextCellValue('id'),
     TextCellValue('supplier_id'),
     TextCellValue('folio'),
@@ -107,7 +108,7 @@ Future<void> exportPurchasesXlsx() async {
   }
 
   final shI = excel['purchase_items'];
-  shI.appendRow(const [
+  shI.appendRow([
     TextCellValue('purchase_id'),
     TextCellValue('sku'),
     TextCellValue('quantity'),
@@ -127,17 +128,14 @@ Future<void> exportPurchasesXlsx() async {
     name: 'compras',
     bytes: bytes,
     ext: 'xlsx',
-    mimeType: _xlsxMime,
+    mimeType: MimeType.microsoftExcel,
   );
 }
 
-// ----------------- IMPORT (usa FilePicker) -----------------
+// ===================== IMPORT =====================
+// Usa FilePicker internamente. No requiere parámetros.
 
-Future<void> _pickAndImport({
-  required String headerSheet,
-  required Future<int> Function(List<Data?> row) insertHeader,
-  required Future<void> Function(List<Data?> row, Map<int,int> idMap) insertItem,
-}) async {
+Future<void> importSalesXlsx() async {
   final res = await FilePicker.platform.pickFiles(
     type: FileType.custom,
     allowedExtensions: ['xlsx'],
@@ -149,123 +147,127 @@ Future<void> _pickAndImport({
   final bytes = await File(path).readAsBytes();
   final excel = Excel.decodeBytes(bytes);
 
-  final header = excel[headerSheet];
-  final items  = excel[headerSheet == 'sales' ? 'sale_items' : 'purchase_items'];
-
   final db = await DatabaseHelper.instance.db;
-  final batch = db.batch();
 
-  final idMap = <int,int>{};
+  final header = excel['sales'];
+  final items  = excel['sale_items'];
+
+  // Mapa oldId -> newId
+  final idMap = <int, int>{};
+
   for (final r in header.rows.skip(1)) {
-    final newId = await insertHeader(r);
+    final newId = await db.insert('sales', {
+      'customer_phone': r[1]?.value?.toString(),
+      'payment_method': r[2]?.value?.toString(),
+      'place': r[3]?.value?.toString(),
+      'shipping_cost': (r[4]?.value as num?)?.toDouble() ?? 0.0,
+      'discount': (r[5]?.value as num?)?.toDouble() ?? 0.0,
+      'date': r[6]?.value?.toString(),
+    });
     final oldId = (r[0]?.value as num).toInt();
     idMap[oldId] = newId;
   }
 
   for (final r in items.rows.skip(1)) {
-    await insertItem(r, idMap);
-  }
+    final oldSale = (r[0]?.value as num).toInt();
+    final sku = r[1]?.value?.toString();
+    final qty = (r[2]?.value as num?)?.toInt() ?? 0;
+    final price = (r[3]?.value as num?)?.toDouble() ?? 0.0;
+    if (sku == null || sku.isEmpty || qty <= 0) continue;
 
-  await batch.commit(noResult: true);
-}
-
-Future<void> importSalesXlsx() async {
-  final db = await DatabaseHelper.instance.db;
-  await _pickAndImport(
-    headerSheet: 'sales',
-    insertHeader: (row) async {
-      return await db.insert('sales', {
-        'customer_phone': row[1]?.value?.toString(),
-        'payment_method': row[2]?.value?.toString(),
-        'place': row[3]?.value?.toString(),
-        'shipping_cost': (row[4]?.value as num?)?.toDouble() ?? 0.0,
-        'discount': (row[5]?.value as num?)?.toDouble() ?? 0.0,
-        'date': row[6]?.value?.toString(),
-      });
-    },
-    insertItem: (row, idMap) async {
-      final oldSale = (row[0]?.value as num).toInt();
-      final sku = row[1]?.value?.toString();
-      final qty = (row[2]?.value as num?)?.toInt() ?? 0;
-      final price = (row[3]?.value as num?)?.toDouble() ?? 0.0;
-      if (sku == null || sku.isEmpty || qty <= 0) return;
-
-      final prod = await db.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
-      int productId;
-      if (prod.isEmpty) {
-        productId = await db.insert('products', {
-          'sku': sku,
-          'name': 'SKU $sku',
-          'default_sale_price': price,
-          'last_purchase_price': 0.0,
-          'stock': 0,
-        }, conflictAlgorithm: ConflictAlgorithm.ignore);
-        if (productId == 0) {
-          final again = await db.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
-          productId = again.first['id'] as int;
-        }
-      } else {
-        productId = prod.first['id'] as int;
-      }
-
-      await db.insert('sale_items', {
-        'sale_id': idMap[oldSale],
-        'product_id': productId,
+    final prod = await db.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
+    int productId;
+    if (prod.isEmpty) {
+      productId = await db.insert('products', {
         'sku': sku,
-        'quantity': qty,
-        'unit_price': price,
-      });
-    },
-  );
+        'name': 'SKU $sku',
+        'default_sale_price': price,
+        'last_purchase_price': 0.0,
+        'stock': 0,
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      if (productId == 0) {
+        final again = await db.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
+        productId = again.first['id'] as int;
+      }
+    } else {
+      productId = prod.first['id'] as int;
+    }
+
+    await db.insert('sale_items', {
+      'sale_id': idMap[oldSale],
+      'product_id': productId,
+      'sku': sku,
+      'quantity': qty,
+      'unit_price': price,
+    });
+  }
 }
 
 Future<void> importPurchasesXlsx() async {
-  final db = await DatabaseHelper.instance.db;
-  await _pickAndImport(
-    headerSheet: 'purchases',
-    insertHeader: (row) async {
-      return await db.insert('purchases', {
-        'supplier_id': (row[1]?.value as num?)?.toInt(),
-        'folio': row[2]?.value?.toString(),
-        'date': row[3]?.value?.toString(),
-      });
-    },
-    insertItem: (row, idMap) async {
-      final oldPur = (row[0]?.value as num).toInt();
-      final sku = row[1]?.value?.toString();
-      final qty = (row[2]?.value as num?)?.toInt() ?? 0;
-      final cost = (row[3]?.value as num?)?.toDouble() ?? 0.0;
-      if (sku == null || sku.isEmpty || qty <= 0) return;
-
-      final prod = await db.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
-      int productId;
-      if (prod.isEmpty) {
-        productId = await db.insert('products', {
-          'sku': sku,
-          'name': 'SKU $sku',
-          'last_purchase_price': cost,
-          'default_sale_price': 0.0,
-          'stock': 0,
-        }, conflictAlgorithm: ConflictAlgorithm.ignore);
-        if (productId == 0) {
-          final again = await db.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
-          productId = again.first['id'] as int;
-        }
-      } else {
-        productId = prod.first['id'] as int;
-      }
-
-      await db.insert('purchase_items', {
-        'purchase_id': idMap[oldPur],
-        'product_id': productId,
-        'sku': sku,
-        'quantity': qty,
-        'unit_cost': cost,
-      });
-      await db.rawUpdate(
-        'UPDATE products SET stock = stock + ?, last_purchase_price = ?, last_purchase_date = ? WHERE id = ?',
-        [qty, cost, DateTime.now().toIso8601String(), productId],
-      );
-    },
+  final res = await FilePicker.platform.pickFiles(
+    type: FileType.custom,
+    allowedExtensions: ['xlsx'],
   );
+  if (res == null || res.files.isEmpty) return;
+  final path = res.files.single.path;
+  if (path == null) return;
+
+  final bytes = await File(path).readAsBytes();
+  final excel = Excel.decodeBytes(bytes);
+
+  final db = await DatabaseHelper.instance.db;
+
+  final header = excel['purchases'];
+  final items  = excel['purchase_items'];
+
+  final idMap = <int, int>{};
+
+  for (final r in header.rows.skip(1)) {
+    final newId = await db.insert('purchases', {
+      'supplier_id': (r[1]?.value as num?)?.toInt(),
+      'folio': r[2]?.value?.toString(),
+      'date': r[3]?.value?.toString(),
+    });
+    final oldId = (r[0]?.value as num).toInt();
+    idMap[oldId] = newId;
+  }
+
+  for (final r in items.rows.skip(1)) {
+    final oldPur = (r[0]?.value as num).toInt();
+    final sku = r[1]?.value?.toString();
+    final qty = (r[2]?.value as num?)?.toInt() ?? 0;
+    final cost = (r[3]?.value as num?)?.toDouble() ?? 0.0;
+    if (sku == null || sku.isEmpty || qty <= 0) continue;
+
+    final prod = await db.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
+    int productId;
+    if (prod.isEmpty) {
+      productId = await db.insert('products', {
+        'sku': sku,
+        'name': 'SKU $sku',
+        'last_purchase_price': cost,
+        'default_sale_price': 0.0,
+        'stock': 0,
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+      if (productId == 0) {
+        final again = await db.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
+        productId = again.first['id'] as int;
+      }
+    } else {
+      productId = prod.first['id'] as int;
+    }
+
+    await db.insert('purchase_items', {
+      'purchase_id': idMap[oldPur],
+      'product_id': productId,
+      'sku': sku,
+      'quantity': qty,
+      'unit_cost': cost,
+    });
+
+    await db.rawUpdate(
+      'UPDATE products SET stock = stock + ?, last_purchase_price = ?, last_purchase_date = ? WHERE id = ?',
+      [qty, cost, DateTime.now().toIso8601String(), productId],
+    );
+  }
 }
