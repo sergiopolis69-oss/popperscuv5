@@ -10,9 +10,7 @@ class PurchasesPage extends StatefulWidget {
   State<PurchasesPage> createState() => _PurchasesPageState();
 }
 
-class _PurchasesPageState extends State<PurchasesPage> with SingleTickerProviderStateMixin {
-  late final TabController _tab;
-
+class _PurchasesPageState extends State<PurchasesPage> {
   // --- Registrar ---
   final _folioCtrl = TextEditingController();
   final _supplierSearchCtrl = TextEditingController();
@@ -34,17 +32,16 @@ class _PurchasesPageState extends State<PurchasesPage> with SingleTickerProvider
   @override
   void initState() {
     super.initState();
-    _tab = TabController(length: 2, vsync: this);
     _loadHistory();
   }
 
   @override
   void dispose() {
-    _tab.dispose();
     _folioCtrl.dispose();
     _supplierSearchCtrl.dispose();
     _productSearchCtrl.dispose();
-    _debSup?.cancel(); _debProd?.cancel();
+    _debSup?.cancel(); 
+    _debProd?.cancel();
     super.dispose();
   }
 
@@ -367,17 +364,28 @@ class _PurchasesPageState extends State<PurchasesPage> with SingleTickerProvider
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        const TabBar(tabs: [
-          Tab(icon: Icon(Icons.add_shopping_cart), text: 'Registrar'),
-          Tab(icon: Icon(Icons.history), text: 'Historial'),
-        ], isScrollable: false, dividerColor: Colors.transparent).build(context, _tab, null),
-        Expanded(child: TabBarView(controller: _tab, children: [
-          _buildRegisterTab(),
-          _buildHistoryTab(),
-        ])),
-      ],
+    return DefaultTabController(
+      length: 2,
+      child: Column(
+        children: [
+          const TabBar(
+            tabs: [
+              Tab(icon: Icon(Icons.add_shopping_cart), text: 'Registrar'),
+           	  Tab(icon: Icon(Icons.history), text: 'Historial'),
+            ],
+            isScrollable: false,
+            dividerColor: Colors.transparent,
+          ),
+          Expanded(
+            child: TabBarView(
+              children: [
+                _buildRegisterTab(),
+                _buildHistoryTab(),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
