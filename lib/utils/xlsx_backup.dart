@@ -6,7 +6,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:sqflite/sqflite.dart';
 import '../data/database.dart';
 
-// Conversión segura a CellValue para excel 4.x
+// Helpers para excel 4.x
 CellValue _cv(dynamic v) {
   if (v == null) return TextCellValue('');
   if (v is int) return IntCellValue(v);
@@ -14,7 +14,7 @@ CellValue _cv(dynamic v) {
   return TextCellValue(v.toString());
 }
 
-// ===================== EXPORT =====================
+// =============== EXPORT SALES ===============
 
 Future<void> exportSalesXlsx() async {
   final db = await DatabaseHelper.instance.db;
@@ -73,9 +73,11 @@ Future<void> exportSalesXlsx() async {
     name: 'ventas',
     bytes: bytes,
     ext: 'xlsx',
-    mimeType: MimeType.microsoftExcel, // ✅ correcto para file_saver ^0.2.x
+    mimeType: MimeType.microsoftExcel,
   );
 }
+
+// =============== EXPORT PURCHASES ===============
 
 Future<void> exportPurchasesXlsx() async {
   final db = await DatabaseHelper.instance.db;
@@ -132,27 +134,145 @@ Future<void> exportPurchasesXlsx() async {
   );
 }
 
-// ===================== IMPORT =====================
-// Usa FilePicker internamente. No requiere parámetros.
+// =============== EXPORT PRODUCTS ===============
 
-Future<void> importSalesXlsx() async {
+Future<void> exportProductsXlsx() async {
+  final db = await DatabaseHelper.instance.db;
+  final excel = Excel.createExcel();
+
+  final products = await db.rawQuery('''
+    SELECT id, sku, name, category, default_sale_price, last_purchase_price, stock, last_purchase_date
+    FROM products ORDER BY name ASC
+  ''');
+
+  final sh = excel['products'];
+  sh.appendRow([
+    TextCellValue('id'),
+    TextCellValue('sku'),
+    TextCellValue('name'),
+    TextCellValue('category'),
+    TextCellValue('default_sale_price'),
+    TextCellValue('last_purchase_price'),
+    TextCellValue('stock'),
+    TextCellValue('last_purchase_date'),
+  ]);
+
+  for (final p in products) {
+    sh.appendRow([
+      _cv(p['id']),
+      _cv(p['sku']),
+      _cv(p['name']),
+      _cv(p['category']),
+      _cv(p['default_sale_price']),
+      _cv(p['last_purchase_price']),
+      _cv(p['stock']),
+      _cv(p['last_purchase_date']),
+    ]);
+  }
+
+  final bytes = Uint8List.fromList(excel.encode()!);
+  await FileSaver.instance.saveFile(
+    name: 'productos',
+    bytes: bytes,
+    ext: 'xlsx',
+    mimeType: MimeType.microsoftExcel,
+  );
+}
+
+// =============== EXPORT CLIENTS ===============
+
+Future<void> exportClientsXlsx() async {
+  final db = await DatabaseHelper.instance.db;
+  final excel = Excel.createExcel();
+
+  final rows = await db.rawQuery('''
+    SELECT phone, name, address
+    FROM customers ORDER BY name ASC
+  ''');
+
+  final sh = excel['customers'];
+  sh.appendRow([
+    TextCellValue('phone'),
+    TextCellValue('name'),
+    TextCellValue('address'),
+  ]);
+
+  for (final c in rows) {
+    sh.appendRow([
+      _cv(c['phone']),
+      _cv(c['name']),
+      _cv(c['address']),
+    ]);
+  }
+
+  final bytes = Uint8List.fromList(excel.encode()!);
+  await FileSaver.instance.saveFile(
+    name: 'clientes',
+    bytes: bytes,
+    ext: 'xlsx',
+    mimeType: MimeType.microsoftExcel,
+  );
+}
+
+// =============== EXPORT SUPPLIERS ===============
+
+Future<void> exportSuppliersXlsx() async {
+  final db = await DatabaseHelper.instance.db;
+  final excel = Excel.createExcel();
+
+  final rows = await db.rawQuery('''
+    SELECT phone, name, address
+    FROM suppliers ORDER BY name ASC
+  ''');
+
+  final sh = excel['suppliers'];
+  sh.appendRow([
+    TextCellValue('phone'),
+    TextCellValue('name'),
+    TextCellValue('address'),
+  ]);
+
+  for (final s in rows) {
+    sh.appendRow([
+      _cv(s['phone']),
+      _cv(s['name']),
+      _cv(s['address']),
+    ]);
+  }
+
+  final bytes = Uint8List.fromList(excel.encode()!);
+  await FileSaver.instance.saveFile(
+    name: 'proveedores',
+    bytes: bytes,
+    ext: 'xlsx',
+    mimeType: MimeType.microsoftExcel,
+  );
+}
+
+// =============== IMPORT HELPERS ===============
+
+Future<Excel?> _pickExcel() async {
   final res = await FilePicker.platform.pickFiles(
     type: FileType.custom,
     allowedExtensions: ['xlsx'],
   );
-  if (res == null || res.files.isEmpty) return;
+  if (res == null || res.files.isEmpty) return null;
   final path = res.files.single.path;
-  if (path == null) return;
-
+  if (path == null) return null;
   final bytes = await File(path).readAsBytes();
-  final excel = Excel.decodeBytes(bytes);
+  return Excel.decodeBytes(bytes);
+}
+
+// =============== IMPORT SALES ===============
+
+Future<void> importSalesXlsx() async {
+  final excel = await _pickExcel();
+  if (excel == null) return;
 
   final db = await DatabaseHelper.instance.db;
-
   final header = excel['sales'];
   final items  = excel['sale_items'];
 
-  // Mapa oldId -> newId
   final idMap = <int, int>{};
 
   for (final r in header.rows.skip(1)) {
@@ -203,20 +323,13 @@ Future<void> importSalesXlsx() async {
   }
 }
 
-Future<void> importPurchasesXlsx() async {
-  final res = await FilePicker.platform.pickFiles(
-    type: FileType.custom,
-    allowedExtensions: ['xlsx'],
-  );
-  if (res == null || res.files.isEmpty) return;
-  final path = res.files.single.path;
-  if (path == null) return;
+// =============== IMPORT PURCHASES ===============
 
-  final bytes = await File(path).readAsBytes();
-  final excel = Excel.decodeBytes(bytes);
+Future<void> importPurchasesXlsx() async {
+  final excel = await _pickExcel();
+  if (excel == null) return;
 
   final db = await DatabaseHelper.instance.db;
-
   final header = excel['purchases'];
   final items  = excel['purchase_items'];
 
@@ -269,5 +382,131 @@ Future<void> importPurchasesXlsx() async {
       'UPDATE products SET stock = stock + ?, last_purchase_price = ?, last_purchase_date = ? WHERE id = ?',
       [qty, cost, DateTime.now().toIso8601String(), productId],
     );
+  }
+}
+
+// =============== IMPORT PRODUCTS ===============
+
+Future<void> importProductsXlsx() async {
+  final excel = await _pickExcel();
+  if (excel == null) return;
+
+  final db = await DatabaseHelper.instance.db;
+  final sh = excel['products'];
+
+  for (final r in sh.rows.skip(1)) {
+    final sku = r[1]?.value?.toString();
+    if (sku == null || sku.isEmpty) continue;
+
+    final name = r[2]?.value?.toString();
+    final category = r[3]?.value?.toString();
+    final defaultSale = (r[4]?.value as num?)?.toDouble() ?? 0.0;
+    final lastPurchase = (r[5]?.value as num?)?.toDouble() ?? 0.0;
+    final stock = (r[6]?.value as num?)?.toInt() ?? 0;
+    final lastPurchaseDate = r[7]?.value?.toString();
+
+    final exists = await db.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
+    if (exists.isEmpty) {
+      await db.insert('products', {
+        'sku': sku,
+        'name': name ?? 'SKU $sku',
+        'category': category,
+        'default_sale_price': defaultSale,
+        'last_purchase_price': lastPurchase,
+        'stock': stock,
+        'last_purchase_date': lastPurchaseDate,
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    } else {
+      await db.update(
+        'products',
+        {
+          'name': name ?? exists.first['name'],
+          'category': category,
+          'default_sale_price': defaultSale,
+          'last_purchase_price': lastPurchase,
+          'stock': stock,
+          'last_purchase_date': lastPurchaseDate,
+        },
+        where: 'sku = ?',
+        whereArgs: [sku],
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+  }
+}
+
+// =============== IMPORT CLIENTS ===============
+
+Future<void> importClientsXlsx() async {
+  final excel = await _pickExcel();
+  if (excel == null) return;
+
+  final db = await DatabaseHelper.instance.db;
+  final sh = excel['customers'];
+
+  for (final r in sh.rows.skip(1)) {
+    final phone = r[0]?.value?.toString();
+    if (phone == null || phone.isEmpty) continue;
+
+    final name = r[1]?.value?.toString();
+    final address = r[2]?.value?.toString();
+
+    final exists = await db.query('customers', where: 'phone = ?', whereArgs: [phone], limit: 1);
+    if (exists.isEmpty) {
+      await db.insert('customers', {
+        'phone': phone,
+        'name': name,
+        'address': address,
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    } else {
+      await db.update(
+        'customers',
+        {
+          'name': name,
+          'address': address,
+        },
+        where: 'phone = ?',
+        whereArgs: [phone],
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+  }
+}
+
+// =============== IMPORT SUPPLIERS ===============
+
+Future<void> importSuppliersXlsx() async {
+  final excel = await _pickExcel();
+  if (excel == null) return;
+
+  final db = await DatabaseHelper.instance.db;
+  final sh = excel['suppliers'];
+
+  for (final r in sh.rows.skip(1)) {
+    final phone = r[0]?.value?.toString();
+    if (phone == null || phone.isEmpty) continue;
+
+    final name = r[1]?.value?.toString();
+    final address = r[2]?.value?.toString();
+
+    final exists = await db.query('suppliers', where: 'phone = ?', whereArgs: [phone], limit: 1);
+    if (exists.isEmpty) {
+      await db.insert('suppliers', {
+        'phone': phone,
+        'name': name,
+        'address': address,
+      }, conflictAlgorithm: ConflictAlgorithm.ignore);
+    } else {
+      await db.update(
+        'suppliers',
+        {
+          'name': name,
+          'address': address,
+        },
+        where: 'phone = ?',
+        whereArgs: [phone],
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
   }
 }
