@@ -19,6 +19,7 @@ class ProductRepository {
     return r.isEmpty ? null : r.first;
   }
 
+  /// Búsqueda por SKU o nombre (ligera)
   Future<List<Map<String, dynamic>>> searchLite(String q, {int limit = 20}) async {
     final db = await _db;
     final like = '%$q%';
@@ -29,6 +30,11 @@ class ProductRepository {
       orderBy: 'name ASC',
       limit: limit,
     );
+  }
+
+  /// Alias para mantener compatibilidad con SalesPage
+  Future<List<Map<String, dynamic>>> searchByNameOrSku(String q, {int limit = 20}) {
+    return searchLite(q, limit: limit);
   }
 
   Future<int> insert(Map<String, dynamic> data) async {
