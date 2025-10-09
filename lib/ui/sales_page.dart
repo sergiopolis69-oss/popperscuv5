@@ -11,8 +11,6 @@ class SalesPage extends StatefulWidget {
 
 class _SalesPageState extends State<SalesPage> {
   final _clientCtrl = TextEditingController();
-  final _clientDisplayCtrl = TextEditingController(); // muestra Nombre (tel), guarda phone en _clientCtrl
-  final _productCtrl = TextEditingController();
   final _paymentCtrl = TextEditingController(text: 'efectivo');
   final _shippingCtrl = TextEditingController();
   final _discountCtrl = TextEditingController();
@@ -20,13 +18,17 @@ class _SalesPageState extends State<SalesPage> {
 
   final _prodRepo = ProductRepository();
 
-  List<Map<String, dynamic>> _cart = [];
   List<Map<String, dynamic>> _clientOptions = [];
-  List<Map<String, dynamic>> _productOptions = [];
+  List<Map<String, dynamic>> _cart = [];
 
   @override
-  void initState() {
-    super.initState();
+  void dispose() {
+    _clientCtrl.dispose();
+    _paymentCtrl.dispose();
+    _shippingCtrl.dispose();
+    _discountCtrl.dispose();
+    _placeCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _searchClients(String q) async {
@@ -42,9 +44,9 @@ class _SalesPageState extends State<SalesPage> {
     setState(()=> _clientOptions = rows);
   }
 
-  Future<void> _searchProducts(String q) async {
-    final rows = await _prodRepo.searchByNameOrSku(q, limit: 20);
-    setState(()=> _productOptions = rows);
+  Future<List<Map<String, dynamic>>> _searchProducts(String q) async {
+    if (q.trim().isEmpty) return [];
+    return _prodRepo.searchByNameOrSku(q, limit: 25);
   }
 
   Future<void> _addQuickClient() async {
@@ -79,7 +81,6 @@ class _SalesPageState extends State<SalesPage> {
                 'address': addrCtrl.text.trim(),
               }, conflictAlgorithm: ConflictAlgorithm.replace);
               _clientCtrl.text = phone;
-              _clientDisplayCtrl.text = '${nameCtrl.text.trim().isEmpty ? 'Cliente' : nameCtrl.text.trim()} ($phone)';
               if (context.mounted) Navigator.pop(ctx);
             },
             child: const Text('Guardar'),
@@ -89,9 +90,9 @@ class _SalesPageState extends State<SalesPage> {
     );
   }
 
-  void _addToCart(Map<String, dynamic> p) async {
+  Future<void> _promptAddProduct(Map<String, dynamic> p) async {
     final qtyCtrl = TextEditingController(text: '1');
-    final priceCtrl = TextEditingController(text: p['default_sale_price']?.toString() ?? '0');
+    final priceCtrl = TextEditingController(text: (p['default_sale_price'] as num?)?.toString() ?? '0');
     await showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -117,7 +118,7 @@ class _SalesPageState extends State<SalesPage> {
                     'name': p['name'],
                     'quantity': qty,
                     'unit_price': price,
-                    'cost': p['last_purchase_price'] ?? 0.0,
+                    'cost': (p['last_purchase_price'] as num?)?.toDouble() ?? 0.0,
                   });
                 });
               }
@@ -143,7 +144,7 @@ class _SalesPageState extends State<SalesPage> {
       final cost = (it['cost'] ?? 0.0) as double;
       return a + (unit - cost) * qty;
     });
-    return itemsProfit - _discount;
+    return (itemsProfit - _discount).clamp(0.0, double.infinity);
   }
 
   Future<void> _saveSale() async {
@@ -164,15 +165,14 @@ class _SalesPageState extends State<SalesPage> {
     final db = await DatabaseHelper.instance.db;
     final batch = db.batch();
 
-    final sale = {
+    final saleId = await db.insert('sales', {
       'customer_phone': phone,
       'payment_method': _paymentCtrl.text,
       'place': _placeCtrl.text,
       'shipping_cost': _shipping,
       'discount': _discount,
       'date': DateTime.now().toIso8601String(),
-    };
-    final saleId = await db.insert('sales', sale);
+    });
 
     for (final it in _cart) {
       batch.insert('sale_items', {
@@ -185,7 +185,6 @@ class _SalesPageState extends State<SalesPage> {
     }
 
     await batch.commit(noResult: true);
-
     setState(() => _cart.clear());
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Venta registrada')));
   }
@@ -195,7 +194,7 @@ class _SalesPageState extends State<SalesPage> {
     return ListView(
       padding: const EdgeInsets.all(12),
       children: [
-        // Cliente (autocomplete por nombre/teléfono)
+        // Cliente (buscar por nombre o teléfono)
         Row(
           children: [
             Expanded(
@@ -203,7 +202,6 @@ class _SalesPageState extends State<SalesPage> {
                 const Text('Cliente'),
                 const SizedBox(height: 4),
                 RawAutocomplete<Map<String, dynamic>>(
-                  textEditingController: _clientDisplayCtrl,
                   optionsBuilder: (t) async {
                     final q = t.text.trim();
                     if (q.isEmpty) return const Iterable.empty();
@@ -217,7 +215,7 @@ class _SalesPageState extends State<SalesPage> {
                       hintText: 'Nombre o teléfono…',
                       suffixIcon: IconButton(icon: const Icon(Icons.person_add), onPressed: _addQuickClient),
                     ),
-                    onChanged: (_) {}, // solo UI
+                    onChanged: (_) {}, // UI
                   ),
                   optionsViewBuilder: (ctx, onSelect, opts) => Material(
                     elevation: 4,
@@ -228,7 +226,7 @@ class _SalesPageState extends State<SalesPage> {
                         subtitle: Text(o['phone'] ?? ''),
                         onTap: (){
                           onSelect(o);
-                          _clientCtrl.text = (o['phone'] ?? '').toString(); // guardar phone real
+                          _clientCtrl.text = (o['phone'] ?? '').toString(); // guardar ID
                         },
                       )).toList(),
                     ),
@@ -253,23 +251,22 @@ class _SalesPageState extends State<SalesPage> {
             ),
           ],
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 16),
 
-        // Buscar producto (sin sugerencias visibles por defecto hasta escribir)
+        // Producto (live search con RawAutocomplete)
         const Text('Producto'),
         const SizedBox(height: 4),
         RawAutocomplete<Map<String, dynamic>>(
-          textEditingController: _productCtrl,
           optionsBuilder: (t) async {
             final q = t.text.trim();
-            if (q.length < 2) return const Iterable.empty();
-            await _searchProducts(q);
-            return _productOptions;
+            if (q.length < 1) return const Iterable.empty();
+            final found = await _searchProducts(q);
+            return found;
           },
           displayStringForOption: (o)=> o['name']?.toString() ?? '',
           fieldViewBuilder: (ctx, ctrl, focus, onSubmit) => TextField(
             controller: ctrl,
-            decoration: const InputDecoration(hintText: 'Buscar por nombre o SKU…'),
+            decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'Buscar por nombre/categoría/SKU…'),
           ),
           optionsViewBuilder: (ctx, onSelect, opts) => Material(
             elevation: 4,
@@ -278,18 +275,20 @@ class _SalesPageState extends State<SalesPage> {
               children: opts.map((o)=> ListTile(
                 title: Text(o['name'] ?? ''),
                 subtitle: Text('SKU: ${o['sku'] ?? '—'}  •  Últ. costo: ${(o['last_purchase_price'] ?? 0).toString()}'),
+                trailing: const Icon(Icons.add),
                 onTap: (){
                   onSelect(o);
-                  _addToCart(o);
-                  _productCtrl.clear();
+                  _promptAddProduct(o);
                 },
               )).toList(),
             ),
           ),
-          onSelected: (_) {},
+          onSelected: (_){},
         ),
 
         const SizedBox(height: 12),
+
+        // Carrito
         Card(
           child: Column(
             children: [
@@ -309,23 +308,15 @@ class _SalesPageState extends State<SalesPage> {
             ],
           ),
         ),
+
         const SizedBox(height: 12),
 
-        TextField(
-          controller: _shippingCtrl,
-          keyboardType: TextInputType.number,
-          decoration: const InputDecoration(labelText: 'Costo de envío'),
-          onChanged: (_) => setState((){}),
-        ),
+        TextField(controller: _shippingCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Costo de envío')),
         const SizedBox(height: 8),
-        TextField(
-          controller: _discountCtrl,
-          keyboardType: TextInputType.number,
-          decoration: const InputDecoration(labelText: 'Descuento'),
-          onChanged: (_) => setState((){}),
-        ),
+        TextField(controller: _discountCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Descuento')),
         const SizedBox(height: 8),
         TextField(controller: _placeCtrl, decoration: const InputDecoration(labelText: 'Lugar de venta')),
+
         const SizedBox(height: 16),
 
         Card(
@@ -337,17 +328,16 @@ class _SalesPageState extends State<SalesPage> {
               const Divider(height: 1),
               ListTile(
                 title: const Text('TOTAL A COBRAR'),
-                trailing: Text('\$${_totalCobrar.toStringAsFixed(2)}',
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                trailing: Text('\$${_totalCobrar.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
               ),
               ListTile(
                 title: const Text('Utilidad estimada'),
-                trailing: Text('\$${_profit.toStringAsFixed(2)}',
-                    style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
+                trailing: Text('\$${_profit.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
               ),
             ],
           ),
         ),
+
         const SizedBox(height: 12),
         FilledButton.icon(onPressed: _saveSale, icon: const Icon(Icons.check), label: const Text('Registrar venta')),
       ],
