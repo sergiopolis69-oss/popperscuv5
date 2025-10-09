@@ -10,7 +10,10 @@ class PurchasesPage extends StatefulWidget {
   State<PurchasesPage> createState() => _PurchasesPageState();
 }
 
-class _PurchasesPageState extends State<PurchasesPage> {
+class _PurchasesPageState extends State<PurchasesPage> with SingleTickerProviderStateMixin {
+  late final TabController _tab;
+
+  // --- Registrar ---
   final _folioCtrl = TextEditingController();
   final _supplierSearchCtrl = TextEditingController();
   final _productSearchCtrl = TextEditingController();
@@ -25,8 +28,19 @@ class _PurchasesPageState extends State<PurchasesPage> {
   Timer? _debSup;
   Timer? _debProd;
 
+  // --- Historial ---
+  List<Map<String, dynamic>> _purchases = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _tab = TabController(length: 2, vsync: this);
+    _loadHistory();
+  }
+
   @override
   void dispose() {
+    _tab.dispose();
     _folioCtrl.dispose();
     _supplierSearchCtrl.dispose();
     _productSearchCtrl.dispose();
@@ -34,6 +48,7 @@ class _PurchasesPageState extends State<PurchasesPage> {
     super.dispose();
   }
 
+  // ---------- REGISTRAR ----------
   void _onSupplierChanged(String q) {
     _debSup?.cancel();
     _debSup = Timer(const Duration(milliseconds: 250), () async {
@@ -165,18 +180,56 @@ class _PurchasesPageState extends State<PurchasesPage> {
       batch.rawUpdate('UPDATE products SET stock = stock + ?, last_purchase_price = ?, last_purchase_date = ? WHERE id = ?',
         [it['quantity'], it['unit_cost'], DateTime.now().toIso8601String(), it['product_id']]);
     }
-
     await batch.commit(noResult: true);
+
+    // Confirmación con detalle
+    final lines = _items.map((it) => '• ${it['name']}  x${it['quantity']}  @ \$${(it['unit_cost'] as num).toString()}').join('\n');
+    await showDialog(context: context, builder: (ctx){
+      return AlertDialog(
+        title: const Text('Compra registrada'),
+        content: Text('Folio: $folio\n\n$lines\n\nTotal piezas: ${_totalPzas.toStringAsFixed(0)}\nTotal: \$${_totalMonto.toStringAsFixed(2)}'),
+        actions: [ FilledButton(onPressed: ()=>Navigator.pop(ctx), child: const Text('OK')) ],
+      );
+    });
+
     setState(() {
       _items.clear();
       _productSearchCtrl.clear();
       _productResults.clear();
+      _folioCtrl.clear();
+      _supplierSearchCtrl.clear();
+      _selectedSupplierId = null;
     });
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Compra registrada')));
+
+    // refresca historial
+    _loadHistory();
   }
 
-  @override
-  Widget build(BuildContext context) {
+  // ---------- HISTORIAL ----------
+  Future<void> _loadHistory() async {
+    final db = await DatabaseHelper.instance.db;
+    final rows = await db.rawQuery('''
+      SELECT p.id, p.folio, p.date, s.name AS supplier_name, s.phone AS supplier_phone
+      FROM purchases p
+      LEFT JOIN suppliers s ON s.id = p.supplier_id
+      ORDER BY p.date DESC
+      LIMIT 500
+    ''');
+    setState(()=> _purchases = rows);
+  }
+
+  Future<List<Map<String,dynamic>>> _itemsOfPurchase(int purchaseId) async {
+    final db = await DatabaseHelper.instance.db;
+    return db.rawQuery('''
+      SELECT pi.quantity, pi.unit_cost, pr.name
+      FROM purchase_items pi
+      JOIN products pr ON pr.id = pi.product_id
+      WHERE pi.purchase_id = ?
+    ''', [purchaseId]);
+  }
+
+  // ---------- UI ----------
+  Widget _buildRegisterTab() {
     return ListView(
       padding: const EdgeInsets.all(12),
       children: [
@@ -276,6 +329,54 @@ class _PurchasesPageState extends State<PurchasesPage> {
 
         const SizedBox(height: 12),
         FilledButton.icon(onPressed: _savePurchase, icon: const Icon(Icons.check), label: const Text('Registrar compra')),
+      ],
+    );
+  }
+
+  Widget _buildHistoryTab() {
+    return ListView(
+      padding: const EdgeInsets.all(12),
+      children: [
+        ..._purchases.map((p){
+          final title = 'Folio ${p['folio'] ?? '#${p['id']}'}';
+          final subtitle = '${p['supplier_name'] ?? p['supplier_phone'] ?? ''} • ${p['date']}';
+          return ExpansionTile(
+            title: Text(title),
+            subtitle: Text(subtitle),
+            children: [
+              FutureBuilder(
+                future: _itemsOfPurchase(p['id'] as int),
+                builder: (ctx, snap){
+                  if (!snap.hasData) return const Padding(padding: EdgeInsets.all(12), child: Text('Cargando...'));
+                  final items = snap.data as List<Map<String,dynamic>>;
+                  if (items.isEmpty) return const Padding(padding: EdgeInsets.all(12), child: Text('Sin productos'));
+                  return Column(children: items.map((it)=> ListTile(
+                    dense: true,
+                    title: Text(it['name'] ?? ''),
+                    subtitle: Text('x${it['quantity']}  •  \$${(it['unit_cost'] as num).toString()}'),
+                  )).toList());
+                },
+              ),
+            ],
+          );
+        }),
+        if (_purchases.isEmpty) const Padding(padding: EdgeInsets.all(12), child: Text('Sin compras')),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        const TabBar(tabs: [
+          Tab(icon: Icon(Icons.add_shopping_cart), text: 'Registrar'),
+          Tab(icon: Icon(Icons.history), text: 'Historial'),
+        ], isScrollable: false, dividerColor: Colors.transparent).build(context, _tab, null),
+        Expanded(child: TabBarView(controller: _tab, children: [
+          _buildRegisterTab(),
+          _buildHistoryTab(),
+        ])),
       ],
     );
   }
