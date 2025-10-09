@@ -70,7 +70,10 @@ class _InventoryPageState extends State<InventoryPage> {
       _skuCtrl.text = generateSku8();
       _nameCtrl.clear(); _saleCtrl.clear(); _costCtrl.clear(); _stockCtrl.text = '0';
     } on DatabaseException catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error BD: ${e.resultCode} ${e.isUniqueConstraintError() ? "(SKU duplicado)" : ""}')));
+      final dup = e.isUniqueConstraintError();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error BD ${dup ? "(SKU duplicado)" : ""}: ${e.toString()}')),
+      );
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
     }
