@@ -14,7 +14,7 @@ class _ProfitPageState extends State<ProfitPage> {
   ProfitRange _range = ProfitRange.hoy;
   DateTimeRange? _custom;
 
-  double _totalVentas = 0;
+  double _totalVentas = 0; // (Σ pv*qty) - Σ descuentos + Σ envío  (solo informativo)
   double _totalEnvio = 0;
   double _totalDesc = 0;
   double _utilidad = 0;
@@ -34,10 +34,8 @@ class _ProfitPageState extends State<ProfitPage> {
         final to = from.add(const Duration(days: 1));
         return (from, to);
       case ProfitRange.semana:
-        final weekday = now.weekday;
-        final from = DateTime(now.year, now.month, now.day).subtract(Duration(days: weekday - 1));
-        final to = from.add(const Duration(days: 7));
-        return (from, to);
+        final start = DateTime(now.year, now.month, now.day).subtract(Duration(days: now.weekday - 1));
+        return (start, start.add(const Duration(days: 7)));
       case ProfitRange.mes:
         final from = DateTime(now.year, now.month, 1);
         final to = DateTime(now.year, now.month + 1, 1);
@@ -49,8 +47,7 @@ class _ProfitPageState extends State<ProfitPage> {
       case ProfitRange.personalizado:
         if (_custom != null) return (_custom!.start, _custom!.end);
         final from = DateTime(now.year, now.month, now.day);
-        final to = from.add(const Duration(days: 1));
-        return (from, to);
+        return (from, from.add(const Duration(days: 1)));
     }
   }
 
@@ -60,71 +57,88 @@ class _ProfitPageState extends State<ProfitPage> {
     final toIso = to.toIso8601String();
     final db = await DatabaseHelper.instance.db;
 
-    // Ventas en rango
+    // Ventas en rango (para descuentos y envío)
     final sales = await db.rawQuery('''
-      SELECT id, payment_method, shipping_cost, discount
+      SELECT id, payment_method, 
+             CAST(IFNULL(discount,0) AS REAL)    AS discount,
+             CAST(IFNULL(shipping_cost,0) AS REAL) AS shipping_cost
       FROM sales
       WHERE date >= ? AND date < ?
     ''', [fromIso, toIso]);
 
-    // Items de venta con costo actual (último costo de compra)
+    // Items con costo (forzado a REAL)
     final items = await db.rawQuery('''
-      SELECT si.sale_id, si.quantity, si.unit_price, IFNULL(p.last_purchase_price, 0) AS cost
+      SELECT si.sale_id,
+             CAST(si.quantity AS INTEGER)           AS quantity,
+             CAST(si.unit_price AS REAL)            AS unit_price,
+             CAST(IFNULL(p.last_purchase_price,0) AS REAL) AS cost
       FROM sale_items si
       JOIN sales s ON s.id = si.sale_id
       JOIN products p ON p.id = si.product_id
       WHERE s.date >= ? AND s.date < ?
     ''', [fromIso, toIso]);
 
-    // Totales
-    double subtotalVentas = 0;   // Σ precio_venta * qty
-    double descTotal = 0;        // Σ descuentos
-    double envioTotal = 0;       // Σ envío (solo informativo, NO para utilidad)
-    double costoTotal = 0;       // Σ último costo compra * qty
-
-    for (final s in sales) {
-      descTotal += (s['discount'] as num?)?.toDouble() ?? 0.0;
-      envioTotal += (s['shipping_cost'] as num?)?.toDouble() ?? 0.0;
-    }
+    double subtotalVentas = 0; // Σ pv*qty
+    double costoTotal     = 0; // Σ cost*qty
     for (final it in items) {
-      final qty = (it['quantity'] as num).toInt();
+      final q   = (it['quantity'] as num).toInt();
       final pv  = (it['unit_price'] as num).toDouble();
       final cst = (it['cost'] as num).toDouble();
-      subtotalVentas += pv * qty;
-      costoTotal     += cst * qty;
+      subtotalVentas += pv * q;
+      costoTotal     += cst * q;
+    }
+
+    double descTotal = 0;
+    double envioTotal = 0;
+    for (final s in sales) {
+      descTotal  += (s['discount'] as num).toDouble();
+      envioTotal += (s['shipping_cost'] as num).toDouble();
     }
 
     final utilidad = subtotalVentas - descTotal - costoTotal; // envío excluido
-    // Desglose por método de pago (total cobrado): (Σ pv*qty) - descuentos + envío, agrupado por método
-    final porMetodo = await db.rawQuery('''
-      SELECT s.payment_method,
-             IFNULL(SUM(si.quantity * si.unit_price), 0) AS subtotal,
-             IFNULL(SUM(CASE WHEN si.rowid IS NOT NULL THEN 0 END), 0) AS dummy, -- truco para forzar group by correcto en sqflite
-             SUM(DISTINCT s.discount) AS descuentos_totales,
-             SUM(DISTINCT s.shipping_cost) AS envios_totales
-      FROM sales s
-      LEFT JOIN sale_items si ON si.sale_id = s.id
+
+    // ---- Desglose por método de pago (sin duplicaciones) ----
+    // 1) Subtotal por venta (Σ pv*qty por sale_id)
+    final subtotalesPorVenta = await db.rawQuery('''
+      SELECT si.sale_id, SUM(CAST(si.quantity AS REAL) * CAST(si.unit_price AS REAL)) AS sub
+      FROM sale_items si
+      JOIN sales s ON s.id = si.sale_id
       WHERE s.date >= ? AND s.date < ?
-      GROUP BY s.payment_method
-      ORDER BY s.payment_method
+      GROUP BY si.sale_id
     ''', [fromIso, toIso]);
 
-    // Calcula total por método: subtotal - descuentos + envío
-    final metodoLista = porMetodo.map((m) {
-      final sub = (m['subtotal'] as num?)?.toDouble() ?? 0.0;
-      final dsc = (m['descuentos_totales'] as num?)?.toDouble() ?? 0.0;
-      final env = (m['envios_totales'] as num?)?.toDouble() ?? 0.0;
-      return {
-        'payment_method': m['payment_method'] ?? '—',
-        'total': sub - dsc + env,
-        'subtotal': sub,
-        'descuento': dsc,
-        'envio': env,
-      };
+    // Map rápido sale_id -> subtotal items
+    final Map<int,double> subPorVenta = {
+      for (final r in subtotalesPorVenta)
+        (r['sale_id'] as int): ((r['sub'] as num?)?.toDouble() ?? 0.0)
+    };
+
+    // 2) Agrupar por método sumando: subtotal_items, descuentos, envío
+    final Map<String, Map<String,double>> byMethod = {};
+    for (final s in sales) {
+      final id = s['id'] as int;
+      final method = (s['payment_method'] ?? '—').toString();
+      byMethod.putIfAbsent(method, ()=> {'subtotal':0,'descuento':0,'envio':0,'total':0});
+      final m = byMethod[method]!;
+      final sub = subPorVenta[id] ?? 0.0;
+      final dsc = (s['discount'] as num).toDouble();
+      final env = (s['shipping_cost'] as num).toDouble();
+      m['subtotal']  = (m['subtotal'] ?? 0) + sub;
+      m['descuento'] = (m['descuento'] ?? 0) + dsc;
+      m['envio']     = (m['envio'] ?? 0) + env;
+      m['total']     = (m['total'] ?? 0) + (sub - dsc + env);
+    }
+
+    final metodoLista = byMethod.entries.map((e) => {
+      'payment_method': e.key,
+      'subtotal': e.value['subtotal'] ?? 0,
+      'descuento': e.value['descuento'] ?? 0,
+      'envio': e.value['envio'] ?? 0,
+      'total': e.value['total'] ?? 0,
     }).toList();
 
     setState(() {
-      _totalVentas = subtotalVentas - descTotal + envioTotal;
+      _totalVentas = subtotalVentas - descTotal + envioTotal; // solo informativo
       _totalEnvio  = envioTotal;
       _totalDesc   = descTotal;
       _utilidad    = utilidad;
@@ -156,15 +170,6 @@ class _ProfitPageState extends State<ProfitPage> {
   @override
   Widget build(BuildContext context) {
     final (from, to) = _calcRange();
-    String labelRango;
-    switch (_range) {
-      case ProfitRange.hoy: labelRango = 'Hoy'; break;
-      case ProfitRange.semana: labelRango = 'Semana'; break;
-      case ProfitRange.mes: labelRango = 'Mes'; break;
-      case ProfitRange.anio: labelRango = 'Año'; break;
-      case ProfitRange.personalizado: labelRango = 'Personalizado'; break;
-    }
-
     return ListView(
       padding: const EdgeInsets.all(12),
       children: [
@@ -179,7 +184,7 @@ class _ProfitPageState extends State<ProfitPage> {
           ],
         ),
         const SizedBox(height: 8),
-        Text('Rango: ${from.toIso8601String()}  →  ${to.toIso8601String()}  ($labelRango)'),
+        Text('Rango: ${from.toIso8601String()}  →  ${to.toIso8601String()}'),
 
         const SizedBox(height: 12),
         Card(
