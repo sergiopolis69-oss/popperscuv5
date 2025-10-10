@@ -31,7 +31,7 @@ Future<String> _saveExcelToDownloads(Excel excel, String filename) async {
     name: filename,
     bytes: Uint8List.fromList(bytes),
     ext: 'xlsx',
-    mimeType: MimeType.xlsx, // importante para visibilidad en Descargas
+    mimeType: MimeType.other, // importante para visibilidad en Descargas
   );
 
   final savedStr = saved?.toString() ?? '';
