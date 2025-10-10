@@ -1,19 +1,20 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.popperscuv5">
 
-    <!-- Compat < Android 10 para almacenamiento externo -->
+    <!-- Permisos que usa la app -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.READ_CONTACTS"/>
+    <!-- En Android 10 mejora la compatibilidad de acceso externo -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
 
-    <!-- Contactos (lectura) -->
-    <uses-permission android:name="android.permission.READ_CONTACTS" />
-
     <application
-        android:name="${applicationName}"
         android:label="PDV Flutter"
-        android:icon="@mipmap/ic_launcher">
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher"
+        android:requestLegacyExternalStorage="true">
 
         <activity
             android:name=".MainActivity"
@@ -24,14 +25,15 @@
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
 
-        <meta-data android:name="io.flutter.embedding.android.NormalTheme"
-            android:resource="@style/NormalTheme" />
-
+        <!-- Splash por compatibilidad -->
+        <meta-data
+            android:name="io.flutter.embedding.android.SplashScreenDrawable"
+            android:resource="@drawable/launch_background" />
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
