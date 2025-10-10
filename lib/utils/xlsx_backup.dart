@@ -5,7 +5,6 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:sqflite/sqflite.dart';
 import '../data/database.dart';
 
-/// ---------- Helpers para Excel 4.x ----------
 CellValue? cv(dynamic v) {
   if (v == null) return null;
   if (v is num) return DoubleCellValue(v.toDouble());
@@ -14,11 +13,12 @@ CellValue? cv(dynamic v) {
 }
 
 Future<void> _ensureStoragePerms() async {
-  final statuses = await [Permission.storage].request();
-  // En Android 10+ normalmente no es necesario; si el OEM lo exige, esto lo cubre.
+  // En Android 11+ no es estrictamente necesario para FileSaver, pero algunos OEMs lo piden.
+  await [Permission.storage].request();
 }
 
 Future<void> _saveExcelToDownloads(Excel excel, String filename) async {
+  await _ensureStoragePerms();
   final bytes = excel.save();
   if (bytes == null) throw Exception('No fue posible generar el archivo XLSX');
   await FileSaver.instance.saveFile(
@@ -29,19 +29,13 @@ Future<void> _saveExcelToDownloads(Excel excel, String filename) async {
   );
 }
 
-/// =======================
-/// EXPORTACIONES
-/// =======================
+/// ======================= EXPORTS =======================
 Future<void> exportClientsXlsx() async {
   final db = await DatabaseHelper.instance.db;
   final rows = await db.query('customers', orderBy: 'name COLLATE NOCASE ASC');
   final excel = Excel.createExcel();
   final sh = excel['clientes'];
-  sh.appendRow([
-    TextCellValue('phone_id'),
-    TextCellValue('name'),
-    TextCellValue('address'),
-  ]);
+  sh.appendRow([TextCellValue('phone_id'), TextCellValue('name'), TextCellValue('address')]);
   for (final r in rows) {
     sh.appendRow([cv(r['phone']), cv(r['name']), cv(r['address'])]);
   }
@@ -172,12 +166,7 @@ Future<void> exportPurchasesXlsx() async {
     FROM purchases ORDER BY date DESC
   ''');
   for (final pRow in purchases) {
-    shP.appendRow([
-      cv(pRow['id']),
-      cv(pRow['folio']),
-      cv(pRow['date']),
-      cv(pRow['supplier_id']),
-    ]);
+    shP.appendRow([cv(pRow['id']), cv(pRow['folio']), cv(pRow['date']), cv(pRow['supplier_id'])]);
   }
 
   final shI = excel['compra_items'];
@@ -209,9 +198,7 @@ Future<void> exportPurchasesXlsx() async {
   await _saveExcelToDownloads(excel, 'compras');
 }
 
-/// =======================
-/// IMPORTACIONES
-/// =======================
+/// ======================= IMPORTS =======================
 Excel _openExcel(Uint8List bytes) => Excel.decodeBytes(bytes);
 
 Future<void> importClientsXlsx(Uint8List bytes) async {
