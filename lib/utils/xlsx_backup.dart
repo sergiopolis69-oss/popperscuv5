@@ -11,9 +11,9 @@ import '../data/database.dart';
 
 Future<Database> _db() async => DatabaseHelper.instance.db;
 
-/// Convierte a CellValue para Excel 4.x
+/// Convierte dinámicos a CellValue para excel 4.x
 CellValue _cv(dynamic v) {
-  if (v == null) return const TextCellValue('');
+  if (v == null) return TextCellValue('');
   if (v is num) return DoubleCellValue(v.toDouble());
   return TextCellValue(v.toString());
 }
@@ -49,7 +49,7 @@ Future<void> exportAllToXlsx() async {
 
   // PRODUCTS
   final shProd = excel['products'];
-  shProd.appendRow(const [
+  shProd.appendRow([
     TextCellValue('sku'),
     TextCellValue('name'),
     TextCellValue('category'),
@@ -72,7 +72,7 @@ Future<void> exportAllToXlsx() async {
 
   // CUSTOMERS
   final shCust = excel['customers'];
-  shCust.appendRow(const [
+  shCust.appendRow([
     TextCellValue('phone'),
     TextCellValue('name'),
     TextCellValue('address'),
@@ -88,7 +88,7 @@ Future<void> exportAllToXlsx() async {
 
   // SUPPLIERS
   final shSupp = excel['suppliers'];
-  shSupp.appendRow(const [
+  shSupp.appendRow([
     TextCellValue('phone'),
     TextCellValue('name'),
     TextCellValue('address'),
@@ -104,7 +104,7 @@ Future<void> exportAllToXlsx() async {
 
   // SALES (header)
   final shSales = excel['sales'];
-  shSales.appendRow(const [
+  shSales.appendRow([
     TextCellValue('id'),
     TextCellValue('customer_phone'),
     TextCellValue('payment_method'),
@@ -128,7 +128,7 @@ Future<void> exportAllToXlsx() async {
 
   // SALE ITEMS (detalle con SKU)
   final shSaleItems = excel['sale_items'];
-  shSaleItems.appendRow(const [
+  shSaleItems.appendRow([
     TextCellValue('sale_id'),
     TextCellValue('sku'),
     TextCellValue('quantity'),
@@ -146,7 +146,7 @@ Future<void> exportAllToXlsx() async {
 
   // PURCHASES (header)
   final shPurch = excel['purchases'];
-  shPurch.appendRow(const [
+  shPurch.appendRow([
     TextCellValue('id'),
     TextCellValue('supplier_phone'),
     TextCellValue('folio'),
@@ -164,7 +164,7 @@ Future<void> exportAllToXlsx() async {
 
   // PURCHASE ITEMS (detalle con SKU)
   final shPurchItems = excel['purchase_items'];
-  shPurchItems.appendRow(const [
+  shPurchItems.appendRow([
     TextCellValue('purchase_id'),
     TextCellValue('sku'),
     TextCellValue('quantity'),
@@ -188,7 +188,7 @@ Future<void> exportAllToXlsx() async {
     name: 'backup_$ts',
     bytes: u8,
     ext: 'xlsx',
-    mimeType: MimeType.other, // seguro con FileSaver 0.2.x
+    mimeType: MimeType.other, // compatible con file_saver 0.2.x
   );
 }
 
