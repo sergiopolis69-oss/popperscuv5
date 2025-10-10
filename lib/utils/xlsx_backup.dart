@@ -1,278 +1,520 @@
+import 'dart:io';
 import 'dart:typed_data';
-import 'package:excel/excel.dart';
+
+import 'package:excel/excel.dart'
+    show Excel, Sheet, CellValue, TextCellValue, DoubleCellValue;
 import 'package:file_saver/file_saver.dart';
-import 'package:intl/intl.dart';
+import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
-import '../data/db.dart';
-import '../repositories/product_repository.dart';
+/// ============================================================================
+/// Helper: acceso a DB
+/// ============================================================================
 
-String _ts() => DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
-
-Future<String> _saveExcelToDownloads(Excel excel, String baseName) async {
-  final bytes = excel.encode();
-  if (bytes == null) { throw Exception('No se pudo generar XLSX'); }
-  final data = Uint8List.fromList(bytes);
-  final savedPath = await FileSaver.instance.saveFile(
-    name: baseName,
-    bytes: data,
-    ext: 'xlsx',
-    mimeType: MimeType.other, // visible en Descargas
-  );
-  return savedPath;
+Future<Database> _openDb() async {
+  // Ajusta el nombre si tu DB se llama distinto.
+  final path = p.join(await getDatabasesPath(), 'app.db');
+  return openDatabase(path);
 }
 
-CellValue _txt(Object? v) => TextCellValue(v?.toString() ?? '');
-CellValue _num(num? v) => v == null ? const TextCellValue('') : DoubleCellValue(v.toDouble());
+/// Helpers de celdas para Excel (nunca uses String/Object? directo)
+CellValue _text(String? s) => TextCellValue(s ?? '');
+CellValue _num(num? v) => v == null ? TextCellValue('') : DoubleCellValue(v.toDouble());
 
-// ---------------- EXPORT ----------------
+/// Guardar en Descargas usando file_saver (sin permisos legacy)
+Future<String> _saveToDownloads({
+  required String baseName, // sin extensión
+  required List<int> bytes,
+}) async {
+  final path = await FileSaver.instance.saveFile(
+    name: baseName,
+    ext: 'xlsx',
+    // MimeType.xlsx NO existe en algunas versiones; usa other.
+    mimeType: MimeType.other,
+    bytes: Uint8List.fromList(bytes),
+  );
+  return path;
+}
+
+/// Crea un Excel con una sola hoja y devuelve bytes
+List<int> _excelToBytes(Excel excel) {
+  final data = excel.save();
+  if (data == null) {
+    throw Exception('No se pudo generar el archivo XLSX');
+  }
+  return data;
+}
+
+/// ============================================================================
+/// EXPORTS
+/// ============================================================================
 
 Future<String> exportProductsXlsx() async {
-  final db = await openAppDb();
-  final excel = Excel.createExcel();
-  final sh = excel['productos'];
-  sh.appendRow([
-    _txt('sku'), _txt('name'), _txt('category'),
-    _txt('default_sale_price'), _txt('last_purchase_price'),
-    _txt('last_purchase_date'), _txt('stock'),
-  ]);
+  final db = await _openDb();
 
-  final rows = await db.query('products', orderBy: 'name ASC');
+  // Lee productos
+  final rows = await db.rawQuery('''
+    SELECT sku, name, category, default_sale_price, last_purchase_price, last_purchase_date, stock
+    FROM products
+    ORDER BY name COLLATE NOCASE ASC
+  ''');
+
+  final excel = Excel.createExcel();
+  final Sheet sh = excel['products'];
+  // Header
+  sh.appendRow([
+    _text('sku'),
+    _text('name'),
+    _text('category'),
+    _text('default_sale_price'),
+    _text('last_purchase_price'),
+    _text('last_purchase_date'),
+    _text('stock'),
+  ]);
+  // Data
   for (final r in rows) {
     sh.appendRow([
-      _txt(r['sku']), _txt(r['name']), _txt(r['category']),
-      _num(r['default_sale_price'] as num?), _num(r['last_purchase_price'] as num?),
-      _txt(r['last_purchase_date']), _num(r['stock'] as num?),
+      _text(r['sku']?.toString()),
+      _text(r['name']?.toString()),
+      _text(r['category']?.toString()),
+      _num(r['default_sale_price'] as num?),
+      _num(r['last_purchase_price'] as num?),
+      _text(r['last_purchase_date']?.toString()),
+      _num(r['stock'] as num?),
     ]);
   }
-  return _saveExcelToDownloads(excel, 'productos_${_ts()}');
+
+  final bytes = _excelToBytes(excel);
+  return _saveToDownloads(baseName: 'productos', bytes: bytes);
 }
 
 Future<String> exportClientsXlsx() async {
-  final db = await openAppDb();
+  final db = await _openDb();
+  final rows = await db.rawQuery('''
+    SELECT phone AS phone_id, name, address
+    FROM customers
+    ORDER BY name COLLATE NOCASE ASC
+  ''');
+
   final excel = Excel.createExcel();
-  final sh = excel['clientes'];
-  sh.appendRow([_txt('phone_id'), _txt('name'), _txt('address')]);
-  final rows = await db.query('customers', orderBy: 'name ASC');
+  final Sheet sh = excel['customers'];
+  sh.appendRow([_text('phone_id'), _text('name'), _text('address')]);
   for (final r in rows) {
-    sh.appendRow([_txt(r['phone']), _txt(r['name']), _txt(r['address'])]);
+    sh.appendRow([
+      _text(r['phone']?.toString()),
+      _text(r['name']?.toString()),
+      _text(r['address']?.toString()),
+    ]);
   }
-  return _saveExcelToDownloads(excel, 'clientes_${_ts()}');
+
+  final bytes = _excelToBytes(excel);
+  return _saveToDownloads(baseName: 'clientes', bytes: bytes);
 }
 
 Future<String> exportSuppliersXlsx() async {
-  final db = await openAppDb();
+  final db = await _openDb();
+  final rows = await db.rawQuery('''
+    SELECT id, name, phone, address
+    FROM suppliers
+    ORDER BY name COLLATE NOCASE ASC
+  ''');
+
   final excel = Excel.createExcel();
-  final sh = excel['proveedores'];
-  sh.appendRow([_txt('id'), _txt('name'), _txt('phone'), _txt('address')]);
-  final rows = await db.query('suppliers', orderBy: 'name ASC');
+  final Sheet sh = excel['suppliers'];
+  sh.appendRow([_text('id'), _text('name'), _text('phone'), _text('address')]);
   for (final r in rows) {
-    sh.appendRow([_txt(r['id']), _txt(r['name']), _txt(r['phone']), _txt(r['address'])]);
+    sh.appendRow([
+      _text(r['id']?.toString()),
+      _text(r['name']?.toString()),
+      _text(r['phone']?.toString()),
+      _text(r['address']?.toString()),
+    ]);
   }
-  return _saveExcelToDownloads(excel, 'proveedores_${_ts()}');
+
+  final bytes = _excelToBytes(excel);
+  return _saveToDownloads(baseName: 'proveedores', bytes: bytes);
 }
 
+/// Ventas: encabezado + items con SKU
 Future<String> exportSalesXlsx() async {
-  final db = await openAppDb();
+  final db = await _openDb();
+
+  final sales = await db.rawQuery('''
+    SELECT id, date, customer_phone, payment_method, place, shipping_cost, discount
+    FROM sales
+    ORDER BY date ASC
+  ''');
+
+  final items = await db.rawQuery('''
+    SELECT sale_id, product_sku, product_name, quantity, unit_price
+    FROM sale_items
+    ORDER BY sale_id ASC
+  ''');
+
   final excel = Excel.createExcel();
-  final shS = excel['ventas'];
-  final shI = excel['ventas_items'];
-  shS.appendRow([
-    _txt('sale_id'), _txt('date'), _txt('customer_phone'),
-    _txt('payment_method'), _txt('place'), _txt('shipping_cost'), _txt('discount'),
+  final Sheet shSales = excel['sales'];
+  final Sheet shItems = excel['sale_items'];
+
+  shSales.appendRow([
+    _text('sale_id'),
+    _text('date'),
+    _text('customer_phone'),
+    _text('payment_method'),
+    _text('place'),
+    _num(null), // shipping_cost
+    _num(null), // discount
   ]);
-  shI.appendRow([_txt('sale_id'), _txt('product_sku'), _txt('product_name'), _txt('quantity'), _txt('unit_price')]);
+  // Corrige header numérico con textos en columnas anteriores
+  shSales.removeRow(1);
+  shSales.appendRow([
+    _text('sale_id'),
+    _text('date'),
+    _text('customer_phone'),
+    _text('payment_method'),
+    _text('place'),
+    _text('shipping_cost'),
+    _text('discount'),
+  ]);
 
-  final sales = await db.query('sales', orderBy: 'date ASC');
   for (final s in sales) {
-    shS.appendRow([
-      _txt(s['id']), _txt(s['date']), _txt(s['customer_phone']),
-      _txt(s['payment_method']), _txt(s['place']),
-      _num(s['shipping_cost'] as num?), _num(s['discount'] as num?),
+    shSales.appendRow([
+      _text(s['id']?.toString()),
+      _text(s['date']?.toString()),
+      _text(s['customer_phone']?.toString()),
+      _text(s['payment_method']?.toString()),
+      _text(s['place']?.toString()),
+      _num(s['shipping_cost'] as num?),
+      _num(s['discount'] as num?),
     ]);
-    final items = await db.query('sale_items', where: 'sale_id = ?', whereArgs: [s['id']]);
-    for (final it in items) {
-      shI.appendRow([
-        _txt(it['sale_id']), _txt(it['product_sku']), _txt(it['product_name']),
-        _num(it['quantity'] as num?), _num(it['unit_price'] as num?),
-      ]);
-    }
   }
-  return _saveExcelToDownloads(excel, 'ventas_${_ts()}');
+
+  shItems.appendRow([
+    _text('sale_id'),
+    _text('product_sku'),
+    _text('product_name'),
+    _text('quantity'),
+    _text('unit_price'),
+  ]);
+
+  for (final it in items) {
+    shItems.appendRow([
+      _text(it['sale_id']?.toString()),
+      _text(it['product_sku']?.toString()),
+      _text(it['product_name']?.toString()),
+      _num(it['quantity'] as num?),
+      _num(it['unit_price'] as num?),
+    ]);
+  }
+
+  final bytes = _excelToBytes(excel);
+  return _saveToDownloads(baseName: 'ventas', bytes: bytes);
 }
 
+/// Compras: encabezado + items con SKU
 Future<String> exportPurchasesXlsx() async {
-  final db = await openAppDb();
-  final excel = Excel.createExcel();
-  final shP = excel['compras'];
-  final shI = excel['compras_items'];
-  shP.appendRow([_txt('purchase_id'), _txt('folio'), _txt('date'), _txt('supplier_id')]);
-  shI.appendRow([_txt('purchase_id'), _txt('product_sku'), _txt('product_name'), _txt('quantity'), _txt('unit_cost')]);
+  final db = await _openDb();
 
-  final purchases = await db.query('purchases', orderBy: 'date ASC');
-  for (final p in purchases) {
+  final purchases = await db.rawQuery('''
+    SELECT id, folio, date, supplier_id
+    FROM purchases
+    ORDER BY date ASC
+  ''');
+
+  final items = await db.rawQuery('''
+    SELECT purchase_id, product_sku, product_name, quantity, unit_cost
+    FROM purchase_items
+    ORDER BY purchase_id ASC
+  ''');
+
+  final excel = Excel.createExcel();
+  final Sheet shP = excel['purchases'];
+  final Sheet shI = excel['purchase_items'];
+
+  shP.appendRow([
+    _text('purchase_id'),
+    _text('folio'),
+    _text('date'),
+    _text('supplier_id'),
+  ]);
+
+  for (final pRow in purchases) {
     shP.appendRow([
-      _txt(p['id']), _txt(p['folio']), _txt(p['date']), _txt(p['supplier_id']),
+      _text(pRow['id']?.toString()),
+      _text(pRow['folio']?.toString()),
+      _text(pRow['date']?.toString()),
+      _text(pRow['supplier_id']?.toString()),
     ]);
-    final items = await db.query('purchase_items', where: 'purchase_id = ?', whereArgs: [p['id']]);
-    for (final it in items) {
-      shI.appendRow([
-        _txt(it['purchase_id']), _txt(it['product_sku']), _txt(it['product_name']),
-        _num(it['quantity'] as num?), _num(it['unit_cost'] as num?),
-      ]);
-    }
   }
-  return _saveExcelToDownloads(excel, 'compras_${_ts()}');
+
+  shI.appendRow([
+    _text('purchase_id'),
+    _text('product_sku'),
+    _text('product_name'),
+    _text('quantity'),
+    _text('unit_cost'),
+  ]);
+
+  for (final it in items) {
+    shI.appendRow([
+      _text(it['purchase_id']?.toString()),
+      _text(it['product_sku']?.toString()),
+      _text(it['product_name']?.toString()),
+      _num(it['quantity'] as num?),
+      _num(it['unit_cost'] as num?),
+    ]);
+  }
+
+  final bytes = _excelToBytes(excel);
+  return _saveToDownloads(baseName: 'compras', bytes: bytes);
 }
 
-// ---------------- IMPORT ----------------
+/// ============================================================================
+/// IMPORTS
+/// ============================================================================
 
 Future<void> importProductsXlsx(Uint8List bytes) async {
-  final db = await openAppDb();
-  final ex = Excel.decodeBytes(bytes);
-  final sh = ex['productos'];
-  if (sh.maxRows == 0) throw Exception('Hoja "productos" vacía o inexistente');
+  final db = await _openDb();
+  final excel = Excel.decodeBytes(bytes);
+  final sh = excel.sheets['products'];
+  if (sh == null) throw Exception('Hoja "products" no encontrada');
 
-  for (var r = 1; r < sh.maxRows; r++) {
-    final row = sh.row(r);
-    final sku = row[0]?.value?.toString().trim() ?? '';
-    if (sku.isEmpty) continue;
-    final name = row[1]?.value?.toString() ?? '';
-    final cat  = (row[2]?.value?.toString().trim().isEmpty ?? true) ? 'general' : row[2]!.value.toString().trim();
-    final dsp  = double.tryParse(row[3]?.value?.toString() ?? '0') ?? 0;
-    final lpp  = double.tryParse(row[4]?.value?.toString() ?? '0') ?? 0;
-    final lpd  = row[5]?.value?.toString() ?? '';
-    final stk  = double.tryParse(row[6]?.value?.toString() ?? '0') ?? 0;
+  // Espera header: sku, name, category, default_sale_price, last_purchase_price, last_purchase_date, stock
+  final rows = sh.rows;
+  if (rows.isEmpty) return;
+  final start = 1; // fila 0 = headers
 
-    await db.insert('products', {
-      'sku': sku,
-      'name': name,
-      'category': cat,
-      'default_sale_price': dsp,
-      'last_purchase_price': lpp,
-      'last_purchase_date': lpd,
-      'stock': stk,
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  final batch = db.batch();
+  for (int i = start; i < rows.length; i++) {
+    final r = rows[i];
+    if (r.isEmpty) continue;
+
+    final sku = (r[0]?.value)?.toString().trim();
+    final name = (r[1]?.value)?.toString().trim();
+    if (sku == null || sku.isEmpty) continue; // no agregues sin SKU
+    final category = (r[2]?.value)?.toString().trim();
+    final dsp = num.tryParse((r[3]?.value)?.toString() ?? '');
+    final lpp = num.tryParse((r[4]?.value)?.toString() ?? '');
+    final lpd = (r[5]?.value)?.toString();
+    final stock = num.tryParse((r[6]?.value)?.toString() ?? '');
+
+    batch.insert(
+      'products',
+      {
+        'sku': sku,
+        'name': name,
+        'category': category,
+        'default_sale_price': dsp,
+        'last_purchase_price': lpp,
+        'last_purchase_date': lpd,
+        'stock': stock,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
   }
+  await batch.commit(noResult: true);
 }
 
 Future<void> importClientsXlsx(Uint8List bytes) async {
-  final db = await openAppDb();
-  final ex = Excel.decodeBytes(bytes);
-  final sh = ex['clientes'];
-  if (sh.maxRows == 0) throw Exception('Hoja "clientes" vacía o inexistente');
+  final db = await _openDb();
+  final excel = Excel.decodeBytes(bytes);
+  final sh = excel.sheets['customers'];
+  if (sh == null) throw Exception('Hoja "customers" no encontrada');
 
-  for (var r = 1; r < sh.maxRows; r++) {
-    final row = sh.row(r);
-    final phone = row[0]?.value?.toString().trim() ?? '';
-    if (phone.isEmpty) continue;
-    await db.insert('customers', {
-      'phone': phone,
-      'name': row[1]?.value?.toString() ?? '',
-      'address': row[2]?.value?.toString() ?? '',
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  final rows = sh.rows;
+  if (rows.isEmpty) return;
+  final start = 1;
+
+  final batch = db.batch();
+  for (int i = start; i < rows.length; i++) {
+    final r = rows[i];
+    if (r.isEmpty) continue;
+
+    final phone = (r[0]?.value)?.toString().trim();
+    if (phone == null || phone.isEmpty) continue; // id = phone
+    final name = (r[1]?.value)?.toString();
+    final address = (r[2]?.value)?.toString();
+
+    batch.insert(
+      'customers',
+      {'phone': phone, 'name': name, 'address': address},
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
   }
+  await batch.commit(noResult: true);
 }
 
 Future<void> importSuppliersXlsx(Uint8List bytes) async {
-  final db = await openAppDb();
-  final ex = Excel.decodeBytes(bytes);
-  final sh = ex['proveedores'];
-  if (sh.maxRows == 0) throw Exception('Hoja "proveedores" vacía o inexistente');
+  final db = await _openDb();
+  final excel = Excel.decodeBytes(bytes);
+  final sh = excel.sheets['suppliers'];
+  if (sh == null) throw Exception('Hoja "suppliers" no encontrada');
 
-  for (var r = 1; r < sh.maxRows; r++) {
-    final row = sh.row(r);
-    final id = row[0]?.value?.toString().trim() ?? '';
-    if (id.isEmpty) continue;
-    await db.insert('suppliers', {
-      'id': id,
-      'name': row[1]?.value?.toString() ?? '',
-      'phone': row[2]?.value?.toString() ?? '',
-      'address': row[3]?.value?.toString() ?? '',
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  final rows = sh.rows;
+  if (rows.isEmpty) return;
+  final start = 1;
+
+  final batch = db.batch();
+  for (int i = start; i < rows.length; i++) {
+    final r = rows[i];
+    if (r.isEmpty) continue;
+
+    final idStr = (r[0]?.value)?.toString();
+    final id = int.tryParse(idStr ?? '');
+    final name = (r[1]?.value)?.toString();
+    final phone = (r[2]?.value)?.toString();
+    final address = (r[3]?.value)?.toString();
+
+    if (id == null) continue;
+
+    batch.insert(
+      'suppliers',
+      {'id': id, 'name': name, 'phone': phone, 'address': address},
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
   }
+  await batch.commit(noResult: true);
 }
 
 Future<void> importSalesXlsx(Uint8List bytes) async {
-  final db = await openAppDb();
-  final ex = Excel.decodeBytes(bytes);
-  final shS = ex['ventas'];
-  final shI = ex['ventas_items'];
-  if (shS.maxRows == 0) throw Exception('Hoja "ventas" vacía o inexistente');
-  if (shI.maxRows == 0) throw Exception('Hoja "ventas_items" vacía o inexistente');
+  final db = await _openDb();
+  final excel = Excel.decodeBytes(bytes);
+  final shSales = excel.sheets['sales'];
+  final shItems = excel.sheets['sale_items'];
+  if (shSales == null || shItems == null) {
+    throw Exception('Hojas "sales" y/o "sale_items" no encontradas');
+  }
 
-  for (var r = 1; r < shS.maxRows; r++) {
-    final row = shS.row(r);
-    final idStr = row[0]?.value?.toString();
-    final id = int.tryParse(idStr ?? '');
+  final rowsS = shSales.rows;
+  final rowsI = shItems.rows;
+  if (rowsS.isEmpty || rowsI.isEmpty) return;
+
+  final batch = db.batch();
+
+  // Ventas
+  for (int i = 1; i < rowsS.length; i++) {
+    final r = rowsS[i];
+    if (r.isEmpty) continue;
+
+    final id = int.tryParse((r[0]?.value)?.toString() ?? '');
+    final date = (r[1]?.value)?.toString();
+    final phone = (r[2]?.value)?.toString();
+    final method = (r[3]?.value)?.toString();
+    final place = (r[4]?.value)?.toString();
+    final ship = num.tryParse((r[5]?.value)?.toString() ?? '');
+    final disc = num.tryParse((r[6]?.value)?.toString() ?? '');
+
     if (id == null) continue;
-    await db.insert('sales', {
-      'id': id,
-      'date': row[1]?.value?.toString() ?? '',
-      'customer_phone': row[2]?.value?.toString(),
-      'payment_method': row[3]?.value?.toString() ?? 'efectivo',
-      'place': row[4]?.value?.toString() ?? '',
-      'shipping_cost': double.tryParse(row[5]?.value?.toString() ?? '0') ?? 0,
-      'discount': double.tryParse(row[6]?.value?.toString() ?? '0') ?? 0,
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
+
+    batch.insert(
+      'sales',
+      {
+        'id': id,
+        'date': date,
+        'customer_phone': phone,
+        'payment_method': method,
+        'place': place,
+        'shipping_cost': ship,
+        'discount': disc,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
   }
 
-  final prodRepo = ProductRepository();
-  for (var r = 1; r < shI.maxRows; r++) {
-    final row = shI.row(r);
-    final saleId = int.tryParse(row[0]?.value?.toString() ?? '');
-    final sku = row[1]?.value?.toString().trim() ?? '';
-    if (saleId == null || sku.isEmpty) continue;
+  // Items (valida SKU existente)
+  for (int i = 1; i < rowsI.length; i++) {
+    final r = rowsI[i];
+    if (r.isEmpty) continue;
 
-    final prod = await prodRepo.findBySku(sku);
-    if (prod == null) continue;
+    final saleId = int.tryParse((r[0]?.value)?.toString() ?? '');
+    final sku = (r[1]?.value)?.toString();
+    final name = (r[2]?.value)?.toString();
+    final qty = num.tryParse((r[3]?.value)?.toString() ?? '');
+    final price = num.tryParse((r[4]?.value)?.toString() ?? '');
+    if (saleId == null || sku == null || sku.isEmpty) continue;
 
-    await db.insert('sale_items', {
-      'sale_id': saleId,
-      'product_sku': sku,
-      'product_name': row[2]?.value?.toString() ?? (prod['name'] ?? ''),
-      'quantity': double.tryParse(row[3]?.value?.toString() ?? '0') ?? 0,
-      'unit_price': double.tryParse(row[4]?.value?.toString() ?? '0') ?? 0,
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    final prod = await db.rawQuery('SELECT sku FROM products WHERE sku = ?', [sku]);
+    if (prod.isEmpty) continue; // omite item si SKU no existe
+
+    batch.insert(
+      'sale_items',
+      {
+        'sale_id': saleId,
+        'product_sku': sku,
+        'product_name': name,
+        'quantity': qty,
+        'unit_price': price,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
   }
+
+  await batch.commit(noResult: true);
 }
 
 Future<void> importPurchasesXlsx(Uint8List bytes) async {
-  final db = await openAppDb();
-  final ex = Excel.decodeBytes(bytes);
-  final shP = ex['compras'];
-  final shI = ex['compras_items'];
-  if (shP.maxRows == 0) throw Exception('Hoja "compras" vacía o inexistente');
-  if (shI.maxRows == 0) throw Exception('Hoja "compras_items" vacía o inexistente');
+  final db = await _openDb();
+  final excel = Excel.decodeBytes(bytes);
+  final shP = excel.sheets['purchases'];
+  final shI = excel.sheets['purchase_items'];
+  if (shP == null || shI == null) {
+    throw Exception('Hojas "purchases" y/o "purchase_items" no encontradas');
+  }
 
-  for (var r = 1; r < shP.maxRows; r++) {
-    final row = shP.row(r);
-    final id = int.tryParse(row[0]?.value?.toString() ?? '');
+  final rowsP = shP.rows;
+  final rowsI = shI.rows;
+  if (rowsP.isEmpty || rowsI.isEmpty) return;
+
+  final batch = db.batch();
+
+  for (int i = 1; i < rowsP.length; i++) {
+    final r = rowsP[i];
+    if (r.isEmpty) continue;
+
+    final id = int.tryParse((r[0]?.value)?.toString() ?? '');
+    final folio = (r[1]?.value)?.toString();
+    final date = (r[2]?.value)?.toString();
+    final supplierId = int.tryParse((r[3]?.value)?.toString() ?? '');
+
     if (id == null) continue;
-    await db.insert('purchases', {
-      'id': id,
-      'folio': row[1]?.value?.toString() ?? '',
-      'date': row[2]?.value?.toString() ?? '',
-      'supplier_id': row[3]?.value?.toString(),
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
+
+    batch.insert(
+      'purchases',
+      {
+        'id': id,
+        'folio': folio,
+        'date': date,
+        'supplier_id': supplierId,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
   }
 
-  final prodRepo = ProductRepository();
-  for (var r = 1; r < shI.maxRows; r++) {
-    final row = shI.row(r);
-    final purchaseId = int.tryParse(row[0]?.value?.toString() ?? '');
-    final sku = row[1]?.value?.toString().trim() ?? '';
-    if (purchaseId == null || sku.isEmpty) continue;
+  for (int i = 1; i < rowsI.length; i++) {
+    final r = rowsI[i];
+    if (r.isEmpty) continue;
 
-    final prod = await prodRepo.findBySku(sku);
-    if (prod == null) continue;
+    final purchaseId = int.tryParse((r[0]?.value)?.toString() ?? '');
+    final sku = (r[1]?.value)?.toString();
+    final name = (r[2]?.value)?.toString();
+    final qty = num.tryParse((r[3]?.value)?.toString() ?? '');
+    final cost = num.tryParse((r[4]?.value)?.toString() ?? '');
+    if (purchaseId == null || sku == null || sku.isEmpty) continue;
 
-    await db.insert('purchase_items', {
-      'purchase_id': purchaseId,
-      'product_sku': sku,
-      'product_name': row[2]?.value?.toString() ?? (prod['name'] ?? ''),
-      'quantity': double.tryParse(row[3]?.value?.toString() ?? '0') ?? 0,
-      'unit_cost': double.tryParse(row[4]?.value?.toString() ?? '0') ?? 0,
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
+    final prod = await db.rawQuery('SELECT sku FROM products WHERE sku = ?', [sku]);
+    if (prod.isEmpty) continue;
+
+    batch.insert(
+      'purchase_items',
+      {
+        'purchase_id': purchaseId,
+        'product_sku': sku,
+        'product_name': name,
+        'quantity': qty,
+        'unit_cost': cost,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
   }
+
+  await batch.commit(noResult: true);
 }
