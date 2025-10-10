@@ -1,111 +1,89 @@
-import 'dart:io';
-
-import 'package:file_picker/file_picker.dart';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
-
+import 'package:file_picker/file_picker.dart';
 import '../utils/xlsx_backup.dart';
 
-class BackupPage extends StatefulWidget {
+class BackupPage extends StatelessWidget {
   const BackupPage({super.key});
-  @override
-  State<BackupPage> createState() => _BackupPageState();
-}
 
-class _BackupPageState extends State<BackupPage> {
-  bool _busy = false;
-
-  Future<void> _exportAll() async {
-    setState(() => _busy = true);
+  Future<void> _export(BuildContext ctx, String label, Future Function() fn) async {
     try {
-      await exportAllToXlsx();
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Exportado a XLSX (elige la ubicación en el diálogo del sistema).')),
-      );
+      final file = await fn();
+      if (ctx.mounted) {
+        ScaffoldMessenger.of(ctx).showSnackBar(
+          SnackBar(content: Text('$label exportado en: ${file.path}')),
+        );
+      }
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error exportando: $e')));
-    } finally {
-      if (mounted) setState(() => _busy = false);
+      if (ctx.mounted) {
+        ScaffoldMessenger.of(ctx).showSnackBar(
+          SnackBar(content: Text('Error exportando $label: $e')),
+        );
+      }
     }
   }
 
-  Future<void> _pickAndImport(Future<void> Function(File) importer) async {
+  Future<void> _import(BuildContext ctx, String label, Future Function(Uint8List) fn) async {
     try {
       final res = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: ['xlsx'],
+        withData: true,
       );
       if (res == null || res.files.isEmpty) return;
-      final path = res.files.single.path;
-      if (path == null) return;
-      await importer(File(path));
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Importación completada.')));
+      final bytes = res.files.first.bytes;
+      if (bytes == null) throw Exception('No se pudo leer el archivo');
+      await fn(bytes);
+      if (ctx.mounted) {
+        ScaffoldMessenger.of(ctx).showSnackBar(
+          SnackBar(content: Text('$label importado correctamente')),
+        );
+      }
     } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error importando: $e')));
+      if (ctx.mounted) {
+        ScaffoldMessenger.of(ctx).showSnackBar(
+          SnackBar(content: Text('Error importando $label: $e')),
+        );
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return ListView(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(12),
       children: [
-        Row(
-          children: [
-            FilledButton.icon(
-              onPressed: _busy ? null : _exportAll,
-              icon: const Icon(Icons.download),
-              label: const Text('Exportar TODO (XLSX)'),
-            ),
-            const SizedBox(width: 12),
-            if (_busy) const Padding(
-              padding: EdgeInsets.only(left: 8.0),
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
-          ],
-        ),
-        const SizedBox(height: 16),
-        const Text('Importar desde XLSX (elige archivo por catálogo):'),
+        const Text('Exportar a XLSX (carpeta Descargas)'),
         const SizedBox(height: 8),
         Wrap(
-          spacing: 8,
-          runSpacing: 8,
+          spacing: 8, runSpacing: 8,
           children: [
-            OutlinedButton(
-              onPressed: () => _pickAndImport(importCustomersXlsx),
-              child: const Text('Clientes'),
-            ),
-            OutlinedButton(
-              onPressed: () => _pickAndImport(importProductsXlsx),
-              child: const Text('Productos'),
-            ),
-            OutlinedButton(
-              onPressed: () => _pickAndImport(importSuppliersXlsx),
-              child: const Text('Proveedores'),
-            ),
-            OutlinedButton(
-              onPressed: () => _pickAndImport(importSalesXlsx),
-              child: const Text('Ventas'),
-            ),
-            OutlinedButton(
-              onPressed: () => _pickAndImport(importPurchasesXlsx),
-              child: const Text('Compras'),
-            ),
+            FilledButton(onPressed: ()=>_export(context, 'Clientes', exportClientsXlsx), child: const Text('Clientes')),
+            FilledButton(onPressed: ()=>_export(context, 'Productos', exportProductsXlsx), child: const Text('Productos')),
+            FilledButton(onPressed: ()=>_export(context, 'Proveedores', exportSuppliersXlsx), child: const Text('Proveedores')),
+            FilledButton(onPressed: ()=>_export(context, 'Ventas', exportSalesXlsx), child: const Text('Ventas (con SKU)')),
+            FilledButton(onPressed: ()=>_export(context, 'Compras', exportPurchasesXlsx), child: const Text('Compras (con SKU)')),
           ],
         ),
         const SizedBox(height: 24),
+        const Text('Importar desde XLSX'),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8, runSpacing: 8,
+          children: [
+            OutlinedButton(onPressed: ()=>_import(context, 'Clientes', importClientsXlsx), child: const Text('Clientes')),
+            OutlinedButton(onPressed: ()=>_import(context, 'Productos', importProductsXlsx), child: const Text('Productos')),
+            OutlinedButton(onPressed: ()=>_import(context, 'Proveedores', importSuppliersXlsx), child: const Text('Proveedores')),
+            OutlinedButton(onPressed: ()=>_import(context, 'Ventas (+items por SKU)', importSalesXlsx), child: const Text('Ventas')),
+            OutlinedButton(onPressed: ()=>_import(context, 'Compras (+items por SKU)', importPurchasesXlsx), child: const Text('Compras')),
+          ],
+        ),
+        const SizedBox(height: 16),
         const Text(
-          'Formato XLSX esperado:\n'
-          '• Hoja "products": sku, name, category, default_sale_price, last_purchase_price, stock\n'
-          '• Hoja "customers": phone, name, address\n'
-          '• Hoja "suppliers": phone, name, address\n'
-          '• Hoja "sales": id, customer_phone, payment_method, place, shipping_cost, discount, date\n'
-          '• Hoja "sale_items": sale_id, sku, quantity, unit_price\n'
-          '• Hoja "purchases": id, supplier_phone, folio, date\n'
-          '• Hoja "purchase_items": purchase_id, sku, quantity, unit_cost\n',
+          'Notas:\n'
+          '• En ventas/compras, los renglones de detalle usan el SKU para enlazar productos.\n'
+          '• Si el SKU no existe en la tabla de productos, ese renglón se ignora (para seguridad).\n'
+          '• Puedes exportar todo, reinstalar la app, e importar en este orden: Productos → Clientes/Proveedores → Ventas/Compras.',
         ),
       ],
     );
