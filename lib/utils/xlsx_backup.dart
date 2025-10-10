@@ -5,24 +5,28 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:sqflite/sqflite.dart';
 import '../data/database.dart';
 
+/// ---------- Helpers para Excel 4.x ----------
+CellValue? cv(dynamic v) {
+  if (v == null) return null;
+  if (v is num) return DoubleCellValue(v.toDouble());
+  if (v is bool) return BoolCellValue(v);
+  return TextCellValue(v.toString());
+}
+
 Future<void> _ensureStoragePerms() async {
   final statuses = await [Permission.storage].request();
-  if (!statuses[Permission.storage]!.isGranted) {
-    // En Android 10+ normalmente no es necesario, pero algunos OEMs lo exigen.
-    // Si no lo conceden, intentamos continuar (SAF suele funcionar). Solo avisamos.
-  }
+  // En Android 10+ no suele ser necesario, pero algunos OEM lo piden.
+  // Si se niega, SAF igual suele funcionar; no lanzamos excepción dura.
 }
 
 Future<void> _saveExcelToDownloads(Excel excel, String filename) async {
-  await _ensureStoragePerms();
   final bytes = excel.save();
   if (bytes == null) throw Exception('No fue posible generar el archivo XLSX');
-  // FileSaver guarda en Descargas con el nombre/extensión indicados
   await FileSaver.instance.saveFile(
     name: filename,
     bytes: Uint8List.fromList(bytes),
     ext: 'xlsx',
-    mimeType: MimeType.other, // XLSX
+    mimeType: MimeType.other,
   );
 }
 
@@ -34,9 +38,13 @@ Future<void> exportClientsXlsx() async {
   final rows = await db.query('customers', orderBy: 'name COLLATE NOCASE ASC');
   final excel = Excel.createExcel();
   final sh = excel['clientes'];
-  sh.appendRow(['phone_id', 'name', 'address']);
+  sh.appendRow([
+    const TextCellValue('phone_id'),
+    const TextCellValue('name'),
+    const TextCellValue('address'),
+  ]);
   for (final r in rows) {
-    sh.appendRow([r['phone'], r['name'], r['address']]);
+    sh.appendRow([cv(r['phone']), cv(r['name']), cv(r['address'])]);
   }
   await _saveExcelToDownloads(excel, 'clientes');
 }
@@ -46,9 +54,14 @@ Future<void> exportSuppliersXlsx() async {
   final rows = await db.query('suppliers', orderBy: 'name COLLATE NOCASE ASC');
   final excel = Excel.createExcel();
   final sh = excel['proveedores'];
-  sh.appendRow(['id', 'name', 'phone', 'address']);
+  sh.appendRow(const [
+    TextCellValue('id'),
+    TextCellValue('name'),
+    TextCellValue('phone'),
+    TextCellValue('address'),
+  ]);
   for (final r in rows) {
-    sh.appendRow([r['id'], r['name'], r['phone'], r['address']]);
+    sh.appendRow([cv(r['id']), cv(r['name']), cv(r['phone']), cv(r['address'])]);
   }
   await _saveExcelToDownloads(excel, 'proveedores');
 }
@@ -58,14 +71,26 @@ Future<void> exportProductsXlsx() async {
   final rows = await db.query('products', orderBy: 'name COLLATE NOCASE ASC');
   final excel = Excel.createExcel();
   final sh = excel['productos'];
-  sh.appendRow([
-    'id','sku','name','category',
-    'default_sale_price','last_purchase_price','last_purchase_date','stock'
+  sh.appendRow(const [
+    TextCellValue('id'),
+    TextCellValue('sku'),
+    TextCellValue('name'),
+    TextCellValue('category'),
+    TextCellValue('default_sale_price'),
+    TextCellValue('last_purchase_price'),
+    TextCellValue('last_purchase_date'),
+    TextCellValue('stock'),
   ]);
   for (final r in rows) {
     sh.appendRow([
-      r['id'], r['sku'], r['name'], r['category'],
-      r['default_sale_price'], r['last_purchase_price'], r['last_purchase_date'], r['stock']
+      cv(r['id']),
+      cv(r['sku']),
+      cv(r['name']),
+      cv(r['category']),
+      cv(r['default_sale_price']),
+      cv(r['last_purchase_price']),
+      cv(r['last_purchase_date']),
+      cv(r['stock']),
     ]);
   }
   await _saveExcelToDownloads(excel, 'productos');
@@ -75,23 +100,44 @@ Future<void> exportSalesXlsx() async {
   final db = await DatabaseHelper.instance.db;
   final excel = Excel.createExcel();
 
+  // Ventas (cabecera)
   final shSales = excel['ventas'];
-  shSales.appendRow(['sale_id','date','customer_phone','payment_method','place','shipping_cost','discount']);
+  shSales.appendRow(const [
+    TextCellValue('sale_id'),
+    TextCellValue('date'),
+    TextCellValue('customer_phone'),
+    TextCellValue('payment_method'),
+    TextCellValue('place'),
+    TextCellValue('shipping_cost'),
+    TextCellValue('discount'),
+  ]);
   final sales = await db.rawQuery('''
-    SELECT id, date, customer_phone, payment_method, place, 
+    SELECT id, date, customer_phone, payment_method, place,
            CAST(IFNULL(shipping_cost,0) AS REAL) AS shipping_cost,
            CAST(IFNULL(discount,0) AS REAL) AS discount
     FROM sales ORDER BY date DESC
   ''');
   for (final s in sales) {
     shSales.appendRow([
-      s['id'], s['date'], s['customer_phone'], s['payment_method'],
-      s['place'], s['shipping_cost'], s['discount']
+      cv(s['id']),
+      cv(s['date']),
+      cv(s['customer_phone']),
+      cv(s['payment_method']),
+      cv(s['place']),
+      cv(s['shipping_cost']),
+      cv(s['discount']),
     ]);
   }
 
+  // Items con SKU
   final shItems = excel['venta_items'];
-  shItems.appendRow(['sale_id','product_sku','product_name','quantity','unit_price']);
+  shItems.appendRow(const [
+    TextCellValue('sale_id'),
+    TextCellValue('product_sku'),
+    TextCellValue('product_name'),
+    TextCellValue('quantity'),
+    TextCellValue('unit_price'),
+  ]);
   final items = await db.rawQuery('''
     SELECT si.sale_id, p.sku AS product_sku, p.name AS product_name,
            CAST(si.quantity AS INTEGER) AS quantity,
@@ -102,8 +148,11 @@ Future<void> exportSalesXlsx() async {
   ''');
   for (final it in items) {
     shItems.appendRow([
-      it['sale_id'], it['product_sku'], it['product_name'],
-      it['quantity'], it['unit_price']
+      cv(it['sale_id']),
+      cv(it['product_sku']),
+      cv(it['product_name']),
+      cv(it['quantity']),
+      cv(it['unit_price']),
     ]);
   }
 
@@ -114,18 +163,36 @@ Future<void> exportPurchasesXlsx() async {
   final db = await DatabaseHelper.instance.db;
   final excel = Excel.createExcel();
 
+  // Compras (cabecera)
   final shP = excel['compras'];
-  shP.appendRow(['purchase_id','folio','date','supplier_id']);
+  shP.appendRow(const [
+    TextCellValue('purchase_id'),
+    TextCellValue('folio'),
+    TextCellValue('date'),
+    TextCellValue('supplier_id'),
+  ]);
   final purchases = await db.rawQuery('''
     SELECT id, folio, date, supplier_id
     FROM purchases ORDER BY date DESC
   ''');
   for (final pRow in purchases) {
-    shP.appendRow([pRow['id'], pRow['folio'], pRow['date'], pRow['supplier_id']]);
+    shP.appendRow([
+      cv(pRow['id']),
+      cv(pRow['folio']),
+      cv(pRow['date']),
+      cv(pRow['supplier_id']),
+    ]);
   }
 
+  // Items con SKU
   final shI = excel['compra_items'];
-  shI.appendRow(['purchase_id','product_sku','product_name','quantity','unit_cost']);
+  shI.appendRow(const [
+    TextCellValue('purchase_id'),
+    TextCellValue('product_sku'),
+    TextCellValue('product_name'),
+    TextCellValue('quantity'),
+    TextCellValue('unit_cost'),
+  ]);
   final items = await db.rawQuery('''
     SELECT pi.purchase_id, p.sku AS product_sku, p.name AS product_name,
            CAST(pi.quantity AS INTEGER) AS quantity,
@@ -136,8 +203,11 @@ Future<void> exportPurchasesXlsx() async {
   ''');
   for (final it in items) {
     shI.appendRow([
-      it['purchase_id'], it['product_sku'], it['product_name'],
-      it['quantity'], it['unit_cost']
+      cv(it['purchase_id']),
+      cv(it['product_sku']),
+      cv(it['product_name']),
+      cv(it['quantity']),
+      cv(it['unit_cost']),
     ]);
   }
 
@@ -145,7 +215,7 @@ Future<void> exportPurchasesXlsx() async {
 }
 
 /// =======================
-/// IMPORTACIONES (mismo API)
+/// IMPORTACIONES
 /// =======================
 Excel _openExcel(Uint8List bytes) => Excel.decodeBytes(bytes);
 
@@ -218,11 +288,12 @@ Future<void> importSalesXlsx(Uint8List bytes) async {
 
   final prods = await db.query('products', columns: ['id','sku']);
   final Map<String,int> skuToId = {
-    for (final p in prods) if ((p['sku'] ?? '').toString().isNotEmpty) (p['sku'] as String): (p['id'] as int)
+    for (final p in prods)
+      if ((p['sku'] ?? '').toString().isNotEmpty)
+        (p['sku'] as String): (p['id'] as int)
   };
 
   final Map<int,int> rowToSaleId = {};
-
   for (int r = 1; r < shS.maxRows; r++) {
     final date = shS.cell(CellIndex.indexByColumnRow(columnIndex: 1, rowIndex: r)).value?.toString();
     final phone = shS.cell(CellIndex.indexByColumnRow(columnIndex: 2, rowIndex: r)).value?.toString();
@@ -266,7 +337,9 @@ Future<void> importPurchasesXlsx(Uint8List bytes) async {
 
   final prods = await db.query('products', columns: ['id','sku']);
   final Map<String,int> skuToId = {
-    for (final p in prods) if ((p['sku'] ?? '').toString().isNotEmpty) (p['sku'] as String): (p['id'] as int)
+    for (final p in prods)
+      if ((p['sku'] ?? '').toString().isNotEmpty)
+        (p['sku'] as String): (p['id'] as int)
   };
 
   final Map<int,int> rowToPurchaseId = {};
@@ -295,8 +368,10 @@ Future<void> importPurchasesXlsx(Uint8List bytes) async {
     batch.insert('purchase_items', {
       'purchase_id': purchaseId, 'product_id': pid, 'quantity': qty, 'unit_cost': cost,
     });
-    batch.rawUpdate('UPDATE products SET stock = stock + ?, last_purchase_price = ?, last_purchase_date = ? WHERE id = ?',
-      [qty, cost, DateTime.now().toIso8601String(), pid]);
+    batch.rawUpdate(
+      'UPDATE products SET stock = stock + ?, last_purchase_price = ?, last_purchase_date = ? WHERE id = ?',
+      [qty, cost, DateTime.now().toIso8601String(), pid],
+    );
   }
   await batch.commit(noResult: true);
 }
