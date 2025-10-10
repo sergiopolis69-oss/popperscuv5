@@ -1,10 +1,12 @@
-import 'dart:typed_data';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:excel/excel.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:sqflite/sqflite.dart';
 import '../data/database.dart';
+
+/* ===================== Helpers ===================== */
 
 CellValue? _cv(dynamic v) {
   if (v == null) return null;
@@ -13,32 +15,38 @@ CellValue? _cv(dynamic v) {
   return TextCellValue(v.toString());
 }
 
+T? _getCell<T>(Data? cell) {
+  if (cell == null) return null;
+  final v = cell.value;
+  if (v is TextCellValue) return (T == String ? v.value as T : v.value.toString() as T);
+  if (v is DoubleCellValue) return (T == double ? v.value as T : v.value.toString() as T);
+  if (v is IntCellValue) return (T == int ? v.value as T : v.value.toString() as T);
+  if (v is BoolCellValue) return (T == bool ? v.value as T : v.value.toString() as T);
+  return v as T?;
+}
+
 Future<void> _ensureStoragePerms() async {
   await [Permission.storage, Permission.manageExternalStorage].request();
 }
 
-/// Guarda el Excel en la carpeta pública de Descargas (no en sandbox).
+/// Guarda Excel en carpeta pública de Descargas.
 Future<String> _saveExcelToDownloads(Excel excel, String filename) async {
   await _ensureStoragePerms();
   final bytes = excel.save();
-  if (bytes == null) throw Exception('No se pudo generar el archivo XLSX');
+  if (bytes == null) throw Exception('No se pudo generar XLSX');
 
   Directory? downloadsDir;
   try {
-    downloadsDir = await getDownloadsDirectory(); // en algunos Android 11+ devuelve null
+    downloadsDir = await getDownloadsDirectory(); // puede venir null en Android 11+
   } catch (_) {}
-
-  // Fallback manual si el anterior no existe
   downloadsDir ??= Directory('/storage/emulated/0/Download');
 
-  final filePath = '${downloadsDir.path}/$filename.xlsx';
-  final file = File(filePath);
+  final file = File('${downloadsDir.path}/$filename.xlsx');
   await file.writeAsBytes(Uint8List.fromList(bytes), flush: true);
-
   return file.path;
 }
 
-/* ========================= EXPORTS ========================= */
+/* ===================== EXPORTS ===================== */
 
 Future<String> exportClientsXlsx() async {
   final db = await DatabaseHelper.instance.db;
@@ -218,4 +226,172 @@ Future<String> exportPurchasesXlsx() async {
   }
 
   return _saveExcelToDownloads(excel, 'compras');
+}
+
+/* ===================== IMPORTS ===================== */
+
+Future<void> importClientsXlsx(Uint8List bytes) async {
+  final db = await DatabaseHelper.instance.db;
+  final excel = Excel.decodeBytes(bytes);
+  final sh = excel['clientes'];
+  if (sh.maxRows <= 1) return;
+
+  // Espera encabezados: phone_id, name, address
+  for (var r = 1; r < sh.maxRows; r++) {
+    final row = sh.row(r);
+    final phone = _getCell<String>(row[0]);
+    if (phone == null || phone.trim().isEmpty) continue;
+    final name = _getCell<String>(row[1]) ?? '';
+    final address = _getCell<String>(row[2]) ?? '';
+    await db.insert('customers', {
+      'phone': phone,
+      'name': name,
+      'address': address,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+}
+
+Future<void> importSuppliersXlsx(Uint8List bytes) async {
+  final db = await DatabaseHelper.instance.db;
+  final excel = Excel.decodeBytes(bytes);
+  final sh = excel['proveedores'];
+  if (sh.maxRows <= 1) return;
+
+  // Encabezados: id, name, phone, address
+  for (var r = 1; r < sh.maxRows; r++) {
+    final row = sh.row(r);
+    final id = _getCell<String>(row[0]);
+    if (id == null || id.trim().isEmpty) continue;
+    await db.insert('suppliers', {
+      'id': id,
+      'name': _getCell<String>(row[1]) ?? '',
+      'phone': _getCell<String>(row[2]) ?? '',
+      'address': _getCell<String>(row[3]) ?? '',
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+}
+
+Future<void> importProductsXlsx(Uint8List bytes) async {
+  final db = await DatabaseHelper.instance.db;
+  final excel = Excel.decodeBytes(bytes);
+  final sh = excel['productos'];
+  if (sh.maxRows <= 1) return;
+
+  // Encabezados: id, sku, name, category, default_sale_price, last_purchase_price, last_purchase_date, stock
+  for (var r = 1; r < sh.maxRows; r++) {
+    final row = sh.row(r);
+    final id = _getCell<int>(row[0]) ?? _getCell<String>(row[0]);
+    final sku = _getCell<String>(row[1]);
+    final name = _getCell<String>(row[2]);
+    if ((sku == null || sku.isEmpty) && (name == null || name.isEmpty)) continue;
+
+    await db.insert('products', {
+      if (id != null) 'id': id,
+      'sku': sku ?? '',
+      'name': name ?? '',
+      'category': _getCell<String>(row[3]) ?? '',
+      'default_sale_price': double.tryParse((_getCell(row[4]) ?? '').toString()) ?? 0.0,
+      'last_purchase_price': double.tryParse((_getCell(row[5]) ?? '').toString()) ?? 0.0,
+      'last_purchase_date': _getCell<String>(row[6]) ?? '',
+      'stock': int.tryParse((_getCell(row[7]) ?? '').toString()) ?? 0,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+}
+
+Future<void> importSalesXlsx(Uint8List bytes) async {
+  final db = await DatabaseHelper.instance.db;
+  final excel = Excel.decodeBytes(bytes);
+  final shSales = excel['ventas'];
+  final shItems = excel['venta_items'];
+  if (shSales.maxRows <= 1) return;
+
+  // Insert ventas
+  for (var r = 1; r < shSales.maxRows; r++) {
+    final row = shSales.row(r);
+    final id = _getCell<int>(row[0]) ?? int.tryParse((_getCell(row[0]) ?? '').toString());
+    final date = _getCell<String>(row[1]);
+    if (id == null || date == null) continue;
+
+    await db.insert('sales', {
+      'id': id,
+      'date': date,
+      'customer_phone': _getCell<String>(row[2]) ?? '',
+      'payment_method': _getCell<String>(row[3]) ?? '',
+      'place': _getCell<String>(row[4]) ?? '',
+      'shipping_cost': double.tryParse((_getCell(row[5]) ?? '').toString()) ?? 0.0,
+      'discount': double.tryParse((_getCell(row[6]) ?? '').toString()) ?? 0.0,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  // Insert items (requiere SKU válido en products)
+  if (shItems.maxRows > 1) {
+    for (var r = 1; r < shItems.maxRows; r++) {
+      final row = shItems.row(r);
+      final saleId = _getCell<int>(row[0]) ?? int.tryParse((_getCell(row[0]) ?? '').toString());
+      final sku = _getCell<String>(row[1]) ?? '';
+      if (saleId == null || sku.isEmpty) continue;
+      final prod = await db.query('products', where: 'sku=?', whereArgs: [sku], limit: 1);
+      if (prod.isEmpty) continue;
+
+      await db.insert('sale_items', {
+        'sale_id': saleId,
+        'product_id': prod.first['id'],
+        'quantity': int.tryParse((_getCell(row[3]) ?? '').toString()) ?? 0,
+        'unit_price': double.tryParse((_getCell(row[4]) ?? '').toString()) ?? 0.0,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+    }
+  }
+}
+
+Future<void> importPurchasesXlsx(Uint8List bytes) async {
+  final db = await DatabaseHelper.instance.db;
+  final excel = Excel.decodeBytes(bytes);
+  final shP = excel['compras'];
+  final shI = excel['compra_items'];
+  if (shP.maxRows <= 1) return;
+
+  for (var r = 1; r < shP.maxRows; r++) {
+    final row = shP.row(r);
+    final id = _getCell<int>(row[0]) ?? int.tryParse((_getCell(row[0]) ?? '').toString());
+    final date = _getCell<String>(row[2]);
+    if (id == null || date == null) continue;
+
+    await db.insert('purchases', {
+      'id': id,
+      'folio': _getCell<String>(row[1]) ?? '',
+      'date': date,
+      'supplier_id': _getCell<String>(row[3]) ?? '',
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  if (shI.maxRows > 1) {
+    for (var r = 1; r < shI.maxRows; r++) {
+      final row = shI.row(r);
+      final purchaseId = _getCell<int>(row[0]) ?? int.tryParse((_getCell(row[0]) ?? '').toString());
+      final sku = _getCell<String>(row[1]) ?? '';
+      if (purchaseId == null || sku.isEmpty) continue;
+      final prod = await db.query('products', where: 'sku=?', whereArgs: [sku], limit: 1);
+      if (prod.isEmpty) continue;
+
+      await db.insert('purchase_items', {
+        'purchase_id': purchaseId,
+        'product_id': prod.first['id'],
+        'quantity': int.tryParse((_getCell(row[3]) ?? '').toString()) ?? 0,
+        'unit_cost': double.tryParse((_getCell(row[4]) ?? '').toString()) ?? 0.0,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+
+      // Actualiza último costo/fecha y stock
+      await db.update(
+        'products',
+        {
+          'last_purchase_price': double.tryParse((_getCell(row[4]) ?? '').toString()) ?? 0.0,
+          'last_purchase_date': DateTime.now().toIso8601String(),
+          'stock': (prod.first['stock'] as int? ?? 0) +
+              (int.tryParse((_getCell(row[3]) ?? '').toString()) ?? 0),
+        },
+        where: 'id=?',
+        whereArgs: [prod.first['id']],
+      );
+    }
+  }
 }
