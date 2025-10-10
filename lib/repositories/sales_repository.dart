@@ -1,29 +1,41 @@
 import 'package:sqflite/sqflite.dart';
-import '../data/database.dart';
-import '../models/sale.dart';
+import '../data/db.dart';
 
 class SalesRepository {
-  final _dbF = DatabaseHelper.instance;
+  Future<Database> get _db async => openAppDb();
 
-  Future<int> createSale(Sale s) async {
-    final db = await _dbF.db;
-    return await db.transaction<int>((txn) async {
-      final id = await txn.insert('sales', s.toMap(), conflictAlgorithm: ConflictAlgorithm.replace);
-      for (final it in s.items) {
-        await txn.insert('sale_items', it.toMap(id));
-        final prod = await txn.query('products', where: 'id=?', whereArgs: [it.productId], limit: 1);
-        final curr = (prod.isNotEmpty ? (prod.first['stock'] as int? ?? 0) : 0);
-        await txn.update('products', {'stock': curr - it.quantity}, where: 'id=?', whereArgs: [it.productId]);
+  Future<int> createSale(Map<String, Object?> sale, List<Map<String, Object?>> items) async {
+    final db = await _db;
+    return db.transaction<int>((txn) async {
+      final saleId = await txn.insert('sales', sale);
+      for (final it in items) {
+        await txn.insert('sale_items', {
+          'sale_id': saleId,
+          'product_sku': it['product_sku'],
+          'product_name': it['product_name'],
+          'quantity': it['quantity'],
+          'unit_price': it['unit_price'],
+        });
+        // Descuenta stock
+        await txn.rawUpdate(
+          'UPDATE products SET stock = stock - ? WHERE sku = ?',
+          [it['quantity'], it['product_sku']]
+        );
       }
-      return id;
+      return saleId;
     });
   }
 
-  Future<List<Map<String, dynamic>>> salesBetween(DateTime from, DateTime to) async {
-    final db = await _dbF.db;
+  Future<List<Map<String,Object?>>> salesInRange(String fromIso, String toIso) async {
+    final db = await _db;
     return db.query('sales',
-      where: 'date >= ? AND date <= ?',
-      whereArgs: [from.toIso8601String(), to.toIso8601String()],
-      orderBy: 'date DESC');
+        where: 'date BETWEEN ? AND ?',
+        whereArgs: [fromIso, toIso],
+        orderBy: 'date DESC');
+  }
+
+  Future<List<Map<String,Object?>>> saleItems(int saleId) async {
+    final db = await _db;
+    return db.query('sale_items', where: 'sale_id=?', whereArgs: [saleId]);
   }
 }
