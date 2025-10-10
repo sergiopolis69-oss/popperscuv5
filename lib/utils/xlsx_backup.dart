@@ -15,8 +15,7 @@ CellValue? cv(dynamic v) {
 
 Future<void> _ensureStoragePerms() async {
   final statuses = await [Permission.storage].request();
-  // En Android 10+ no suele ser necesario, pero algunos OEM lo piden.
-  // Si se niega, SAF igual suele funcionar; no lanzamos excepción dura.
+  // En Android 10+ normalmente no es necesario; si el OEM lo exige, esto lo cubre.
 }
 
 Future<void> _saveExcelToDownloads(Excel excel, String filename) async {
@@ -39,9 +38,9 @@ Future<void> exportClientsXlsx() async {
   final excel = Excel.createExcel();
   final sh = excel['clientes'];
   sh.appendRow([
-    const TextCellValue('phone_id'),
-    const TextCellValue('name'),
-    const TextCellValue('address'),
+    TextCellValue('phone_id'),
+    TextCellValue('name'),
+    TextCellValue('address'),
   ]);
   for (final r in rows) {
     sh.appendRow([cv(r['phone']), cv(r['name']), cv(r['address'])]);
@@ -54,7 +53,7 @@ Future<void> exportSuppliersXlsx() async {
   final rows = await db.query('suppliers', orderBy: 'name COLLATE NOCASE ASC');
   final excel = Excel.createExcel();
   final sh = excel['proveedores'];
-  sh.appendRow(const [
+  sh.appendRow([
     TextCellValue('id'),
     TextCellValue('name'),
     TextCellValue('phone'),
@@ -71,7 +70,7 @@ Future<void> exportProductsXlsx() async {
   final rows = await db.query('products', orderBy: 'name COLLATE NOCASE ASC');
   final excel = Excel.createExcel();
   final sh = excel['productos'];
-  sh.appendRow(const [
+  sh.appendRow([
     TextCellValue('id'),
     TextCellValue('sku'),
     TextCellValue('name'),
@@ -100,9 +99,8 @@ Future<void> exportSalesXlsx() async {
   final db = await DatabaseHelper.instance.db;
   final excel = Excel.createExcel();
 
-  // Ventas (cabecera)
   final shSales = excel['ventas'];
-  shSales.appendRow(const [
+  shSales.appendRow([
     TextCellValue('sale_id'),
     TextCellValue('date'),
     TextCellValue('customer_phone'),
@@ -129,9 +127,8 @@ Future<void> exportSalesXlsx() async {
     ]);
   }
 
-  // Items con SKU
   final shItems = excel['venta_items'];
-  shItems.appendRow(const [
+  shItems.appendRow([
     TextCellValue('sale_id'),
     TextCellValue('product_sku'),
     TextCellValue('product_name'),
@@ -163,9 +160,8 @@ Future<void> exportPurchasesXlsx() async {
   final db = await DatabaseHelper.instance.db;
   final excel = Excel.createExcel();
 
-  // Compras (cabecera)
   final shP = excel['compras'];
-  shP.appendRow(const [
+  shP.appendRow([
     TextCellValue('purchase_id'),
     TextCellValue('folio'),
     TextCellValue('date'),
@@ -184,9 +180,8 @@ Future<void> exportPurchasesXlsx() async {
     ]);
   }
 
-  // Items con SKU
   final shI = excel['compra_items'];
-  shI.appendRow(const [
+  shI.appendRow([
     TextCellValue('purchase_id'),
     TextCellValue('product_sku'),
     TextCellValue('product_name'),
