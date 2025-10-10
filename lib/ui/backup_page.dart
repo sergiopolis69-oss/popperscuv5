@@ -6,12 +6,16 @@ import '../utils/xlsx_backup.dart';
 class BackupPage extends StatelessWidget {
   const BackupPage({super.key});
 
-  Future<void> _export(BuildContext ctx, String label, Future<void> Function() fn) async {
+  Future<void> _export(
+    BuildContext ctx,
+    String label,
+    Future<String> Function() fn,
+  ) async {
     try {
-      await fn(); // guarda con FileSaver en Descargas
+      final where = await fn(); // ruta/URI devuelta por FileSaver
       if (ctx.mounted) {
         ScaffoldMessenger.of(ctx).showSnackBar(
-          SnackBar(content: Text('$label exportado a la carpeta Descargas')),
+          SnackBar(content: Text('$label exportado en: $where')),
         );
       }
     } catch (e) {
@@ -115,9 +119,8 @@ class BackupPage extends StatelessWidget {
         const SizedBox(height: 16),
         const Text(
           'Notas:\n'
-          '• Los detalles de ventas y compras usan el SKU para enlazar productos.\n'
-          '• Si un SKU no existe en Productos, ese renglón se omite.\n'
-          '• Flujo recomendado para migrar: Productos → Clientes/Proveedores → Ventas/Compras.',
+          '• Los detalles de ventas/compras usan SKU para enlazar productos.\n'
+          '• Flujo de migración: Productos → Clientes/Proveedores → Ventas/Compras.',
         ),
       ],
     );
