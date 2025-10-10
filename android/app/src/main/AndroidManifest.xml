@@ -1,52 +1,35 @@
-<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools"
     package="com.example.popperscuv5">
 
-    <!-- Permisos de red y contactos -->
+    <!-- Permisos mínimos requeridos por la app -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
 
-    <!-- Almacenamiento:
-         - WRITE_EXTERNAL_STORAGE solo aplica hasta SDK 28.
-         - READ_EXTERNAL_STORAGE hasta 32 (en 33+ ya no cuenta).
-         - MANAGE_EXTERNAL_STORAGE permite escribir en /Download en 30+ (el usuario debe autorizar “Acceso a todos los archivos” en Ajustes). -->
-    <uses-permission
-        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="28" />
-    <uses-permission
-        android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
-    <uses-permission
-        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
-        tools:ignore="ScopedStorage" />
-
     <application
         android:name="${applicationName}"
-        android:label="PoppersCU Ventas"
-        android:icon="@mipmap/ic_launcher"
-        android:requestLegacyExternalStorage="true"
-        tools:targetApi="29">
+        android:label="PDV Flutter"
+        android:icon="@mipmap/ic_launcher">
 
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:hardwareAccelerated="true"
             android:launchMode="singleTop"
             android:theme="@style/LaunchTheme"
-            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
-            android:hardwareAccelerated="true"
-            android:windowSoftInputMode="adjustResize">
-
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
-        <!-- Splash (compatibilidad) -->
+        <!-- Splash de compatibilidad (si existe @drawable/launch_background) -->
         <meta-data
             android:name="io.flutter.embedding.android.SplashScreenDrawable"
             android:resource="@drawable/launch_background" />
+
+        <!-- Forzar Flutter embedding v2 -->
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
