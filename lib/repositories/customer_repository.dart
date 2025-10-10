@@ -1,46 +1,33 @@
-
 import 'package:sqflite/sqflite.dart';
-import '../data/database.dart';
-import '../models/customer.dart';
+import '../data/db.dart';
 
 class CustomerRepository {
-  Future<int> upsert(Customer c) async {
-    final db = await AppDatabase().db();
-    return db.insert('customers', c.toMap(), conflictAlgorithm: ConflictAlgorithm.replace);
+  Future<Database> get _db async => await openAppDb();
+
+  Future<List<Map<String, Object?>>> searchByPhoneOrName(String q, {int limit = 20}) async {
+    final db = await _db;
+    final like = '%$q%';
+    return db.query(
+      'customers',
+      where: 'phone LIKE ? OR name LIKE ?',
+      whereArgs: [like, like],
+      orderBy: 'name COLLATE NOCASE ASC',
+      limit: limit,
+    );
   }
 
-  Future<List<Customer>> search(String q) async {
-    final db = await AppDatabase().db();
-    final res = await db.query('customers',
-      where: 'name LIKE ? OR phone LIKE ?',
-      whereArgs: ['%$q%', '%$q%'],
-      orderBy: 'name ASC');
-    return res.map(Customer.fromMap).toList();
+  Future<int> insertQuick({required String phone, required String name, String? address}) async {
+    final db = await _db;
+    return db.insert('customers', {
+      'phone': phone,
+      'name': name,
+      'address': address ?? '',
+    }, conflictAlgorithm: ConflictAlgorithm.ignore);
   }
 
-  Future<Customer?> findByPhone(String phone) async {
-    final db = await AppDatabase().db();
-    final res = await db.query('customers', where: 'phone=?', whereArgs: [phone]);
-    if (res.isEmpty) return null;
-    return Customer.fromMap(res.first);
-  }
-
-  Future<int> count() async {
-    final db = await AppDatabase().db();
-    final res = await db.rawQuery('SELECT COUNT(*) as c FROM customers');
-    return (res.first['c'] as int);
-  }
-
-  Future<List<Map<String, Object?>>> topCustomers({int limit=10}) async {
-    final db = await AppDatabase().db();
-    final res = await db.rawQuery('''
-      SELECT c.phone, c.name, COALESCE(COUNT(s.id), 0) as salesCount
-      FROM customers c
-      LEFT JOIN sales s ON s.customerPhone=c.phone
-      GROUP BY c.phone, c.name
-      ORDER BY salesCount DESC, c.name ASC
-      LIMIT ?;
-    ''', [limit]);
-    return res;
+  Future<Map<String, Object?>?> findByPhone(String phone) async {
+    final db = await _db;
+    final r = await db.query('customers', where: 'phone = ?', whereArgs: [phone], limit: 1);
+    return r.isEmpty ? null : r.first;
   }
 }
