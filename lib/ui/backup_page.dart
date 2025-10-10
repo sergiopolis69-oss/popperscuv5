@@ -6,12 +6,12 @@ import '../utils/xlsx_backup.dart';
 class BackupPage extends StatelessWidget {
   const BackupPage({super.key});
 
-  Future<void> _export(BuildContext ctx, String label, Future Function() fn) async {
+  Future<void> _export(BuildContext ctx, String label, Future<void> Function() fn) async {
     try {
-      final file = await fn();
+      await fn(); // guarda con FileSaver en Descargas
       if (ctx.mounted) {
         ScaffoldMessenger.of(ctx).showSnackBar(
-          SnackBar(content: Text('$label exportado en: ${file.path}')),
+          SnackBar(content: Text('$label exportado a la carpeta Descargas')),
         );
       }
     } catch (e) {
@@ -23,7 +23,11 @@ class BackupPage extends StatelessWidget {
     }
   }
 
-  Future<void> _import(BuildContext ctx, String label, Future Function(Uint8List) fn) async {
+  Future<void> _import(
+    BuildContext ctx,
+    String label,
+    Future<void> Function(Uint8List) fn,
+  ) async {
     try {
       final res = await FilePicker.platform.pickFiles(
         type: FileType.custom,
@@ -58,11 +62,26 @@ class BackupPage extends StatelessWidget {
         Wrap(
           spacing: 8, runSpacing: 8,
           children: [
-            FilledButton(onPressed: ()=>_export(context, 'Clientes', exportClientsXlsx), child: const Text('Clientes')),
-            FilledButton(onPressed: ()=>_export(context, 'Productos', exportProductsXlsx), child: const Text('Productos')),
-            FilledButton(onPressed: ()=>_export(context, 'Proveedores', exportSuppliersXlsx), child: const Text('Proveedores')),
-            FilledButton(onPressed: ()=>_export(context, 'Ventas', exportSalesXlsx), child: const Text('Ventas (con SKU)')),
-            FilledButton(onPressed: ()=>_export(context, 'Compras', exportPurchasesXlsx), child: const Text('Compras (con SKU)')),
+            FilledButton(
+              onPressed: () => _export(context, 'Clientes', exportClientsXlsx),
+              child: const Text('Clientes'),
+            ),
+            FilledButton(
+              onPressed: () => _export(context, 'Productos', exportProductsXlsx),
+              child: const Text('Productos'),
+            ),
+            FilledButton(
+              onPressed: () => _export(context, 'Proveedores', exportSuppliersXlsx),
+              child: const Text('Proveedores'),
+            ),
+            FilledButton(
+              onPressed: () => _export(context, 'Ventas', exportSalesXlsx),
+              child: const Text('Ventas (con SKU)'),
+            ),
+            FilledButton(
+              onPressed: () => _export(context, 'Compras', exportPurchasesXlsx),
+              child: const Text('Compras (con SKU)'),
+            ),
           ],
         ),
         const SizedBox(height: 24),
@@ -71,19 +90,34 @@ class BackupPage extends StatelessWidget {
         Wrap(
           spacing: 8, runSpacing: 8,
           children: [
-            OutlinedButton(onPressed: ()=>_import(context, 'Clientes', importClientsXlsx), child: const Text('Clientes')),
-            OutlinedButton(onPressed: ()=>_import(context, 'Productos', importProductsXlsx), child: const Text('Productos')),
-            OutlinedButton(onPressed: ()=>_import(context, 'Proveedores', importSuppliersXlsx), child: const Text('Proveedores')),
-            OutlinedButton(onPressed: ()=>_import(context, 'Ventas (+items por SKU)', importSalesXlsx), child: const Text('Ventas')),
-            OutlinedButton(onPressed: ()=>_import(context, 'Compras (+items por SKU)', importPurchasesXlsx), child: const Text('Compras')),
+            OutlinedButton(
+              onPressed: () => _import(context, 'Clientes', importClientsXlsx),
+              child: const Text('Clientes'),
+            ),
+            OutlinedButton(
+              onPressed: () => _import(context, 'Productos', importProductsXlsx),
+              child: const Text('Productos'),
+            ),
+            OutlinedButton(
+              onPressed: () => _import(context, 'Proveedores', importSuppliersXlsx),
+              child: const Text('Proveedores'),
+            ),
+            OutlinedButton(
+              onPressed: () => _import(context, 'Ventas (+items por SKU)', importSalesXlsx),
+              child: const Text('Ventas'),
+            ),
+            OutlinedButton(
+              onPressed: () => _import(context, 'Compras (+items por SKU)', importPurchasesXlsx),
+              child: const Text('Compras'),
+            ),
           ],
         ),
         const SizedBox(height: 16),
         const Text(
           'Notas:\n'
-          '• En ventas/compras, los renglones de detalle usan el SKU para enlazar productos.\n'
-          '• Si el SKU no existe en la tabla de productos, ese renglón se ignora (para seguridad).\n'
-          '• Puedes exportar todo, reinstalar la app, e importar en este orden: Productos → Clientes/Proveedores → Ventas/Compras.',
+          '• Los detalles de ventas y compras usan el SKU para enlazar productos.\n'
+          '• Si un SKU no existe en Productos, ese renglón se omite.\n'
+          '• Flujo recomendado para migrar: Productos → Clientes/Proveedores → Ventas/Compras.',
         ),
       ],
     );
