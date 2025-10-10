@@ -6,16 +6,12 @@ import '../utils/xlsx_backup.dart';
 class BackupPage extends StatelessWidget {
   const BackupPage({super.key});
 
-  Future<void> _export(
-    BuildContext ctx,
-    String label,
-    Future<String> Function() fn,
-  ) async {
+  Future<void> _export(BuildContext ctx, String label, Future<String> Function() fn) async {
     try {
-      final where = await fn(); // ruta/URI devuelta por FileSaver
+      final path = await fn();
       if (ctx.mounted) {
         ScaffoldMessenger.of(ctx).showSnackBar(
-          SnackBar(content: Text('$label exportado en: $where')),
+          SnackBar(content: Text('$label exportado en: $path')),
         );
       }
     } catch (e) {
@@ -27,11 +23,7 @@ class BackupPage extends StatelessWidget {
     }
   }
 
-  Future<void> _import(
-    BuildContext ctx,
-    String label,
-    Future<void> Function(Uint8List) fn,
-  ) async {
+  Future<void> _import(BuildContext ctx, String label, Future<void> Function(Uint8List) fn) async {
     try {
       final res = await FilePicker.platform.pickFiles(
         type: FileType.custom,
@@ -64,63 +56,34 @@ class BackupPage extends StatelessWidget {
         const Text('Exportar a XLSX (carpeta Descargas)'),
         const SizedBox(height: 8),
         Wrap(
-          spacing: 8, runSpacing: 8,
+          spacing: 8,
+          runSpacing: 8,
           children: [
-            FilledButton(
-              onPressed: () => _export(context, 'Clientes', exportClientsXlsx),
-              child: const Text('Clientes'),
-            ),
-            FilledButton(
-              onPressed: () => _export(context, 'Productos', exportProductsXlsx),
-              child: const Text('Productos'),
-            ),
-            FilledButton(
-              onPressed: () => _export(context, 'Proveedores', exportSuppliersXlsx),
-              child: const Text('Proveedores'),
-            ),
-            FilledButton(
-              onPressed: () => _export(context, 'Ventas', exportSalesXlsx),
-              child: const Text('Ventas (con SKU)'),
-            ),
-            FilledButton(
-              onPressed: () => _export(context, 'Compras', exportPurchasesXlsx),
-              child: const Text('Compras (con SKU)'),
-            ),
+            FilledButton(onPressed: () => _export(context, 'Clientes', exportClientsXlsx), child: const Text('Clientes')),
+            FilledButton(onPressed: () => _export(context, 'Productos', exportProductsXlsx), child: const Text('Productos')),
+            FilledButton(onPressed: () => _export(context, 'Proveedores', exportSuppliersXlsx), child: const Text('Proveedores')),
+            FilledButton(onPressed: () => _export(context, 'Ventas', exportSalesXlsx), child: const Text('Ventas')),
+            FilledButton(onPressed: () => _export(context, 'Compras', exportPurchasesXlsx), child: const Text('Compras')),
           ],
         ),
         const SizedBox(height: 24),
         const Text('Importar desde XLSX'),
         const SizedBox(height: 8),
         Wrap(
-          spacing: 8, runSpacing: 8,
+          spacing: 8,
+          runSpacing: 8,
           children: [
-            OutlinedButton(
-              onPressed: () => _import(context, 'Clientes', importClientsXlsx),
-              child: const Text('Clientes'),
-            ),
-            OutlinedButton(
-              onPressed: () => _import(context, 'Productos', importProductsXlsx),
-              child: const Text('Productos'),
-            ),
-            OutlinedButton(
-              onPressed: () => _import(context, 'Proveedores', importSuppliersXlsx),
-              child: const Text('Proveedores'),
-            ),
-            OutlinedButton(
-              onPressed: () => _import(context, 'Ventas (+items por SKU)', importSalesXlsx),
-              child: const Text('Ventas'),
-            ),
-            OutlinedButton(
-              onPressed: () => _import(context, 'Compras (+items por SKU)', importPurchasesXlsx),
-              child: const Text('Compras'),
-            ),
+            OutlinedButton(onPressed: () => _import(context, 'Clientes', importClientsXlsx), child: const Text('Clientes')),
+            OutlinedButton(onPressed: () => _import(context, 'Productos', importProductsXlsx), child: const Text('Productos')),
+            OutlinedButton(onPressed: () => _import(context, 'Proveedores', importSuppliersXlsx), child: const Text('Proveedores')),
           ],
         ),
         const SizedBox(height: 16),
         const Text(
           'Notas:\n'
-          '• Los detalles de ventas/compras usan SKU para enlazar productos.\n'
-          '• Flujo de migración: Productos → Clientes/Proveedores → Ventas/Compras.',
+          '• Los archivos se guardan en la carpeta pública de Descargas.\n'
+          '• Puedes reinstalar la app y restaurar desde XLSX en orden.\n'
+          '• Ventas y compras aún se respaldan sin ítems detallados.',
         ),
       ],
     );
