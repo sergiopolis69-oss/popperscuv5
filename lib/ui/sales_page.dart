@@ -1,11 +1,10 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:sqflite/sqflite.dart';
 
-import '../repositories/product_repository.dart';
-import '../repositories/sales_repository.dart';
 import '../data/db.dart';
+import '../repositories/product_repository.dart';
+import '../repositories/customer_repository.dart';
 
 class SalesPage extends StatefulWidget {
   const SalesPage({super.key});
@@ -15,405 +14,407 @@ class SalesPage extends StatefulWidget {
 
 class _SalesPageState extends State<SalesPage> {
   final _prodRepo = ProductRepository();
-  final _salesRepo = SalesRepository();
+  final _custRepo = CustomerRepository();
 
-  // Cliente live search (por nombre/teléfono)
-  final _clientCtrl = TextEditingController();
-  List<Map<String, Object?>> _clientSug = [];
-  Timer? _clientDebounce;
-  String? _customerPhone;
-
-  // Producto live search
-  final _prodCtrl = TextEditingController();
-  List<Map<String, Object?>> _prodSug = [];
-  Timer? _prodDebounce;
-
-  // Precio/cantidad actuales del “renglon”
-  final _qtyCtrl = TextEditingController(text: '1');
-  final _priceCtrl = TextEditingController();
-
-  // Carrito
-  final List<Map<String, Object?>> _items = [];
-
-  // Otros campos
-  String _payment = 'efectivo';
-  final _placeCtrl = TextEditingController();
-  final _shippingCtrl = TextEditingController(text: '0');
+  final _customerCtrl = TextEditingController();
+  final _productCtrl = TextEditingController();
   final _discountCtrl = TextEditingController(text: '0');
+  final _shippingCtrl = TextEditingController(text: '0');
+  final _placeCtrl = TextEditingController();
+
+  String? _selectedCustomerPhone; // id = teléfono
+  final List<_CartItem> _cart = [];
+
+  List<Map<String, Object?>> _customerSuggestions = [];
+  List<Map<String, Object?>> _productSuggestions = [];
+
+  final _currency = NumberFormat.currency(locale: 'es_MX', symbol: '\$');
 
   @override
   void dispose() {
-    _clientCtrl.dispose();
-    _prodCtrl.dispose();
-    _qtyCtrl.dispose();
-    _priceCtrl.dispose();
-    _placeCtrl.dispose();
-    _shippingCtrl.dispose();
+    _customerCtrl.dispose();
+    _productCtrl.dispose();
     _discountCtrl.dispose();
-    _clientDebounce?.cancel();
-    _prodDebounce?.cancel();
+    _shippingCtrl.dispose();
+    _placeCtrl.dispose();
     super.dispose();
   }
 
-  // ---------- CLIENTES ----------
-  Future<void> _searchClients(String q) async {
-    final db = await openAppDb();
-    final qq = '%${q.trim()}%';
-    final rows = await db.query(
-      'customers',
-      where: 'phone LIKE ? OR name LIKE ?',
-      whereArgs: [qq, qq],
-      orderBy: 'name',
-      limit: 20,
-    );
-    setState(() => _clientSug = rows);
+  Future<void> _searchCustomers(String q) async {
+    if (q.trim().isEmpty) {
+      setState(() => _customerSuggestions = []);
+      return;
+    }
+    final r = await _custRepo.searchByPhoneOrName(q, limit: 10);
+    setState(() => _customerSuggestions = r);
   }
 
-  void _onClientChanged() {
-    _clientDebounce?.cancel();
-    _clientDebounce = Timer(const Duration(milliseconds: 200), () {
-      _searchClients(_clientCtrl.text);
-    });
-  }
-
-  // ---------- PRODUCTOS ----------
   Future<void> _searchProducts(String q) async {
-    final rows = await _prodRepo.searchLite(q, limit: 20);
-    setState(() => _prodSug = rows);
-  }
-
-  void _onProdChanged() {
-    _prodDebounce?.cancel();
-    _prodDebounce = Timer(const Duration(milliseconds: 200), () {
-      _searchProducts(_prodCtrl.text);
-    });
-  }
-
-  void _selectProduct(Map<String, Object?> p) {
-    _prodCtrl.text = '${p['sku']} — ${p['name']}';
-    _priceCtrl.text = ((p['default_sale_price'] as num?) ?? 0).toStringAsFixed(2);
-    setState(() {});
-  }
-
-  void _selectClient(Map<String, Object?> c) {
-    _clientCtrl.text = '${c['name']} (${c['phone']})';
-    _customerPhone = (c['phone'] ?? '').toString();
-    setState(() {});
-  }
-
-  void _addToCart() {
-    // Extrae SKU del campo (antes de “ — ”) o usa tal cual si solo es SKU
-    final sku = _prodCtrl.text.contains('—')
-        ? _prodCtrl.text.split('—').first.trim()
-        : _prodCtrl.text.trim();
-
-    if (sku.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Selecciona un producto')),
-      );
+    if (q.trim().isEmpty) {
+      setState(() => _productSuggestions = []);
       return;
     }
-    final qty = double.tryParse(_qtyCtrl.text) ?? 0;
-    final price = double.tryParse(_priceCtrl.text) ?? 0;
-    if (qty <= 0 || price <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Cantidad y precio deben ser > 0')),
-      );
-      return;
-    }
+    final r = await _prodRepo.searchLite(q, limit: 12);
+    setState(() => _productSuggestions = r);
+  }
 
-    // Si el SKU existe ya en el carrito, acumula
-    final idx = _items.indexWhere((e) => e['product_sku'] == sku);
+  Future<void> _addProductBySkuOrNameSelection(Map<String, Object?> row) async {
+    final sku = (row['sku'] ?? '').toString();
+    final name = (row['name'] ?? '').toString();
+    final unitPrice = ((row['default_sale_price'] as num?) ?? 0).toDouble();
+    final lastCost = ((row['last_purchase_price'] as num?) ?? 0).toDouble();
+
+    final idx = _cart.indexWhere((e) => e.sku == sku);
     if (idx >= 0) {
-      _items[idx]['quantity'] = (( _items[idx]['quantity'] as num?) ?? 0).toDouble() + qty;
-      _items[idx]['unit_price'] = price; // último precio
+      setState(() => _cart[idx].qty += 1);
     } else {
-      // nombre: intenta tomar lo escrito “— Nombre”; si no, deja el SKU como nombre provisional
-      final name = _prodCtrl.text.contains('—')
-          ? _prodCtrl.text.split('—').last.trim()
-          : sku;
-      _items.add({
-        'product_sku': sku,
-        'product_name': name,
-        'quantity': qty,
-        'unit_price': price,
-      });
+      setState(() => _cart.add(_CartItem(
+        sku: sku,
+        name: name,
+        unitPrice: unitPrice,
+        lastCost: lastCost,
+      )));
     }
-
-    _prodCtrl.clear();
-    _qtyCtrl.text = '1';
-    _priceCtrl.clear();
-    setState(() {});
+    _productCtrl.clear();
+    setState(() => _productSuggestions = []);
   }
 
-  double get _subtotal {
-    return _items.fold<double>(0, (s, it) =>
-      s + ((it['quantity'] as num?) ?? 0).toDouble() * ((it['unit_price'] as num?) ?? 0).toDouble()
-    );
+  double get _subTotal => _cart.fold(0, (p, e) => p + e.qty * e.unitPrice);
+  double get _discount => double.tryParse(_discountCtrl.text.replaceAll(',', '.')) ?? 0;
+  double get _shipping => double.tryParse(_shippingCtrl.text.replaceAll(',', '.')) ?? 0;
+
+  // Utilidad en vivo: sum(qty * (precio - costo)) – proporcional de descuento (NO incluye envío)
+  double get _liveProfit {
+    final subtotal = _subTotal;
+    final discount = _discount.clamp(0, subtotal);
+    if (subtotal <= 0) return 0;
+    double profit = 0;
+    for (final it in _cart) {
+      final line = it.qty * it.unitPrice;
+      final share = line / subtotal;
+      final lineDiscount = discount * share;
+      final revenueAfterDiscount = line - lineDiscount;
+      final cost = it.qty * it.lastCost;
+      profit += (revenueAfterDiscount - cost);
+    }
+    return profit;
   }
 
-  double get _shipping => double.tryParse(_shippingCtrl.text) ?? 0;
-  double get _discount => double.tryParse(_discountCtrl.text) ?? 0;
-  double get _total => _subtotal + _shipping - _discount;
+  double get _total => (_subTotal - _discount + _shipping).clamp(0, double.infinity);
 
   Future<void> _saveSale() async {
-    if (_items.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Agrega al menos un producto')),
-      );
+    if (_cart.isEmpty) {
+      _toast('Agrega productos');
       return;
     }
-    // Confirmación con resumen
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Confirmar venta'),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ..._items.map((it) => ListTile(
-                dense: true,
-                title: Text('${it['product_name']}'),
-                subtitle: Text('SKU: ${it['product_sku']} • Cant: ${it['quantity']} • Precio: ${((it['unit_price'] as num?) ?? 0).toString()}'),
-              )),
-              const Divider(),
-              Align(alignment: Alignment.centerLeft, child: Text('Subtotal: ${_subtotal.toStringAsFixed(2)}')),
-              Align(alignment: Alignment.centerLeft, child: Text('Envío: ${_shipping.toStringAsFixed(2)}')),
-              Align(alignment: Alignment.centerLeft, child: Text('Descuento: ${_discount.toStringAsFixed(2)}')),
-              Align(alignment: Alignment.centerLeft, child: Text('Total: ${_total.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.bold))),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancelar')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Guardar')),
-        ],
-      ),
-    );
-    if (ok != true) return;
+    // No permitir venta en 0
+    if (_total <= 0) {
+      _toast('La venta no puede ser en 0');
+      return;
+    }
 
-    final nowIso = DateFormat("yyyy-MM-ddTHH:mm:ss").format(DateTime.now());
-    final saleId = await _salesRepo.createSale({
-      'date': nowIso,
-      'customer_phone': _customerPhone,
-      'payment_method': _payment,
-      'place': _placeCtrl.text.trim(),
-      'shipping_cost': _shipping,
-      'discount': _discount,
-    }, _items);
+    final db = await openAppDb();
+    await db.transaction((txn) async {
+      final now = DateTime.now().toIso8601String();
+      final saleId = await txn.insert('sales', {
+        'date': now,
+        'customer_phone': _selectedCustomerPhone,
+        'payment_method': 'efectivo', // podrías elegirlo en UI si quieres
+        'place': _placeCtrl.text.trim(),
+        'shipping_cost': _shipping,
+        'discount': _discount,
+      });
 
-    setState(() {
-      _items.clear();
-      _shippingCtrl.text = '0';
-      _discountCtrl.text = '0';
-      _clientCtrl.clear();
-      _customerPhone = null;
+      for (final it in _cart) {
+        await txn.insert('sale_items', {
+          'sale_id': saleId,
+          'product_sku': it.sku,
+          'product_name': it.name,
+          'quantity': it.qty,
+          'unit_price': it.unitPrice,
+        });
+
+        // baja de inventario
+        await txn.rawUpdate(
+          'UPDATE products SET stock = COALESCE(stock,0) - ? WHERE sku = ?',
+          [it.qty, it.sku],
+        );
+      }
     });
 
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Venta #$saleId guardada')),
+    // Confirmación con detalle
+    showDialog(context: context, builder: (_) {
+      return AlertDialog(
+        title: const Text('Venta guardada'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ..._cart.map((e) => Text('${e.qty.toStringAsFixed(0)} x ${e.name} (${e.sku}) — ${_currency.format(e.unitPrice)}')),
+            const Divider(),
+            Text('Subtotal: ${_currency.format(_subTotal)}'),
+            Text('Descuento: -${_currency.format(_discount)}'),
+            Text('Envío: +${_currency.format(_shipping)}'),
+            Text('TOTAL: ${_currency.format(_total)}', style: const TextStyle(fontWeight: FontWeight.bold)),
+          ],
+        ),
+        actions: [
+            TextButton(onPressed: ()=>Navigator.pop(context), child: const Text('OK'))
+        ],
       );
-    }
+    });
+
+    setState(() {
+      _cart.clear();
+      _discountCtrl.text = '0';
+      _shippingCtrl.text = '0';
+    });
   }
 
-  @override
-  void initState() {
-    super.initState();
-    _clientCtrl.addListener(_onClientChanged);
-    _prodCtrl.addListener(_onProdChanged);
+  void _toast(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: ListView(
-        padding: const EdgeInsets.all(12),
-        children: [
-          // Cliente
-          TextField(
-            controller: _clientCtrl,
-            decoration: const InputDecoration(
-              labelText: 'Cliente (buscar por nombre o teléfono)',
-              prefixIcon: Icon(Icons.person_search),
-            ),
-          ),
-          if (_clientSug.isNotEmpty)
-            Card(
-              margin: const EdgeInsets.only(top: 4, bottom: 8),
-              child: Column(
-                children: _clientSug.map((c) => ListTile(
-                  dense: true,
-                  leading: const Icon(Icons.person),
-                  title: Text('${c['name']}'),
-                  subtitle: Text('${c['phone']}'),
-                  onTap: () => _selectClient(c),
-                )).toList(),
-              ),
-            ),
+    return ListView(
+      padding: const EdgeInsets.all(12),
+      children: [
+        _customerSearch(),
+        const SizedBox(height: 8),
+        _productSearch(),
+        const SizedBox(height: 8),
+        _cartList(),
+        const SizedBox(height: 8),
+        _totalsCard(),
+        const SizedBox(height: 8),
+        FilledButton.icon(
+          onPressed: _saveSale,
+          icon: const Icon(Icons.save),
+          label: const Text('Guardar venta'),
+        ),
+      ],
+    );
+  }
 
-          // Producto + qty + precio
-          Row(
-            children: [
-              Expanded(
-                flex: 3,
-                child: TextField(
-                  controller: _prodCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'Producto (buscar por nombre o SKU)',
-                    prefixIcon: Icon(Icons.search),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: TextField(
-                  controller: _qtyCtrl,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: 'Cant.'),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: TextField(
-                  controller: _priceCtrl,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: 'Precio'),
-                ),
-              ),
-              const SizedBox(width: 8),
-              FilledButton.icon(
-                onPressed: _addToCart,
-                icon: const Icon(Icons.add_shopping_cart),
-                label: const Text('Agregar'),
-              ),
-            ],
+  Widget _customerSearch() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('Cliente (buscar por nombre o teléfono)'),
+        const SizedBox(height: 4),
+        TextField(
+          controller: _customerCtrl,
+          decoration: InputDecoration(
+            hintText: 'Escribe nombre o teléfono...',
+            prefixIcon: const Icon(Icons.search),
+            suffixIcon: (_customerCtrl.text.isNotEmpty)
+                ? IconButton(icon: const Icon(Icons.clear), onPressed: (){
+                    _customerCtrl.clear();
+                    _selectedCustomerPhone = null;
+                    setState(()=>_customerSuggestions=[]);
+                  })
+                : null,
           ),
-          if (_prodSug.isNotEmpty)
-            Card(
-              margin: const EdgeInsets.only(top: 4, bottom: 8),
-              child: Column(
-                children: _prodSug.map((p) => ListTile(
-                  dense: true,
-                  leading: const Icon(Icons.inventory_2),
-                  title: Text('${p['name']}'),
-                  subtitle: Text('SKU: ${p['sku']} • \$${((p['default_sale_price'] as num?) ?? 0).toStringAsFixed(2)}'),
-                  onTap: () => _selectProduct(p),
-                )).toList(),
-              ),
-            ),
-
-          const SizedBox(height: 8),
-          // Carrito
+          onChanged: _searchCustomers,
+        ),
+        if (_customerSuggestions.isNotEmpty)
           Card(
-            child: Column(
-              children: [
-                const ListTile(
-                  title: Text('Carrito'),
-                ),
-                if (_items.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.all(12.0),
-                    child: Text('Sin productos'),
-                  )
-                else
-                  ..._items.asMap().entries.map((e) {
-                    final i = e.key;
-                    final it = e.value;
-                    final line = ((it['quantity'] as num?) ?? 0).toDouble() *
-                        ((it['unit_price'] as num?) ?? 0).toDouble();
-                    return ListTile(
-                      title: Text('${it['product_name']}'),
-                      subtitle: Text('SKU: ${it['product_sku']} • Cant: ${it['quantity']} • \$${((it['unit_price'] as num?) ?? 0)}'),
-                      trailing: Text('\$${line.toStringAsFixed(2)}'),
-                      onLongPress: () {
-                        setState(() => _items.removeAt(i));
-                      },
-                    );
-                  }).toList(),
-                const Divider(),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  child: Column(
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(child: Text('Subtotal', style: Theme.of(context).textTheme.bodyLarge)),
-                          Text('\$${_subtotal.toStringAsFixed(2)}'),
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              controller: _shippingCtrl,
-                              keyboardType: TextInputType.number,
-                              decoration: const InputDecoration(
-                                labelText: 'Costo de envío (no afecta utilidad)',
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: TextField(
-                              controller: _discountCtrl,
-                              keyboardType: TextInputType.number,
-                              decoration: const InputDecoration(
-                                labelText: 'Descuento',
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Expanded(child: Text('Total', style: Theme.of(context).textTheme.titleMedium)),
-                          Text('\$${_total.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.bold)),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ],
+            margin: const EdgeInsets.only(top: 6),
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: _customerSuggestions.length,
+              itemBuilder: (_, i) {
+                final c = _customerSuggestions[i];
+                final name = (c['name'] ?? '').toString();
+                final phone = (c['phone'] ?? '').toString();
+                final address = (c['address'] ?? '').toString();
+                return ListTile(
+                  leading: const Icon(Icons.person),
+                  title: Text(name.isNotEmpty ? name : phone),
+                  subtitle: Text('$phone  •  $address'),
+                  onTap: (){
+                    _customerCtrl.text = name.isNotEmpty ? '$name ($phone)' : phone;
+                    _selectedCustomerPhone = phone;
+                    setState(()=>_customerSuggestions=[]);
+                  },
+                );
+              },
             ),
           ),
-          const SizedBox(height: 8),
+      ],
+    );
+  }
 
-          // Pago y lugar
-          Row(
-            children: [
-              DropdownButton<String>(
-                value: _payment,
-                items: const [
-                  DropdownMenuItem(value: 'efectivo', child: Text('efectivo')),
-                  DropdownMenuItem(value: 'tarjeta', child: Text('tarjeta')),
-                  DropdownMenuItem(value: 'transferencia', child: Text('transferencia')),
+  Widget _productSearch() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text('Producto (buscar por nombre / SKU / categoría)'),
+        const SizedBox(height: 4),
+        TextField(
+          controller: _productCtrl,
+          decoration: InputDecoration(
+            hintText: 'Escribe para buscar...',
+            prefixIcon: const Icon(Icons.search),
+            suffixIcon: (_productCtrl.text.isNotEmpty)
+                ? IconButton(icon: const Icon(Icons.clear), onPressed: (){
+                    _productCtrl.clear();
+                    setState(()=>_productSuggestions=[]);
+                  })
+                : null,
+          ),
+          onChanged: _searchProducts,
+          onSubmitted: (v) async {
+            // si es un SKU exacto agrega directo
+            if (v.trim().isEmpty) return;
+            final p = await _prodRepo.findBySku(v.trim());
+            if (p != null) {
+              await _addProductBySkuOrNameSelection(p);
+            } else {
+              _toast('No se encontró SKU "$v"');
+            }
+          },
+        ),
+        if (_productSuggestions.isNotEmpty)
+          Card(
+            margin: const EdgeInsets.only(top: 6),
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: _productSuggestions.length,
+              itemBuilder: (_, i) {
+                final p = _productSuggestions[i];
+                final name = (p['name'] ?? '').toString();
+                final sku = (p['sku'] ?? '').toString();
+                final price = ((p['default_sale_price'] as num?) ?? 0).toDouble();
+                return ListTile(
+                  leading: const Icon(Icons.add_shopping_cart),
+                  title: Text(name),
+                  subtitle: Text('$sku  •  ${_currency.format(price)}'),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.add),
+                    onPressed: ()=>_addProductBySkuOrNameSelection(p),
+                  ),
+                  onTap: ()=>_addProductBySkuOrNameSelection(p),
+                );
+              },
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _cartList() {
+    if (_cart.isEmpty) {
+      return const Card(
+        child: Padding(
+          padding: EdgeInsets.all(12),
+          child: Text('Carrito vacío'),
+        ),
+      );
+    }
+    return Card(
+      child: Column(
+        children: [
+          ..._cart.map((e){
+            return ListTile(
+              title: Text('${e.name}  •  ${e.sku}'),
+              subtitle: Text('${_currency.format(e.unitPrice)}  (costo ${_currency.format(e.lastCost)})'),
+              leading: IconButton(
+                icon: const Icon(Icons.remove_circle_outline),
+                onPressed: (){
+                  setState(() {
+                    if (e.qty > 1) {
+                      e.qty -= 1;
+                    } else {
+                      _cart.remove(e);
+                    }
+                  });
+                },
+              ),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('x${e.qty.toStringAsFixed(0)}'),
+                  IconButton(
+                    icon: const Icon(Icons.add_circle_outline),
+                    onPressed: (){
+                      setState(()=>e.qty += 1);
+                    },
+                  ),
                 ],
-                onChanged: (v) => setState(() => _payment = v ?? 'efectivo'),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: TextField(
-                  controller: _placeCtrl,
-                  decoration: const InputDecoration(labelText: 'Lugar de venta'),
-                ),
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 12),
-          FilledButton.icon(
-            onPressed: _saveSale,
-            icon: const Icon(Icons.save),
-            label: const Text('Guardar venta'),
-          ),
-          const SizedBox(height: 32),
+            );
+          }).toList(),
         ],
       ),
     );
   }
+
+  Widget _totalsCard() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          children: [
+            Row(children: [
+              Expanded(child: Text('Subtotal', style: Theme.of(context).textTheme.bodyLarge)),
+              Text(_currency.format(_subTotal)),
+            ]),
+            const SizedBox(height: 8),
+            Row(children: [
+              Expanded(child: Text('Descuento')),
+              SizedBox(
+                width: 120,
+                child: TextField(
+                  controller: _discountCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  onChanged: (_)=>setState((){}),
+                  decoration: const InputDecoration(isDense: true),
+                ),
+              ),
+            ]),
+            const SizedBox(height: 8),
+            Row(children: [
+              Expanded(child: Text('Envío (no afecta utilidad)')),
+              SizedBox(
+                width: 120,
+                child: TextField(
+                  controller: _shippingCtrl,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  onChanged: (_)=>setState((){}),
+                  decoration: const InputDecoration(isDense: true),
+                ),
+              ),
+            ]),
+            const Divider(height: 24),
+            Row(children: [
+              Expanded(child: Text('Utilidad estimada', style: Theme.of(context).textTheme.titleMedium)),
+              Text(_currency.format(_liveProfit), style: const TextStyle(fontWeight: FontWeight.bold)),
+            ]),
+            const SizedBox(height: 8),
+            Row(children: [
+              Expanded(child: Text('TOTAL', style: Theme.of(context).textTheme.titleLarge)),
+              Text(_currency.format(_total), style: const TextStyle(fontWeight: FontWeight.bold)),
+            ]),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CartItem {
+  final String sku;
+  final String name;
+  final double unitPrice;
+  final double lastCost;
+  double qty;
+  _CartItem({
+    required this.sku,
+    required this.name,
+    required this.unitPrice,
+    required this.lastCost,
+    this.qty = 1,
+  });
 }
