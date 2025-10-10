@@ -1,70 +1,67 @@
 import 'package:sqflite/sqflite.dart';
-import '../data/database.dart';
+import '../data/db.dart';
 
 class ProductRepository {
-  Future<Database> get _db async => DatabaseHelper.instance.db;
+  Future<Database> get _db async => openAppDb();
 
-  Future<List<Map<String, dynamic>>> all({String? category}) async {
+  Future<List<Map<String, Object?>>> searchLite(String q, {int limit = 20}) async {
     final db = await _db;
-    if (category == null || category.isEmpty) {
-      return db.query('products', orderBy: 'name ASC');
-    } else {
-      return db.query('products', where: 'category = ?', whereArgs: [category], orderBy: 'name ASC');
-    }
-  }
-
-  Future<Map<String, dynamic>?> findBySku(String sku) async {
-    final db = await _db;
-    final r = await db.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
-    return r.isEmpty ? null : r.first;
-  }
-
-  /// Búsqueda por SKU o nombre (ligera)
-  Future<List<Map<String, dynamic>>> searchLite(String q, {int limit = 20}) async {
-    final db = await _db;
-    final like = '%$q%';
+    final qq = '%${q.trim()}%';
     return db.query(
       'products',
-      where: 'sku LIKE ? OR name LIKE ?',
-      whereArgs: [like, like],
-      orderBy: 'name ASC',
+      columns: ['sku','name','category','default_sale_price','stock'],
+      where: 'sku LIKE ? OR name LIKE ? OR category LIKE ?',
+      whereArgs: [qq, qq, qq],
+      orderBy: 'name',
       limit: limit,
     );
   }
 
-  /// Alias para mantener compatibilidad con SalesPage
-  Future<List<Map<String, dynamic>>> searchByNameOrSku(String q, {int limit = 20}) {
-    return searchLite(q, limit: limit);
+  Future<Map<String, Object?>?> findBySku(String sku) async {
+    final db = await _db;
+    final rows = await db.query('products', where: 'sku=?', whereArgs: [sku], limit: 1);
+    return rows.isEmpty ? null : rows.first;
   }
 
-  Future<int> insert(Map<String, dynamic> data) async {
+  Future<void> upsert(Map<String, Object?> data) async {
     final db = await _db;
-    return db.insert('products', data, conflictAlgorithm: ConflictAlgorithm.abort);
+    await db.insert('products', data, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
-  Future<int> upsertBySku(String sku, Map<String, dynamic> data) async {
+  Future<List<Map<String, Object?>>> all({String? category}) async {
     final db = await _db;
-    final exists = await findBySku(sku);
-    if (exists == null) {
-      return db.insert('products', data, conflictAlgorithm: ConflictAlgorithm.replace);
-    } else {
-      return db.update('products', data, where: 'sku = ?', whereArgs: [sku], conflictAlgorithm: ConflictAlgorithm.replace);
+    if (category == null || category.isEmpty) {
+      return db.query('products', orderBy: 'name');
     }
+    return db.query('products', where: 'category=?', whereArgs: [category], orderBy: 'name');
   }
 
-  Future<int> updateBySku(String sku, Map<String, dynamic> data) async {
+  Future<void> deleteBySku(String sku) async {
     final db = await _db;
-    return db.update('products', data, where: 'sku = ?', whereArgs: [sku], conflictAlgorithm: ConflictAlgorithm.replace);
+    await db.delete('products', where: 'sku=?', whereArgs: [sku]);
   }
 
-  Future<int> deleteBySku(String sku) async {
+  Future<void> addStock(String sku, num qty, {num? lastCost, String? lastDate}) async {
     final db = await _db;
-    return db.delete('products', where: 'sku = ?', whereArgs: [sku]);
+    await db.transaction((txn) async {
+      final r = await txn.query('products', where: 'sku=?', whereArgs: [sku], limit: 1);
+      if (r.isEmpty) return;
+      final cur = (r.first['stock'] as num? ?? 0).toDouble();
+      await txn.update('products', {
+        'stock': cur + qty,
+        if (lastCost != null) 'last_purchase_price': lastCost,
+        if (lastDate != null) 'last_purchase_date': lastDate,
+      }, where: 'sku=?', whereArgs: [sku]);
+    });
   }
 
-  Future<List<String>> categories() async {
+  Future<void> removeStock(String sku, num qty) async {
     final db = await _db;
-    final rows = await db.rawQuery('SELECT DISTINCT COALESCE(category, "") AS category FROM products ORDER BY category');
-    return rows.map((e) => (e['category'] as String?) ?? '').where((e) => e.isNotEmpty).toList();
+    await db.transaction((txn) async {
+      final r = await txn.query('products', where: 'sku=?', whereArgs: [sku], limit: 1);
+      if (r.isEmpty) return;
+      final cur = (r.first['stock'] as num? ?? 0).toDouble();
+      await txn.update('products', {'stock': cur - qty}, where: 'sku=?', whereArgs: [sku]);
+    });
   }
 }
