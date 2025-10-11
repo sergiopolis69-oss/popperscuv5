@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:sqflite/sqflite.dart';
-
 import '../data/db.dart'; // DatabaseHelper.instance.db
 
 class PurchasesPage extends StatefulWidget {
