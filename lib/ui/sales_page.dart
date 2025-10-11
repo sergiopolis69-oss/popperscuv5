@@ -2,7 +2,6 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:sqflite/sqflite.dart';
-
 import '../data/database.dart';
 
 final _money = NumberFormat.currency(locale: 'es_MX', symbol: r'$');
@@ -14,28 +13,19 @@ class SalesPage extends StatefulWidget {
 }
 
 class _SalesPageState extends State<SalesPage> {
-  // Selección de cliente
   String? _customerPhone;
   String? _customerName;
 
-  // Pago / lugar
   String _paymentMethod = 'efectivo';
   final _placeCtrl = TextEditingController();
-
-  // Envío / descuento
   final _shippingCtrl = TextEditingController(text: '0');
   final _discountCtrl = TextEditingController(text: '0');
-
-  // Live search
   final _customerSearchCtrl = TextEditingController();
   final _productSearchCtrl = TextEditingController();
 
   List<Map<String, Object?>> _customerResults = [];
   List<Map<String, Object?>> _productResults = [];
-
-  // Carrito: product_id, sku, name, quantity, unit_price, last_purchase_price
   final List<Map<String, dynamic>> _cart = [];
-
   bool _saving = false;
 
   @override
@@ -119,7 +109,6 @@ class _SalesPageState extends State<SalesPage> {
 
   double get total => max(0.0, subtotal + _shipping - _discount);
 
-  /// Descuento proporcional por renglón, utilidad por renglón y utilidad total
   Map<String, dynamic> _liveProfit() {
     final details = <Map<String, dynamic>>[];
     final sub = subtotal;
@@ -130,7 +119,6 @@ class _SalesPageState extends State<SalesPage> {
       final unit = e['unit_price'] as double;
       final cost = (e['last_purchase_price'] as num?)?.toDouble() ?? 0.0;
       final lineGross = unit * qty;
-
       final lineDiscount = sub > 0 ? _discount * (lineGross / sub) : 0.0;
       final lineProfit = (unit - cost) * qty - lineDiscount;
 
@@ -148,7 +136,7 @@ class _SalesPageState extends State<SalesPage> {
 
     return {
       'details': details,
-      'profit': totalProfit, // Envío NO afecta utilidad
+      'profit': totalProfit,
     };
   }
 
@@ -204,7 +192,6 @@ class _SalesPageState extends State<SalesPage> {
         }
       });
 
-      // Diálogo de confirmación
       final profitData = _liveProfit();
       final profit = profitData['profit'] as double;
       final items = profitData['details'] as List<Map<String, dynamic>>;
@@ -319,7 +306,7 @@ class _SalesPageState extends State<SalesPage> {
                 _customerPhone = phone;
                 _customerName = name.isEmpty ? phone : name;
               });
-              SearchAnchor.of(context).closeView(phone);
+              controller.closeView(phone); // corregido
             },
           );
         });
@@ -358,7 +345,7 @@ class _SalesPageState extends State<SalesPage> {
             subtitle: Text('SKU: $sku • Stock: $stock • ${_money.format(price)}'),
             onTap: () {
               _addProductToCart(p);
-              SearchAnchor.of(context).closeView(sku);
+              controller.closeView(sku); // corregido
             },
           );
         });
@@ -509,17 +496,13 @@ class _SalesPageState extends State<SalesPage> {
             const Divider(),
             _kv('Total', _money.format(total), bold: true, big: true),
             const SizedBox(height: 6),
-            _kv('Utilidad (en vivo)', _money.format(liveProfit),
-                bold: true, big: true),
+            _kv('Utilidad (en vivo)', _money.format(liveProfit), bold: true, big: true),
           ],
         ),
       ),
     );
   }
 
-  // -----------------------
-  // Cliente rápido
-  // -----------------------
   Future<void> _quickAddCustomerDialog(BuildContext context) async {
     final phoneCtrl = TextEditingController();
     final nameCtrl = TextEditingController();
@@ -536,60 +519,4 @@ class _SalesPageState extends State<SalesPage> {
             const SizedBox(height: 8),
             TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Nombre')),
             const SizedBox(height: 8),
-            TextField(controller: addrCtrl, decoration: const InputDecoration(labelText: 'Dirección')),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancelar')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Guardar')),
-        ],
-      ),
-    );
-
-    if (ok != true) return;
-
-    final phone = phoneCtrl.text.trim();
-    if (phone.isEmpty) {
-      _snack('El teléfono es obligatorio');
-      return;
-    }
-
-    final db = await DatabaseHelper.instance.db;
-    await db.insert('customers', {
-      'phone': phone,
-      'name': nameCtrl.text.trim().isEmpty ? null : nameCtrl.text.trim(),
-      'address': addrCtrl.text.trim().isEmpty ? null : addrCtrl.text.trim(),
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
-
-    setState(() {
-      _customerPhone = phone;
-      _customerName = nameCtrl.text.trim().isEmpty ? phone : nameCtrl.text.trim();
-    });
-
-    _snack('Cliente guardado');
-  }
-
-  // -----------------------
-  // Helpers
-  // -----------------------
-  static Widget _kv(String k, String v, {bool bold = false, bool big = false}) {
-    final styleV = TextStyle(
-      fontWeight: bold ? FontWeight.w700 : FontWeight.w500,
-      fontSize: big ? 18 : 16,
-    );
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
-      child: Row(
-        children: [
-          Expanded(child: Text(k)),
-          Text(v, style: styleV),
-        ],
-      ),
-    );
-  }
-
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
-}
+            TextField(controller: addrCtrl, decoration: const InputDecoration
