@@ -4,7 +4,6 @@ import 'dart:io';
 import 'package:excel/excel.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:file_saver/file_saver.dart';
-import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
 import 'package:sqflite/sqflite.dart';
 
@@ -24,14 +23,12 @@ class ImportReport {
       'Actualizados: $updated',
       'Omitidos: $skipped',
     ];
-    if (errors.isNotEmpty) {
-      parts.add('Errores: ${errors.length}');
-    }
+    if (errors.isNotEmpty) parts.add('Errores: ${errors.length}');
     return parts.join(' • ');
   }
 }
 
-/// -------- UTILIDADES COMUNES --------
+/// -------- UTILIDADES --------
 
 final _dateIso = DateFormat("yyyy-MM-dd'T'HH:mm:ss");
 
@@ -40,60 +37,54 @@ Sheet _sheet(Excel ex, String name) {
   return ex[name];
 }
 
-List<List<Data?>> _rows(Sheet sh) {
-  // Mapea a la vista de valores crudos; si no hay filas, regresa lista vacía
-  return sh.rows;
-}
+List<List<Data?>> _rows(Sheet sh) => sh.rows;
 
-String _asString(Data? v) {
+String _asString(Data? cell) {
+  final v = cell?.value;
   if (v == null) return '';
-  final raw = v.value;
-  if (raw == null) return '';
-  return raw is String ? raw.trim() : raw.toString().trim();
+  return v is String ? v.trim() : v.toString().trim();
 }
 
-double _asDouble(Data? v) {
+double _asDouble(Data? cell) {
+  final v = cell?.value;
   if (v == null) return 0.0;
-  final raw = v.value;
-  if (raw == null) return 0.0;
-  if (raw is num) return raw.toDouble();
-  final t = raw.toString().replaceAll(',', '.');
-  return double.tryParse(t) ?? 0.0;
+  if (v is num) return v.toDouble();
+  final s = v.toString().replaceAll(',', '.');
+  return double.tryParse(s) ?? 0.0;
 }
 
-int _asInt(Data? v) {
+int _asInt(Data? cell) {
+  final v = cell?.value;
   if (v == null) return 0;
-  final raw = v.value;
-  if (raw == null) return 0;
-  if (raw is num) return raw.toInt();
-  return int.tryParse(raw.toString()) ?? 0;
+  if (v is num) return v.toInt();
+  return int.tryParse(v.toString()) ?? 0;
 }
 
-DateTime? _asDate(Data? v) {
+DateTime? _asDate(Data? cell) {
+  final v = cell?.value;
   if (v == null) return null;
-  final raw = v.value;
-  if (raw == null) return null;
-  if (raw is DateTime) return raw;
-  // Intentar ISO
-  final s = raw.toString().trim();
+  if (v is DateTime) return v;
+  final s = v.toString().trim();
   try {
     return DateTime.parse(s);
-  } catch (_) {}
-  return null;
+  } catch (_) {
+    return null;
+  }
 }
 
-/// Convierte dinámicos a CellValue del paquete excel 4.x
-CellValue? _cv(dynamic v) {
+/// Convierte dinámicos a CellValue (excel 4.x).
+/// Para DateTime escribimos **texto ISO** para evitar incompatibilidades.
+CellValue _cv(dynamic v) {
   if (v == null) return TextCellValue('');
   if (v is String) return TextCellValue(v);
   if (v is int) return IntCellValue(v);
   if (v is double) return DoubleCellValue(v);
   if (v is num) return DoubleCellValue(v.toDouble());
-  if (v is DateTime) return DateCellValue(v);
+  if (v is DateTime) return TextCellValue(_dateIso.format(v));
   return TextCellValue(v.toString());
 }
 
-/// Guarda el XLSX con FileSaver. Devuelve la ruta si el sistema la expone; de lo contrario puede ser null.
+/// Guarda XLSX con FileSaver (puede o no devolver ruta visible).
 Future<String?> _saveXlsx(String fname, Uint8List bytes) async {
   final path = await FileSaver.instance.saveFile(
     name: fname,
@@ -101,9 +92,7 @@ Future<String?> _saveXlsx(String fname, Uint8List bytes) async {
     ext: 'xlsx',
     mimeType: MimeType.microsoftExcel,
   );
-  // Algunos ambientes devuelven String, otros null
-  if (path is String && path.isNotEmpty) return path;
-  return null;
+  return (path is String && path.isNotEmpty) ? path : null;
 }
 
 /// Selector de .xlsx -> bytes
@@ -117,17 +106,16 @@ Future<Uint8List?> pickXlsxBytes() async {
   if (res == null) return null;
   final f = res.files.single;
   if (f.bytes != null) return f.bytes!;
-  if (f.path != null) {
-    return await File(f.path!).readAsBytes();
-  }
+  if (f.path != null) return File(f.path!).readAsBytes();
   return null;
 }
 
 /// -------- EXPORT: PRODUCTS --------
-/// Estructura: sku, name, category, default_sale_price, last_purchase_price, stock
+/// Hoja: products (sku, name, category, default_sale_price, last_purchase_price, stock)
 Future<Uint8List> rebuildProductsXlsxBytes() async {
   final db = await DatabaseHelper.instance.db;
   final rows = await db.query('products', orderBy: 'name COLLATE NOCASE');
+
   final ex = Excel.createExcel();
   final sh = _sheet(ex, 'products');
 
@@ -151,8 +139,7 @@ Future<Uint8List> rebuildProductsXlsxBytes() async {
     ]);
   }
 
-  final bytes = Uint8List.fromList(ex.encode()!);
-  return bytes;
+  return Uint8List.fromList(ex.encode()!);
 }
 
 Future<String?> exportProductsXlsx() async {
@@ -161,10 +148,11 @@ Future<String?> exportProductsXlsx() async {
 }
 
 /// -------- EXPORT: CLIENTS --------
-/// Estructura: phone, name, address
+/// Hoja: customers (phone, name, address)
 Future<Uint8List> rebuildClientsXlsxBytes() async {
   final db = await DatabaseHelper.instance.db;
   final rows = await db.query('customers', orderBy: 'name COLLATE NOCASE');
+
   final ex = Excel.createExcel();
   final sh = _sheet(ex, 'customers');
 
@@ -181,10 +169,11 @@ Future<String?> exportClientsXlsx() async {
 }
 
 /// -------- EXPORT: SUPPLIERS --------
-/// Estructura: phone, name, address
+/// Hoja: suppliers (phone, name, address)
 Future<Uint8List> rebuildSuppliersXlsxBytes() async {
   final db = await DatabaseHelper.instance.db;
   final rows = await db.query('suppliers', orderBy: 'name COLLATE NOCASE');
+
   final ex = Excel.createExcel();
   final sh = _sheet(ex, 'suppliers');
 
@@ -220,7 +209,6 @@ Future<Uint8List> rebuildSalesXlsxBytes() async {
     _cv('date'),
   ]);
 
-  // Unir ventas simples
   final sales = await db.query('sales', orderBy: 'date DESC');
   for (final r in sales) {
     s.appendRow([
@@ -241,9 +229,8 @@ Future<Uint8List> rebuildSalesXlsxBytes() async {
     _cv('unit_price'),
   ]);
 
-  // Obtener items con join a productos para exponer sku
   final items = await db.rawQuery('''
-    SELECT si.sale_id, p.sku as product_sku, si.quantity, si.unit_price
+    SELECT si.sale_id, p.sku AS product_sku, si.quantity, si.unit_price
     FROM sale_items si
     JOIN products p ON p.id = si.product_id
     ORDER BY si.sale_id DESC
@@ -296,7 +283,7 @@ Future<Uint8List> rebuildPurchasesXlsxBytes() async {
   ]);
 
   final items = await db.rawQuery('''
-    SELECT pi.purchase_id, p.sku as product_sku, pi.quantity, pi.unit_cost
+    SELECT pi.purchase_id, p.sku AS product_sku, pi.quantity, pi.unit_cost
     FROM purchase_items pi
     JOIN products p ON p.id = pi.product_id
     ORDER BY pi.purchase_id DESC
@@ -320,7 +307,7 @@ Future<String?> exportPurchasesXlsx() async {
 }
 
 /// -------- IMPORT: PRODUCTS --------
-/// Hoja "products": sku (PK lógico, obligatorio, no repetido), name, category, default_sale_price, last_purchase_price, stock
+/// Hoja "products": sku (PK lógico, obligatorio y único), name, category, default_sale_price, last_purchase_price, stock
 Future<ImportReport> importProductsXlsx(Uint8List bytes) async {
   final rep = ImportReport();
   final ex = Excel.decodeBytes(bytes);
@@ -333,7 +320,6 @@ Future<ImportReport> importProductsXlsx(Uint8List bytes) async {
   final db = await DatabaseHelper.instance.db;
   final rows = _rows(sh);
 
-  // Asumimos primera fila = headers
   for (var i = 1; i < rows.length; i++) {
     final r = rows[i];
     final sku = _asString(r.elementAtOrNull(0));
@@ -348,11 +334,13 @@ Future<ImportReport> importProductsXlsx(Uint8List bytes) async {
     final stock = _asInt(r.elementAtOrNull(5));
 
     try {
-      final exist = await db.query('products',
-          columns: ['id'],
-          where: 'sku = ?',
-          whereArgs: [sku],
-          limit: 1);
+      final exist = await db.query(
+        'products',
+        columns: ['id'],
+        where: 'sku = ?',
+        whereArgs: [sku],
+        limit: 1,
+      );
 
       if (exist.isEmpty) {
         await db.insert('products', {
@@ -366,16 +354,17 @@ Future<ImportReport> importProductsXlsx(Uint8List bytes) async {
         rep.inserted++;
       } else {
         await db.update(
-            'products',
-            {
-              'name': name,
-              'category': category,
-              'default_sale_price': defSale,
-              'last_purchase_price': lastCost,
-              'stock': stock,
-            },
-            where: 'sku = ?',
-            whereArgs: [sku]);
+          'products',
+          {
+            'name': name,
+            'category': category,
+            'default_sale_price': defSale,
+            'last_purchase_price': lastCost,
+            'stock': stock,
+          },
+          where: 'sku = ?',
+          whereArgs: [sku],
+        );
         rep.updated++;
       }
     } catch (e) {
@@ -396,6 +385,7 @@ Future<ImportReport> importClientsXlsx(Uint8List bytes) async {
     rep.errors.add('No se encontró hoja "customers"');
     return rep;
   }
+
   final db = await DatabaseHelper.instance.db;
   final rows = _rows(sh);
 
@@ -408,9 +398,14 @@ Future<ImportReport> importClientsXlsx(Uint8List bytes) async {
     }
     final name = _asString(r.elementAtOrNull(1));
     final address = _asString(r.elementAtOrNull(2));
+
     try {
-      final exist = await db
-          .query('customers', where: 'phone = ?', whereArgs: [phone], limit: 1);
+      final exist = await db.query(
+        'customers',
+        where: 'phone = ?',
+        whereArgs: [phone],
+        limit: 1,
+      );
       if (exist.isEmpty) {
         await db.insert('customers', {
           'phone': phone,
@@ -419,16 +414,19 @@ Future<ImportReport> importClientsXlsx(Uint8List bytes) async {
         }, conflictAlgorithm: ConflictAlgorithm.abort);
         rep.inserted++;
       } else {
-        await db.update('customers', {
-          'name': name,
-          'address': address,
-        }, where: 'phone = ?', whereArgs: [phone]);
+        await db.update(
+          'customers',
+          {'name': name, 'address': address},
+          where: 'phone = ?',
+          whereArgs: [phone],
+        );
         rep.updated++;
       }
     } catch (e) {
       rep.errors.add('Fila ${i + 1} (phone $phone): $e');
     }
   }
+
   return rep;
 }
 
@@ -442,6 +440,7 @@ Future<ImportReport> importSuppliersXlsx(Uint8List bytes) async {
     rep.errors.add('No se encontró hoja "suppliers"');
     return rep;
   }
+
   final db = await DatabaseHelper.instance.db;
   final rows = _rows(sh);
 
@@ -454,9 +453,14 @@ Future<ImportReport> importSuppliersXlsx(Uint8List bytes) async {
     }
     final name = _asString(r.elementAtOrNull(1));
     final address = _asString(r.elementAtOrNull(2));
+
     try {
-      final exist = await db
-          .query('suppliers', where: 'phone = ?', whereArgs: [phone], limit: 1);
+      final exist = await db.query(
+        'suppliers',
+        where: 'phone = ?',
+        whereArgs: [phone],
+        limit: 1,
+      );
       if (exist.isEmpty) {
         await db.insert('suppliers', {
           'phone': phone,
@@ -465,16 +469,19 @@ Future<ImportReport> importSuppliersXlsx(Uint8List bytes) async {
         }, conflictAlgorithm: ConflictAlgorithm.abort);
         rep.inserted++;
       } else {
-        await db.update('suppliers', {
-          'name': name,
-          'address': address,
-        }, where: 'phone = ?', whereArgs: [phone]);
+        await db.update(
+          'suppliers',
+          {'name': name, 'address': address},
+          where: 'phone = ?',
+          whereArgs: [phone],
+        );
         rep.updated++;
       }
     } catch (e) {
       rep.errors.add('Fila ${i + 1} (phone $phone): $e');
     }
   }
+
   return rep;
 }
 
@@ -490,13 +497,11 @@ Future<ImportReport> importSalesXlsx(Uint8List bytes) async {
     rep.errors.add('Faltan hojas "sales" o "sale_items"');
     return rep;
   }
-  final db = await DatabaseHelper.instance.db;
 
-  // Parse ventas en memoria por ID
+  final db = await DatabaseHelper.instance.db;
   final rowsS = _rows(s);
   final rowsI = _rows(si);
 
-  // Limpiar y reinsertar por ID? Mejor upsert por ID de venta
   for (var i = 1; i < rowsS.length; i++) {
     final r = rowsS[i];
     final id = _asInt(r.elementAtOrNull(0));
@@ -523,23 +528,24 @@ Future<ImportReport> importSalesXlsx(Uint8List bytes) async {
           'place': place,
           'shipping_cost': ship,
           'discount': disc,
-          'date': date.toIso8601String(),
+          'date': _dateIso.format(date),
         }, conflictAlgorithm: ConflictAlgorithm.abort);
         rep.inserted++;
       } else {
         await db.update(
-            'sales',
-            {
-              'customer_phone': phone,
-              'payment_method': pay,
-              'place': place,
-              'shipping_cost': ship,
-              'discount': disc,
-              'date': date.toIso8601String(),
-            },
-            where: 'id = ?',
-            whereArgs: [id]);
-        // Opcional: borrar items previos para reinserción limpia
+          'sales',
+          {
+            'customer_phone': phone,
+            'payment_method': pay,
+            'place': place,
+            'shipping_cost': ship,
+            'discount': disc,
+            'date': _dateIso.format(date),
+          },
+          where: 'id = ?',
+          whereArgs: [id],
+        );
+        // limpiar items previos
         await db.delete('sale_items', where: 'sale_id = ?', whereArgs: [id]);
         rep.updated++;
       }
@@ -548,7 +554,6 @@ Future<ImportReport> importSalesXlsx(Uint8List bytes) async {
     }
   }
 
-  // Items: resolver product_id por sku
   for (var i = 1; i < rowsI.length; i++) {
     final r = rowsI[i];
     final saleId = _asInt(r.elementAtOrNull(0));
@@ -571,6 +576,7 @@ Future<ImportReport> importSalesXlsx(Uint8List bytes) async {
         continue;
       }
       final pid = prod.first['id'] as int;
+
       await db.insert('sale_items', {
         'sale_id': saleId,
         'product_id': pid,
@@ -597,8 +603,8 @@ Future<ImportReport> importPurchasesXlsx(Uint8List bytes) async {
     rep.errors.add('Faltan hojas "purchases" o "purchase_items"');
     return rep;
   }
-  final db = await DatabaseHelper.instance.db;
 
+  final db = await DatabaseHelper.instance.db;
   final rowsS = _rows(s);
   final rowsI = _rows(si);
 
@@ -610,7 +616,7 @@ Future<ImportReport> importPurchasesXlsx(Uint8List bytes) async {
       continue;
     }
     final folio = _asString(r.elementAtOrNull(1));
-    final sup = _asString(r.elementAtOrNull(2));
+    final supplierPhone = _asString(r.elementAtOrNull(2));
     final dateStr = _asString(r.elementAtOrNull(3));
     final date = DateTime.tryParse(dateStr) ?? DateTime.now();
 
@@ -621,20 +627,21 @@ Future<ImportReport> importPurchasesXlsx(Uint8List bytes) async {
         await db.insert('purchases', {
           'id': id,
           'folio': folio,
-          'supplier_phone': sup,
-          'date': date.toIso8601String(),
+          'supplier_phone': supplierPhone,
+          'date': _dateIso.format(date),
         }, conflictAlgorithm: ConflictAlgorithm.abort);
         rep.inserted++;
       } else {
         await db.update(
-            'purchases',
-            {
-              'folio': folio,
-              'supplier_phone': sup,
-              'date': date.toIso8601String(),
-            },
-            where: 'id = ?',
-            whereArgs: [id]);
+          'purchases',
+          {
+            'folio': folio,
+            'supplier_phone': supplierPhone,
+            'date': _dateIso.format(date),
+          },
+          where: 'id = ?',
+          whereArgs: [id],
+        );
         await db.delete('purchase_items',
             where: 'purchase_id = ?', whereArgs: [id]);
         rep.updated++;
