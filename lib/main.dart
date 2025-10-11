@@ -69,7 +69,7 @@ class _PDVAppState extends State<PDVApp> {
                 ),
               ),
               const SizedBox(width: 8),
-              const Text('PDV Flutter'),
+              const Text('PoppersCU'),
             ],
           ),
         ),
