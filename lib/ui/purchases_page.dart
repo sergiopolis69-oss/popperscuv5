@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:sqflite/sqflite.dart';
 
-import '../data/db.dart' as appdb; // 👈 usa alias consistente
+import '../data/db.dart' as appdb;
 
 class PurchasesPage extends StatefulWidget {
   const PurchasesPage({super.key});
