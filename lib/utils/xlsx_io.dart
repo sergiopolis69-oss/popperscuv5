@@ -1,363 +1,646 @@
 import 'dart:typed_data';
 import 'package:excel/excel.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:file_saver/file_saver.dart';
+import 'package:intl/intl.dart';
 import 'package:sqflite/sqflite.dart';
-
 import '../data/database.dart';
-import '../repositories/product_repository.dart';
+
+final _money = NumberFormat.currency(locale: 'es_MX', symbol: r'$');
 
 class ImportReport {
-  final int ok;
+  final int inserted;
+  final int updated;
+  final int skipped;
   final List<String> errors;
-  ImportReport(this.ok, this.errors);
+  const ImportReport(this.inserted, this.updated, this.skipped, this.errors);
+
+  @override
+  String toString() =>
+      'Insertados: $inserted • Actualizados: $updated • Omitidos: $skipped'
+      '${errors.isEmpty ? '' : '\nErrores:\n- ${errors.join('\n- ')}'}';
 }
 
-CellValue _cv(dynamic v) {
-  if (v == null) return TextCellValue('');
-  if (v is num) return DoubleCellValue(v.toDouble());
-  return TextCellValue(v.toString());
+// ---------------------------------------------------------------------
+// Helpers Excel
+// ---------------------------------------------------------------------
+
+String _ts() => DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
+
+Sheet _sheet(Excel ex, String name) {
+  return ex.sheets[name] ?? ex..insertSheet(name) as Excel ? ex.sheets[name] as Sheet : ex.sheets[name]!;
 }
 
-Future<void> _saveXlsx(Uint8List bytes, String baseName) async {
+List<List<Data?>> _readSheet(Excel ex, String name) {
+  final sh = ex.sheets[name];
+  if (sh == null) return const [];
+  return sh.rows.map((r) => r.map((c) => c?.value).toList()).toList();
+}
+
+String _cellStr(List<Data?> row, int idx) {
+  final v = idx < row.length ? row[idx] : null;
+  return (v is String ? v : v?.toString() ?? '').trim();
+}
+
+double _cellNum(List<Data?> row, int idx) {
+  final v = idx < row.length ? row[idx] : null;
+  if (v == null) return 0;
+  if (v is num) return v.toDouble();
+  return double.tryParse(v.toString().replaceAll(',', '.')) ?? 0.0;
+}
+
+int _cellInt(List<Data?> row, int idx) {
+  return _cellNum(row, idx).toInt();
+}
+
+DateTime? _cellDate(List<Data?> row, int idx) {
+  final v = idx < row.length ? row[idx] : null;
+  if (v == null) return null;
+  if (v is DateTime) return v;
+  // Excel a veces trae fecha como string ISO o número (serial)
+  final s = v.toString();
+  final tryIso = DateTime.tryParse(s);
+  if (tryIso != null) return tryIso;
+  final n = double.tryParse(s);
+  if (n != null) {
+    // serial excel (1900-based)
+    return DateTime(1899, 12, 30).add(Duration(days: n.round()));
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------
+// EXPORTACIONES
+// ---------------------------------------------------------------------
+
+Future<void> exportProductsXlsx() async {
+  final db = await DatabaseHelper.instance.db;
+  final rows = await db.rawQuery('SELECT sku,name,category,default_sale_price,last_purchase_price,stock FROM products ORDER BY name COLLATE NOCASE');
+
+  final ex = Excel.createExcel();
+  final s = _sheet(ex, 'products');
+
+  s.appendRow([
+    const TextCellValue('sku'),
+    const TextCellValue('name'),
+    const TextCellValue('category'),
+    const TextCellValue('default_sale_price'),
+    const TextCellValue('last_purchase_price'),
+    const TextCellValue('stock'),
+  ]);
+
+  for (final r in rows) {
+    s.appendRow([
+      TextCellValue((r['sku'] ?? '').toString()),
+      TextCellValue((r['name'] ?? '').toString()),
+      TextCellValue((r['category'] ?? '').toString()),
+      DoubleCellValue((r['default_sale_price'] as num?)?.toDouble() ?? 0),
+      DoubleCellValue((r['last_purchase_price'] as num?)?.toDouble() ?? 0),
+      IntCellValue((r['stock'] as num?)?.toInt() ?? 0),
+    ]);
+  }
+
+  final bytes = ex.save()!;
   await FileSaver.instance.saveFile(
-    name: baseName,
-    bytes: bytes,
+    name: 'productos_${_ts()}',
+    bytes: Uint8List.fromList(bytes),
     ext: 'xlsx',
     mimeType: MimeType.microsoftExcel,
   );
 }
 
-// ---------------------- EXPORT ----------------------
-
-Future<void> exportProductsXlsx() async {
-  final db = await DatabaseHelper.instance.db;
-  final rows = await db.query('products', orderBy: 'name COLLATE NOCASE');
-
-  final x = Excel.createExcel();
-  final s = x['productos'];
-  s.appendRow([
-    TextCellValue('sku'),
-    TextCellValue('name'),
-    TextCellValue('category'),
-    TextCellValue('default_sale_price'),
-    TextCellValue('last_purchase_price'),
-    TextCellValue('stock'),
-  ]);
-  for (final r in rows) {
-    s.appendRow([
-      _cv(r['sku']),
-      _cv(r['name']),
-      _cv(r['category']),
-      _cv((r['default_sale_price'] as num?)?.toDouble() ?? 0.0),
-      _cv((r['last_purchase_price'] as num?)?.toDouble() ?? 0.0),
-      _cv((r['stock'] as num?)?.toInt() ?? 0),
-    ]);
-  }
-  final bytes = Uint8List.fromList(x.encode()!);
-  await _saveXlsx(bytes, 'productos');
-}
-
 Future<void> exportClientsXlsx() async {
   final db = await DatabaseHelper.instance.db;
-  final rows = await db.query('customers', orderBy: 'name COLLATE NOCASE');
+  final rows = await db.rawQuery('SELECT phone,name,address FROM customers ORDER BY name COLLATE NOCASE');
 
-  final x = Excel.createExcel();
-  final s = x['clientes'];
-  s.appendRow([TextCellValue('phone'), TextCellValue('name'), TextCellValue('address')]);
+  final ex = Excel.createExcel();
+  final s = _sheet(ex, 'customers');
+
+  s.appendRow([
+    const TextCellValue('phone'),
+    const TextCellValue('name'),
+    const TextCellValue('address'),
+  ]);
+
   for (final r in rows) {
-    s.appendRow([_cv(r['phone']), _cv(r['name']), _cv(r['address'])]);
+    s.appendRow([
+      TextCellValue((r['phone'] ?? '').toString()),
+      TextCellValue((r['name'] ?? '').toString()),
+      TextCellValue((r['address'] ?? '').toString()),
+    ]);
   }
-  await _saveXlsx(Uint8List.fromList(x.encode()!), 'clientes');
+
+  final bytes = ex.save()!;
+  await FileSaver.instance.saveFile(
+    name: 'clientes_${_ts()}',
+    bytes: Uint8List.fromList(bytes),
+    ext: 'xlsx',
+    mimeType: MimeType.microsoftExcel,
+  );
 }
 
 Future<void> exportSuppliersXlsx() async {
   final db = await DatabaseHelper.instance.db;
-  final rows = await db.query('suppliers', orderBy: 'name COLLATE NOCASE');
+  final rows = await db.rawQuery('SELECT phone,name,address FROM suppliers ORDER BY name COLLATE NOCASE');
 
-  final x = Excel.createExcel();
-  final s = x['proveedores'];
-  s.appendRow([TextCellValue('phone'), TextCellValue('name'), TextCellValue('address')]);
+  final ex = Excel.createExcel();
+  final s = _sheet(ex, 'suppliers');
+
+  s.appendRow([
+    const TextCellValue('phone'),
+    const TextCellValue('name'),
+    const TextCellValue('address'),
+  ]);
+
   for (final r in rows) {
-    s.appendRow([_cv(r['phone']), _cv(r['name']), _cv(r['address'])]);
+    s.appendRow([
+      TextCellValue((r['phone'] ?? '').toString()),
+      TextCellValue((r['name'] ?? '').toString()),
+      TextCellValue((r['address'] ?? '').toString()),
+    ]);
   }
-  await _saveXlsx(Uint8List.fromList(x.encode()!), 'proveedores');
+
+  final bytes = ex.save()!;
+  await FileSaver.instance.saveFile(
+    name: 'proveedores_${_ts()}',
+    bytes: Uint8List.fromList(bytes),
+    ext: 'xlsx',
+    mimeType: MimeType.microsoftExcel,
+  );
 }
 
 Future<void> exportSalesXlsx() async {
   final db = await DatabaseHelper.instance.db;
-  final x = Excel.createExcel();
-  final s = x['ventas'];
-  final si = x['venta_items'];
 
+  final sales = await db.rawQuery('SELECT id,customer_phone,payment_method,place,shipping_cost,discount,date FROM sales ORDER BY date DESC');
+  final items = await db.rawQuery('SELECT sale_id,product_id,quantity,unit_price, p.sku FROM sale_items si INNER JOIN products p ON p.id = si.product_id ORDER BY sale_id');
+
+  final ex = Excel.createExcel();
+
+  final s = _sheet(ex, 'sales');
   s.appendRow([
-    TextCellValue('id'),
-    TextCellValue('customer_phone'),
-    TextCellValue('payment_method'),
-    TextCellValue('place'),
-    TextCellValue('shipping_cost'),
-    TextCellValue('discount'),
-    TextCellValue('date'),
+    const TextCellValue('id'),
+    const TextCellValue('customer_phone'),
+    const TextCellValue('payment_method'),
+    const TextCellValue('place'),
+    const TextCellValue('shipping_cost'),
+    const TextCellValue('discount'),
+    const TextCellValue('date'),
   ]);
-  final sales = await db.query('sales', orderBy: 'date DESC');
   for (final r in sales) {
     s.appendRow([
-      _cv(r['id']),
-      _cv(r['customer_phone']),
-      _cv(r['payment_method']),
-      _cv(r['place']),
-      _cv(r['shipping_cost']),
-      _cv(r['discount']),
-      _cv(r['date']),
+      IntCellValue((r['id'] as num).toInt()),
+      TextCellValue((r['customer_phone'] ?? '').toString()),
+      TextCellValue((r['payment_method'] ?? '').toString()),
+      TextCellValue((r['place'] ?? '').toString()),
+      DoubleCellValue((r['shipping_cost'] as num?)?.toDouble() ?? 0),
+      DoubleCellValue((r['discount'] as num?)?.toDouble() ?? 0),
+      TextCellValue((r['date'] ?? '').toString()),
     ]);
   }
 
+  final si = _sheet(ex, 'sale_items');
   si.appendRow([
-    TextCellValue('sale_id'),
-    TextCellValue('product_sku'),
-    TextCellValue('quantity'),
-    TextCellValue('unit_price'),
+    const TextCellValue('sale_id'),
+    const TextCellValue('product_sku'),
+    const TextCellValue('quantity'),
+    const TextCellValue('unit_price'),
   ]);
-  final items = await db.rawQuery('''
-    SELECT si.sale_id, p.sku AS product_sku, si.quantity, si.unit_price
-    FROM sale_items si
-    JOIN products p ON p.id = si.product_id
-    ORDER BY si.sale_id
-  ''');
   for (final r in items) {
-    si.appendRow([_cv(r['sale_id']), _cv(r['product_sku']), _cv(r['quantity']), _cv(r['unit_price'])]);
+    si.appendRow([
+      IntCellValue((r['sale_id'] as num).toInt()),
+      TextCellValue((r['sku'] ?? '').toString()),
+      IntCellValue((r['quantity'] as num?)?.toInt() ?? 0),
+      DoubleCellValue((r['unit_price'] as num?)?.toDouble() ?? 0),
+    ]);
   }
 
-  await _saveXlsx(Uint8List.fromList(x.encode()!), 'ventas');
+  final bytes = ex.save()!;
+  await FileSaver.instance.saveFile(
+    name: 'ventas_${_ts()}',
+    bytes: Uint8List.fromList(bytes),
+    ext: 'xlsx',
+    mimeType: MimeType.microsoftExcel,
+  );
 }
 
 Future<void> exportPurchasesXlsx() async {
   final db = await DatabaseHelper.instance.db;
-  final x = Excel.createExcel();
-  final s = x['compras'];
-  final si = x['compra_items'];
 
+  final purchases = await db.rawQuery('SELECT id,folio,supplier_phone as supplier_id,date FROM purchases ORDER BY date DESC');
+  final items = await db.rawQuery('SELECT purchase_id,product_id,quantity,unit_cost, p.sku FROM purchase_items pi INNER JOIN products p ON p.id = pi.product_id ORDER BY purchase_id');
+
+  final ex = Excel.createExcel();
+
+  final s = _sheet(ex, 'purchases');
   s.appendRow([
-    TextCellValue('id'),
-    TextCellValue('folio'),
-    TextCellValue('supplier_id'),
-    TextCellValue('date'),
+    const TextCellValue('id'),
+    const TextCellValue('folio'),
+    const TextCellValue('supplier_id'),
+    const TextCellValue('date'),
   ]);
-  final purchases = await db.query('purchases', orderBy: 'date DESC');
   for (final r in purchases) {
-    s.appendRow([_cv(r['id']), _cv(r['folio']), _cv(r['supplier_id']), _cv(r['date'])]);
+    s.appendRow([
+      IntCellValue((r['id'] as num).toInt()),
+      TextCellValue((r['folio'] ?? '').toString()),
+      TextCellValue((r['supplier_id'] ?? '').toString()),
+      TextCellValue((r['date'] ?? '').toString()),
+    ]);
   }
 
+  final si = _sheet(ex, 'purchase_items');
   si.appendRow([
-    TextCellValue('purchase_id'),
-    TextCellValue('product_sku'),
-    TextCellValue('quantity'),
-    TextCellValue('unit_cost'),
+    const TextCellValue('purchase_id'),
+    const TextCellValue('product_sku'),
+    const TextCellValue('quantity'),
+    const TextCellValue('unit_cost'),
   ]);
-  final items = await db.rawQuery('''
-    SELECT pi.purchase_id, p.sku AS product_sku, pi.quantity, pi.unit_cost
-    FROM purchase_items pi
-    JOIN products p ON p.id = pi.product_id
-    ORDER BY pi.purchase_id
-  ''');
   for (final r in items) {
-    si.appendRow([_cv(r['purchase_id']), _cv(r['product_sku']), _cv(r['quantity']), _cv(r['unit_cost'])]);
+    si.appendRow([
+      IntCellValue((r['purchase_id'] as num).toInt()),
+      TextCellValue((r['sku'] ?? '').toString()),
+      IntCellValue((r['quantity'] as num?)?.toInt() ?? 0),
+      DoubleCellValue((r['unit_cost'] as num?)?.toDouble() ?? 0),
+    ]);
   }
 
-  await _saveXlsx(Uint8List.fromList(x.encode()!), 'compras');
+  final bytes = ex.save()!;
+  await FileSaver.instance.saveFile(
+    name: 'compras_${_ts()}',
+    bytes: Uint8List.fromList(bytes),
+    ext: 'xlsx',
+    mimeType: MimeType.microsoftExcel,
+  );
 }
 
-// ---------------------- IMPORT ----------------------
+// ---------------------------------------------------------------------
+// IMPORTACIONES (desde selector de archivo .xlsx)
+// ---------------------------------------------------------------------
 
-Future<ImportReport> importProductsXlsx(Uint8List data) async {
-  final x = Excel.decodeBytes(data);
-  final sheet = x['productos'];
-  if (sheet == null) return ImportReport(0, ['Hoja "productos" no encontrada']);
-  final hdr = sheet.row(0).map((c) => c?.value.toString().trim().toLowerCase()).toList();
-  int idx(String n) => hdr.indexOf(n);
-  if (idx('sku') < 0) return ImportReport(0, ['Columna "sku" requerida']);
+Future<ImportReport> importProductsXlsx(Uint8List bytes) async {
+  final db = await DatabaseHelper.instance.db;
+  final ex = Excel.decodeBytes(bytes);
 
-  final repo = ProductRepository();
-  int ok = 0; final errs = <String>[];
+  final rows = _readSheet(ex, 'products');
+  if (rows.isEmpty) return const ImportReport(0, 0, 0, ['Hoja "products" vacía o no existe']);
 
-  for (var r = 1; r < sheet.maxRows; r++) {
-    final row = sheet.row(r);
-    final sku = (row[idx('sku')]?.value ?? '').toString().trim();
-    if (sku.isEmpty) { errs.add('Fila ${r+1}: SKU vacío'); continue; }
-
-    try {
-      await repo.upsertBySku({
-        'sku': sku,
-        'name': idx('name') >= 0 ? row[idx('name')]?.value?.toString() ?? '' : '',
-        'category': idx('category') >= 0 ? row[idx('category')]?.value?.toString() : null,
-        'default_sale_price': idx('default_sale_price') >= 0 ? (row[idx('default_sale_price')]?.value as num?)?.toDouble() : 0.0,
-        'last_purchase_price': idx('last_purchase_price') >= 0 ? (row[idx('last_purchase_price')]?.value as num?)?.toDouble() : 0.0,
-        'stock': idx('stock') >= 0 ? (row[idx('stock')]?.value as num?)?.toInt() : 0,
-      });
-      ok++;
-    } catch (e) {
-      errs.add('Fila ${r+1}: $e');
+  // Headers esperados
+  final header = rows.first.map((c) => c?.toString().trim().toLowerCase()).toList();
+  final expect = ['sku','name','category','default_sale_price','last_purchase_price','stock'];
+  for (final h in expect) {
+    if (!header.contains(h)) {
+      return ImportReport(0, 0, 0, ['Falta la columna "$h" en products']);
     }
   }
-  return ImportReport(ok, errs);
+
+  int ins = 0, upd = 0, skip = 0;
+  final errors = <String>[];
+
+  final skuIdx = header.indexOf('sku');
+  final nameIdx = header.indexOf('name');
+  final catIdx  = header.indexOf('category');
+  final spIdx   = header.indexOf('default_sale_price');
+  final cpIdx   = header.indexOf('last_purchase_price');
+  final stIdx   = header.indexOf('stock');
+
+  final batch = db.batch();
+  final seenSkus = <String>{};
+
+  for (var i = 1; i < rows.length; i++) {
+    final r = rows[i];
+    final sku = _cellStr(r, skuIdx);
+    if (sku.isEmpty) { skip++; continue; }
+    if (seenSkus.contains(sku)) { skip++; continue; }
+    seenSkus.add(sku);
+
+    final name = _cellStr(r, nameIdx);
+    final cat  = _cellStr(r, catIdx);
+    final sale = _cellNum(r, spIdx);
+    final cost = _cellNum(r, cpIdx);
+    final stock= _cellInt(r, stIdx);
+
+    try {
+      // upsert por SKU
+      final exists = await db.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
+      if (exists.isEmpty) {
+        batch.insert('products', {
+          'sku': sku,
+          'name': name,
+          'category': cat,
+          'default_sale_price': sale,
+          'last_purchase_price': cost,
+          'stock': stock,
+        });
+        ins++;
+      } else {
+        final id = exists.first['id'] as int;
+        batch.update('products', {
+          'name': name,
+          'category': cat,
+          'default_sale_price': sale,
+          'last_purchase_price': cost,
+          'stock': stock,
+        }, where: 'id = ?', whereArgs: [id]);
+        upd++;
+      }
+    } catch (e) {
+      errors.add('Fila ${i+1} (${sku}): $e');
+      skip++;
+    }
+  }
+
+  await batch.commit(noResult: true);
+  return ImportReport(ins, upd, skip, errors);
 }
 
-Future<ImportReport> importClientsXlsx(Uint8List data) async {
+Future<ImportReport> importClientsXlsx(Uint8List bytes) async {
   final db = await DatabaseHelper.instance.db;
-  final x = Excel.decodeBytes(data);
-  final sheet = x['clientes'];
-  if (sheet == null) return ImportReport(0, ['Hoja "clientes" no encontrada']);
-  final hdr = sheet.row(0).map((c) => c?.value.toString().trim().toLowerCase()).toList();
-  int idx(String n) => hdr.indexOf(n);
-  if (idx('phone') < 0) return ImportReport(0, ['Columna "phone" requerida']);
+  final ex = Excel.decodeBytes(bytes);
 
-  int ok = 0; final errs = <String>[];
-  for (var r = 1; r < sheet.maxRows; r++) {
-    final row = sheet.row(r);
-    final phone = (row[idx('phone')]?.value ?? '').toString().trim();
-    if (phone.isEmpty) { errs.add('Fila ${r+1}: phone vacío'); continue; }
-    await db.insert('customers', {
-      'phone': phone,
-      'name': idx('name') >= 0 ? row[idx('name')]?.value?.toString() : null,
-      'address': idx('address') >= 0 ? row[idx('address')]?.value?.toString() : null,
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
-    ok++;
+  final rows = _readSheet(ex, 'customers');
+  if (rows.isEmpty) return const ImportReport(0, 0, 0, ['Hoja "customers" vacía o no existe']);
+
+  final header = rows.first.map((c) => c?.toString().trim().toLowerCase()).toList();
+  final expect = ['phone','name','address'];
+  for (final h in expect) {
+    if (!header.contains(h)) {
+      return ImportReport(0, 0, 0, ['Falta la columna "$h" en customers']);
+    }
   }
-  return ImportReport(ok, errs);
+
+  int ins = 0, upd = 0, skip = 0;
+  final phoneIdx = header.indexOf('phone');
+  final nameIdx  = header.indexOf('name');
+  final adrIdx   = header.indexOf('address');
+
+  final batch = db.batch();
+
+  for (var i = 1; i < rows.length; i++) {
+    final r = rows[i];
+    final phone = _cellStr(r, phoneIdx);
+    if (phone.isEmpty) { skip++; continue; }
+    final name  = _cellStr(r, nameIdx);
+    final addr  = _cellStr(r, adrIdx);
+
+    final exists = await db.query('customers', where: 'phone = ?', whereArgs: [phone], limit: 1);
+    if (exists.isEmpty) {
+      batch.insert('customers', {'phone': phone, 'name': name, 'address': addr});
+      ins++;
+    } else {
+      batch.update('customers', {'name': name, 'address': addr}, where: 'phone = ?', whereArgs: [phone]);
+      upd++;
+    }
+  }
+
+  await batch.commit(noResult: true);
+  return ImportReport(ins, upd, skip, const []);
 }
 
-Future<ImportReport> importSuppliersXlsx(Uint8List data) async {
+Future<ImportReport> importSuppliersXlsx(Uint8List bytes) async {
   final db = await DatabaseHelper.instance.db;
-  final x = Excel.decodeBytes(data);
-  final sheet = x['proveedores'];
-  if (sheet == null) return ImportReport(0, ['Hoja "proveedores" no encontrada']);
-  final hdr = sheet.row(0).map((c) => c?.value.toString().trim().toLowerCase()).toList();
-  int idx(String n) => hdr.indexOf(n);
-  if (idx('phone') < 0) return ImportReport(0, ['Columna "phone" requerida']);
+  final ex = Excel.decodeBytes(bytes);
 
-  int ok = 0; final errs = <String>[];
-  for (var r = 1; r < sheet.maxRows; r++) {
-    final row = sheet.row(r);
-    final phone = (row[idx('phone')]?.value ?? '').toString().trim();
-    if (phone.isEmpty) { errs.add('Fila ${r+1}: phone vacío'); continue; }
-    await db.insert('suppliers', {
-      'phone': phone,
-      'name': idx('name') >= 0 ? row[idx('name')]?.value?.toString() : null,
-      'address': idx('address') >= 0 ? row[idx('address')]?.value?.toString() : null,
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
-    ok++;
+  final rows = _readSheet(ex, 'suppliers');
+  if (rows.isEmpty) return const ImportReport(0, 0, 0, ['Hoja "suppliers" vacía o no existe']);
+
+  final header = rows.first.map((c) => c?.toString().trim().toLowerCase()).toList();
+  final expect = ['phone','name','address'];
+  for (final h in expect) {
+    if (!header.contains(h)) {
+      return ImportReport(0, 0, 0, ['Falta la columna "$h" en suppliers']);
+    }
   }
-  return ImportReport(ok, errs);
+
+  int ins = 0, upd = 0, skip = 0;
+  final phoneIdx = header.indexOf('phone');
+  final nameIdx  = header.indexOf('name');
+  final adrIdx   = header.indexOf('address');
+
+  final batch = db.batch();
+
+  for (var i = 1; i < rows.length; i++) {
+    final r = rows[i];
+    final phone = _cellStr(r, phoneIdx);
+    if (phone.isEmpty) { skip++; continue; }
+    final name  = _cellStr(r, nameIdx);
+    final addr  = _cellStr(r, adrIdx);
+
+    final exists = await db.query('suppliers', where: 'phone = ?', whereArgs: [phone], limit: 1);
+    if (exists.isEmpty) {
+      batch.insert('suppliers', {'phone': phone, 'name': name, 'address': addr});
+      ins++;
+    } else {
+      batch.update('suppliers', {'name': name, 'address': addr}, where: 'phone = ?', whereArgs: [phone]);
+      upd++;
+    }
+  }
+
+  await batch.commit(noResult: true);
+  return ImportReport(ins, upd, skip, const []);
 }
 
-Future<ImportReport> importSalesXlsx(Uint8List data) async {
+Future<ImportReport> importSalesXlsx(Uint8List bytes) async {
   final db = await DatabaseHelper.instance.db;
-  final x = Excel.decodeBytes(data);
-  final s = x['ventas'];
-  final si = x['venta_items'];
-  if (s == null || si == null) {
-    return ImportReport(0, ['Hojas "ventas" y/o "venta_items" no encontradas']);
+  final ex = Excel.decodeBytes(bytes);
+
+  final salesRows = _readSheet(ex, 'sales');
+  final itemsRows = _readSheet(ex, 'sale_items');
+  if (salesRows.isEmpty || itemsRows.isEmpty) {
+    return const ImportReport(0, 0, 0, ['Hojas "sales" o "sale_items" faltantes']);
   }
 
-  final hdrS = s.row(0).map((c) => c?.value.toString().trim().toLowerCase()).toList();
-  final hdrI = si.row(0).map((c) => c?.value.toString().trim().toLowerCase()).toList();
-  int idxS(String n) => hdrS.indexOf(n);
-  int idxI(String n) => hdrI.indexOf(n);
-
-  int ok = 0; final errs = <String>[];
-  final saleIdMap = <int,int>{};
-
-  for (var r = 1; r < s.maxRows; r++) {
-    final row = s.row(r);
-    if (row.every((c) => c == null)) continue;
-    final idImp = int.tryParse((row[idxS('id')]?.value ?? '').toString());
-    final saleId = await db.insert('sales', {
-      'customer_phone': idxS('customer_phone') >= 0 ? row[idxS('customer_phone')]?.value?.toString() : null,
-      'payment_method': idxS('payment_method') >= 0 ? row[idxS('payment_method')]?.value?.toString() : null,
-      'place': idxS('place') >= 0 ? row[idxS('place')]?.value?.toString() : null,
-      'shipping_cost': (idxS('shipping_cost') >= 0 ? (row[idxS('shipping_cost')]?.value as num?) : 0)?.toDouble() ?? 0.0,
-      'discount': (idxS('discount') >= 0 ? (row[idxS('discount')]?.value as num?) : 0)?.toDouble() ?? 0.0,
-      'date': idxS('date') >= 0 ? row[idxS('date')]?.value?.toString() : null,
-    });
-    if (idImp != null) saleIdMap[idImp] = saleId;
-    ok++;
+  final hs = salesRows.first.map((c) => c?.toString().trim().toLowerCase()).toList();
+  for (final h in ['id','customer_phone','payment_method','place','shipping_cost','discount','date']) {
+    if (!hs.contains(h)) return ImportReport(0, 0, 0, ['Falta "$h" en sales']);
+  }
+  final hi = itemsRows.first.map((c) => c?.toString().trim().toLowerCase()).toList();
+  for (final h in ['sale_id','product_sku','quantity','unit_price']) {
+    if (!hi.contains(h)) return ImportReport(0, 0, 0, ['Falta "$h" en sale_items']);
   }
 
-  for (var r = 1; r < si.maxRows; r++) {
-    final row = si.row(r);
-    if (row.every((c) => c == null)) continue;
-    final saleImp = int.tryParse((row[idxI('sale_id')]?.value ?? '').toString());
-    final sku = (row[idxI('product_sku')]?.value ?? '').toString().trim();
-    if (saleImp == null || sku.isEmpty) { errs.add('venta_items fila ${r+1}: sale_id/SKU inválido'); continue; }
-    final saleId = saleIdMap[saleImp];
-    if (saleId == null) { errs.add('venta_items fila ${r+1}: sale_id no resuelto'); continue; }
-    final prod = await ProductRepository().getBySku(sku);
-    if (prod == null) { errs.add('venta_items fila ${r+1}: SKU $sku no existe'); continue; }
+  final s_id     = hs.indexOf('id');
+  final s_phone  = hs.indexOf('customer_phone');
+  final s_pay    = hs.indexOf('payment_method');
+  final s_place  = hs.indexOf('place');
+  final s_ship   = hs.indexOf('shipping_cost');
+  final s_disc   = hs.indexOf('discount');
+  final s_date   = hs.indexOf('date');
 
-    await db.insert('sale_items', {
-      'sale_id': saleId,
-      'product_id': prod['id'],
-      'quantity': (row[idxI('quantity')]?.value as num?)?.toInt() ?? 0,
-      'unit_price': (row[idxI('unit_price')]?.value as num?)?.toDouble() ?? 0.0,
-    });
+  final i_sid    = hi.indexOf('sale_id');
+  final i_sku    = hi.indexOf('product_sku');
+  final i_qty    = hi.indexOf('quantity');
+  final i_unit   = hi.indexOf('unit_price');
+
+  int ins = 0, upd = 0, skip = 0;
+  final errors = <String>[];
+
+  // Construir mapa sale_id -> items
+  final itemsMap = <int, List<List<Data?>>>{};
+  for (var i = 1; i < itemsRows.length; i++) {
+    final r = itemsRows[i];
+    final sid = _cellInt(r, i_sid);
+    itemsMap.putIfAbsent(sid, () => []).add(r);
   }
-  return ImportReport(ok, errs);
+
+  await db.transaction((txn) async {
+    for (var i = 1; i < salesRows.length; i++) {
+      final r = salesRows[i];
+      final id = _cellInt(r, s_id);
+      final phone = _cellStr(r, s_phone);
+      final pay = _cellStr(r, s_pay);
+      final place = _cellStr(r, s_place);
+      final ship = _cellNum(r, s_ship);
+      final disc = _cellNum(r, s_disc);
+      final date = _cellStr(r, s_date);
+
+      if (id == 0 || phone.isEmpty) { skip++; continue; }
+
+      try {
+        // insert venta
+        final saleId = await txn.insert('sales', {
+          'customer_phone': phone,
+          'payment_method': pay.isEmpty ? 'efectivo' : pay,
+          'place': place.isEmpty ? null : place,
+          'shipping_cost': ship,
+          'discount': disc,
+          'date': date.isEmpty ? DateTime.now().toIso8601String() : date,
+        });
+
+        // items
+        final its = itemsMap[id] ?? const [];
+        for (final it in its) {
+          final sku = _cellStr(it, i_sku);
+          if (sku.isEmpty) continue;
+          final qty = _cellInt(it, i_qty);
+          final unit = _cellNum(it, i_unit);
+
+          final prod = await txn.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
+          if (prod.isEmpty) {
+            errors.add('Venta $id: SKU "$sku" no existe, item omitido');
+            continue;
+          }
+          final pid = prod.first['id'] as int;
+
+          await txn.insert('sale_items', {
+            'sale_id': saleId,
+            'product_id': pid,
+            'quantity': qty,
+            'unit_price': unit,
+          });
+
+          await txn.rawUpdate('UPDATE products SET stock = MAX(stock - ?, 0) WHERE id = ?', [qty, pid]);
+        }
+        ins++;
+      } catch (e) {
+        errors.add('Venta $id: $e');
+        skip++;
+      }
+    }
+  });
+
+  return ImportReport(ins, upd, skip, errors);
 }
 
-Future<ImportReport> importPurchasesXlsx(Uint8List data) async {
+Future<ImportReport> importPurchasesXlsx(Uint8List bytes) async {
   final db = await DatabaseHelper.instance.db;
-  final x = Excel.decodeBytes(data);
-  final s = x['compras'];
-  final si = x['compra_items'];
-  if (s == null || si == null) {
-    return ImportReport(0, ['Hojas "compras" y/o "compra_items" no encontradas']);
+  final ex = Excel.decodeBytes(bytes);
+
+  final pRows = _readSheet(ex, 'purchases');
+  final iRows = _readSheet(ex, 'purchase_items');
+  if (pRows.isEmpty || iRows.isEmpty) {
+    return const ImportReport(0, 0, 0, ['Hojas "purchases" o "purchase_items" faltantes']);
   }
 
-  final hdrS = s.row(0).map((c) => c?.value.toString().trim().toLowerCase()).toList();
-  final hdrI = si.row(0).map((c) => c?.value.toString().trim().toLowerCase()).toList();
-  int idxS(String n) => hdrS.indexOf(n);
-  int idxI(String n) => hdrI.indexOf(n);
-
-  int ok = 0; final errs = <String>[];
-  final purchaseIdMap = <int,int>{};
-
-  for (var r = 1; r < s.maxRows; r++) {
-    final row = s.row(r);
-    if (row.every((c) => c == null)) continue;
-    final idImp = int.tryParse((row[idxS('id')]?.value ?? '').toString());
-    final pId = await db.insert('purchases', {
-      'folio': idxS('folio') >= 0 ? row[idxS('folio')]?.value?.toString() : null,
-      'supplier_id': (idxS('supplier_id') >= 0 ? (row[idxS('supplier_id')]?.value as num?) : null)?.toInt(),
-      'date': idxS('date') >= 0 ? row[idxS('date')]?.value?.toString() : null,
-    });
-    if (idImp != null) purchaseIdMap[idImp] = pId;
-    ok++;
+  final hp = pRows.first.map((c) => c?.toString().trim().toLowerCase()).toList();
+  for (final h in ['id','folio','supplier_id','date']) {
+    if (!hp.contains(h)) return ImportReport(0, 0, 0, ['Falta "$h" en purchases']);
+  }
+  final hi = iRows.first.map((c) => c?.toString().trim().toLowerCase()).toList();
+  for (final h in ['purchase_id','product_sku','quantity','unit_cost']) {
+    if (!hi.contains(h)) return ImportReport(0, 0, 0, ['Falta "$h" en purchase_items']);
   }
 
-  for (var r = 1; r < si.maxRows; r++) {
-    final row = si.row(r);
-    if (row.every((c) => c == null)) continue;
-    final pImp = int.tryParse((row[idxI('purchase_id')]?.value ?? '').toString());
-    final sku = (row[idxI('product_sku')]?.value ?? '').toString().trim();
-    if (pImp == null || sku.isEmpty) { errs.add('compra_items fila ${r+1}: purchase_id/SKU inválido'); continue; }
-    final pId = purchaseIdMap[pImp];
-    if (pId == null) { errs.add('compra_items fila ${r+1}: purchase_id no resuelto'); continue; }
-    final prod = await ProductRepository().getBySku(sku);
-    if (prod == null) { errs.add('compra_items fila ${r+1}: SKU $sku no existe'); continue; }
+  final p_id   = hp.indexOf('id');
+  final p_fol  = hp.indexOf('folio');
+  final p_sup  = hp.indexOf('supplier_id');
+  final p_date = hp.indexOf('date');
 
-    final qty  = (row[idxI('quantity')]?.value as num?)?.toInt() ?? 0;
-    final cost = (row[idxI('unit_cost')]?.value as num?)?.toDouble() ?? 0.0;
+  final i_pid  = hi.indexOf('purchase_id');
+  final i_sku  = hi.indexOf('product_sku');
+  final i_qty  = hi.indexOf('quantity');
+  final i_cost = hi.indexOf('unit_cost');
 
-    await db.insert('purchase_items', {
-      'purchase_id': pId,
-      'product_id': prod['id'],
-      'quantity': qty,
-      'unit_cost': cost,
-    });
+  int ins = 0, upd = 0, skip = 0;
+  final errors = <String>[];
 
-    await db.rawUpdate(
-      'UPDATE products SET stock = stock + ?, last_purchase_price = ?, last_purchase_date = ? WHERE id = ?',
-      [qty, cost, DateTime.now().toIso8601String(), prod['id']]
-    );
+  final itemsMap = <int, List<List<Data?>>>{};
+  for (var i = 1; i < iRows.length; i++) {
+    final r = iRows[i];
+    final pid = _cellInt(r, i_pid);
+    itemsMap.putIfAbsent(pid, () => []).add(r);
   }
-  return ImportReport(ok, errs);
+
+  await db.transaction((txn) async {
+    for (var i = 1; i < pRows.length; i++) {
+      final r = pRows[i];
+      final id = _cellInt(r, p_id);
+      final folio = _cellStr(r, p_fol);
+      final supplier = _cellStr(r, p_sup);
+      final date = _cellStr(r, p_date);
+
+      if (id == 0 || supplier.isEmpty) { skip++; continue; }
+
+      try {
+        final purchaseId = await txn.insert('purchases', {
+          'folio': folio.isEmpty ? null : folio,
+          'supplier_phone': supplier,
+          'date': date.isEmpty ? DateTime.now().toIso8601String() : date,
+        });
+
+        final its = itemsMap[id] ?? const [];
+        for (final it in its) {
+          final sku = _cellStr(it, i_sku);
+          if (sku.isEmpty) continue;
+          final qty = _cellInt(it, i_qty);
+          final cost = _cellNum(it, i_cost);
+
+          final prod = await txn.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
+          if (prod.isEmpty) {
+            errors.add('Compra $id: SKU "$sku" no existe, item omitido');
+            continue;
+          }
+          final pid = prod.first['id'] as int;
+
+          await txn.insert('purchase_items', {
+            'purchase_id': purchaseId,
+            'product_id': pid,
+            'quantity': qty,
+            'unit_cost': cost,
+          });
+
+          await txn.rawUpdate('UPDATE products SET stock = stock + ?, last_purchase_price = ? WHERE id = ?', [qty, cost, pid]);
+        }
+        ins++;
+      } catch (e) {
+        errors.add('Compra $id: $e');
+        skip++;
+      }
+    }
+  });
+
+  return ImportReport(ins, upd, skip, errors);
+}
+
+// ---------------------------------------------------------------------
+// SELECTOR DE ARCHIVO PARA IMPORTAR (UI helpers)
+// ---------------------------------------------------------------------
+
+Future<Uint8List?> pickXlsxBytes() async {
+  final res = await FilePicker.platform.pickFiles(
+    type: FileType.custom,
+    allowedExtensions: ['xlsx'],
+    withData: true,
+  );
+  if (res == null || res.files.isEmpty) return null;
+  return res.files.single.bytes;
 }
