@@ -22,13 +22,12 @@ class SupplierRepository {
     );
   }
 
-  /// Inserta/actualiza proveedor. PK (id) = phone (igual que clientes).
   Future<void> upsert(Map<String, Object?> data) async {
     final db = await _db;
     await db.insert(
       'suppliers',
       {
-        'id': data['id'] ?? data['phone'], // tolerante
+        'id': data['id'] ?? data['phone'],
         'name': data['name'] ?? '',
         'phone': data['phone'] ?? '',
         'address': data['address'] ?? '',

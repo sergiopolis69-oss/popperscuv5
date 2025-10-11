@@ -9,7 +9,7 @@ class SalesRepository {
     return db.query('sales', orderBy: 'date DESC');
   }
 
-  Future<List<Map<String, Object?>>> itemsBySaleId(Object id) async {
+  Future<List<Map<String, Object?>>> itemsBySaleId(dynamic id) async {
     final db = await _db;
     return db.query(
       'sale_items',
@@ -19,14 +19,13 @@ class SalesRepository {
     );
   }
 
-  /// Inserta/actualiza venta (PK autoincrement o provisto en data['id'])
   Future<int> upsert(Map<String, Object?> data) async {
     final db = await _db;
     return await db.insert(
       'sales',
       {
-        'id': data['id'], // puede ser null => autoincrement
-        'date': data['date'], // ISO
+        'id': data['id'],
+        'date': data['date'],
         'customer_phone': data['customer_phone'],
         'payment_method': data['payment_method'],
         'place': data['place'],

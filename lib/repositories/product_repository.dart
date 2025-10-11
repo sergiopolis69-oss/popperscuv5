@@ -9,7 +9,6 @@ class ProductRepository {
     return db.query('products', orderBy: 'name COLLATE NOCASE');
   }
 
-  /// Búsqueda ligera por nombre, sku o categoría.
   Future<List<Map<String, Object?>>> searchLite(String q, {int limit = 25}) async {
     final db = await _db;
     final like = '%$q%';
@@ -32,7 +31,7 @@ class ProductRepository {
     return r.isEmpty ? null : r.first;
   }
 
-  /// Inserta/actualiza (PK = sku).
+  /// Inserta (si no existe) o actualiza por sku.
   Future<void> upsert(Map<String, Object?> data) async {
     final db = await _db;
     await db.insert(
@@ -48,6 +47,14 @@ class ProductRepository {
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+  }
+
+  /// Método simple de inserción (alias de upsert por compatibilidad con UI).
+  Future<void> insert(Map<String, Object?> data) => upsert(data);
+
+  Future<void> deleteBySku(String sku) async {
+    final db = await _db;
+    await db.delete('products', where: 'sku = ?', whereArgs: [sku]);
   }
 
   Future<void> increaseStock(String sku, num qty) async {

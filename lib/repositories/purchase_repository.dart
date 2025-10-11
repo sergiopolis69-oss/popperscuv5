@@ -11,7 +11,7 @@ class PurchaseRepository {
     return db.query('purchases', orderBy: 'date DESC');
   }
 
-  Future<List<Map<String, Object?>>> itemsByPurchaseId(Object id) async {
+  Future<List<Map<String, Object?>>> itemsByPurchaseId(dynamic id) async {
     final db = await _db;
     return db.query(
       'purchase_items',
@@ -21,7 +21,6 @@ class PurchaseRepository {
     );
   }
 
-  /// Inserta/actualiza compra (PK autoincrement o provisto en data['id'])
   Future<int> upsert(Map<String, Object?> data) async {
     final db = await _db;
     return await db.insert(
@@ -29,7 +28,7 @@ class PurchaseRepository {
       {
         'id': data['id'],
         'folio': data['folio'],
-        'date': data['date'], // ISO
+        'date': data['date'],
         'supplier_id': data['supplier_id'],
         'total': data['total'] ?? 0,
       },
@@ -37,7 +36,6 @@ class PurchaseRepository {
     );
   }
 
-  /// Inserta/actualiza item de compra y actualiza inventario/último costo.
   Future<void> upsertItem(Map<String, Object?> data) async {
     final db = await _db;
     await db.insert(
@@ -52,7 +50,7 @@ class PurchaseRepository {
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
 
-    // Actualizar inventario y último costo
+    // Efecto de inventario y último costo
     final sku = data['product_sku'] as String;
     final qty = (data['quantity'] as num?) ?? 0;
     final cost = (data['unit_cost'] as num?) ?? 0;

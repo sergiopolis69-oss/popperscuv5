@@ -9,7 +9,6 @@ class CustomerRepository {
     return db.query('customers', orderBy: 'name COLLATE NOCASE');
   }
 
-  /// Búsqueda ligera por nombre o teléfono (para live search).
   Future<List<Map<String, Object?>>> searchLite(String q) async {
     final db = await _db;
     final like = '%$q%';
@@ -23,7 +22,6 @@ class CustomerRepository {
     );
   }
 
-  /// Inserta/actualiza (PK = phone).
   Future<void> upsert(Map<String, Object?> data) async {
     final db = await _db;
     await db.insert(
