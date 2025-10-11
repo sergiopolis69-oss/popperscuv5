@@ -1,7 +1,9 @@
 import 'dart:io';
 import 'dart:typed_data';
+
 import 'package:excel/excel.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:collection/collection.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../data/db.dart' as appdb;
@@ -21,7 +23,7 @@ Future<String> _writeBytes(String fileName, List<int> bytes) async {
   return f.path;
 }
 
-/// ===== Helpers de Excel (sin tipos internos de excel) =====
+/// ===== Helpers de Excel (solo primitivos) =====
 
 Sheet _getOrCreate(Excel ex, String name) {
   final existing = ex.sheets[name];
@@ -32,49 +34,34 @@ Sheet _getOrCreate(Excel ex, String name) {
 
 String _asString(dynamic v) {
   if (v == null) return '';
-  // Evita usar TextCellValue / Data explícitos
-  return v is String ? v.trim() : v.toString().trim();
+  // si viene un Data?, tomar .value
+  final raw = (v is Data) ? v.value : v;
+  return raw is String ? raw.trim() : raw.toString().trim();
 }
 
 double _asDouble(dynamic v) {
   if (v == null) return 0;
-  if (v is num) return v.toDouble();
-  final s = _asString(v).replaceAll(',', '.');
+  final raw = (v is Data) ? v.value : v;
+  if (raw is num) return raw.toDouble();
+  final s = _asString(raw).replaceAll(',', '.');
   return double.tryParse(s) ?? 0;
 }
 
 int _asInt(dynamic v) {
   if (v == null) return 0;
-  if (v is num) return v.toInt();
-  return int.tryParse(_asString(v)) ?? 0;
+  final raw = (v is Data) ? v.value : v;
+  if (raw is num) return raw.toInt();
+  return int.tryParse(_asString(raw)) ?? 0;
 }
 
 DateTime? _asDate(dynamic v) {
   if (v == null) return null;
-  if (v is DateTime) return v;
-  // intenta ISO
-  final s = _asString(v);
-  try {
-    return DateTime.tryParse(s);
-  } catch (_) {
-    return null;
-  }
-}
-
-CellValue _cv(dynamic v) {
-  // excel 4.x acepta primitivos directamente en appendRow; pero para seguridad
-  // devolvemos TextCellValue para textos, y números directos.
-  if (v == null) return const TextCellValue('');
-  if (v is num) return v is int ? IntCellValue(v) : DoubleCellValue(v.toDouble());
-  if (v is DateTime) {
-    // excel 4.x también acepta Fecha como texto ISO para evitar problemas de zona
-    return TextCellValue(v.toIso8601String());
-  }
-  return TextCellValue(_asString(v));
+  final raw = (v is Data) ? v.value : v;
+  if (raw is DateTime) return raw;
+  return DateTime.tryParse(_asString(raw));
 }
 
 /// ====== EXPORT ======
-/// Rutas devueltas: archivo dentro de Documents de la app.
 
 Future<String> exportProductsXlsx() async {
   final db = await appdb.DatabaseHelper.instance.db;
@@ -83,27 +70,25 @@ Future<String> exportProductsXlsx() async {
   final ex = Excel.createExcel();
   final sh = _getOrCreate(ex, 'products');
   sh.appendRow([
-    const TextCellValue('sku'),
-    const TextCellValue('name'),
-    const TextCellValue('category'),
-    const TextCellValue('default_sale_price'),
-    const TextCellValue('last_purchase_price'),
-    const TextCellValue('stock'),
+    'sku',
+    'name',
+    'category',
+    'default_sale_price',
+    'last_purchase_price',
+    'stock',
   ]);
   for (final r in rows) {
     sh.appendRow([
-      _cv(r['sku']),
-      _cv(r['name']),
-      _cv(r['category']),
-      _cv((r['default_sale_price'] as num?)?.toDouble() ?? 0),
-      _cv((r['last_purchase_price'] as num?)?.toDouble() ?? 0),
-      _cv((r['stock'] as num?)?.toInt() ?? 0),
+      (r['sku'] ?? '').toString(),
+      (r['name'] ?? '').toString(),
+      (r['category'] ?? '').toString(),
+      (r['default_sale_price'] as num?)?.toDouble() ?? 0.0,
+      (r['last_purchase_price'] as num?)?.toDouble() ?? 0.0,
+      (r['stock'] as num?)?.toInt() ?? 0,
     ]);
   }
-
-  final bytes = ex.encode();
-  final path = await _writeBytes('productos.xlsx', bytes!);
-  return path;
+  final bytes = ex.encode()!;
+  return _writeBytes('productos.xlsx', bytes);
 }
 
 Future<String> exportClientsXlsx() async {
@@ -112,18 +97,16 @@ Future<String> exportClientsXlsx() async {
 
   final ex = Excel.createExcel();
   final sh = _getOrCreate(ex, 'clients');
-  sh.appendRow([
-    const TextCellValue('phone'),
-    const TextCellValue('name'),
-    const TextCellValue('address'),
-  ]);
+  sh.appendRow(['phone', 'name', 'address']);
   for (final r in rows) {
-    sh.appendRow([_cv(r['phone']), _cv(r['name']), _cv(r['address'])]);
+    sh.appendRow([
+      (r['phone'] ?? '').toString(),
+      (r['name'] ?? '').toString(),
+      (r['address'] ?? '').toString(),
+    ]);
   }
-
-  final bytes = ex.encode();
-  final path = await _writeBytes('clientes.xlsx', bytes!);
-  return path;
+  final bytes = ex.encode()!;
+  return _writeBytes('clientes.xlsx', bytes);
 }
 
 Future<String> exportSuppliersXlsx() async {
@@ -132,18 +115,16 @@ Future<String> exportSuppliersXlsx() async {
 
   final ex = Excel.createExcel();
   final sh = _getOrCreate(ex, 'suppliers');
-  sh.appendRow([
-    const TextCellValue('phone'),
-    const TextCellValue('name'),
-    const TextCellValue('address'),
-  ]);
+  sh.appendRow(['phone', 'name', 'address']);
   for (final r in rows) {
-    sh.appendRow([_cv(r['phone']), _cv(r['name']), _cv(r['address'])]);
+    sh.appendRow([
+      (r['phone'] ?? '').toString(),
+      (r['name'] ?? '').toString(),
+      (r['address'] ?? '').toString(),
+    ]);
   }
-
-  final bytes = ex.encode();
-  final path = await _writeBytes('proveedores.xlsx', bytes!);
-  return path;
+  final bytes = ex.encode()!;
+  return _writeBytes('proveedores.xlsx', bytes);
 }
 
 Future<String> exportSalesXlsx() async {
@@ -152,47 +133,34 @@ Future<String> exportSalesXlsx() async {
   final items = await db.query('sale_items', orderBy: 'sale_id');
 
   final ex = Excel.createExcel();
+
   final s = _getOrCreate(ex, 'sales');
-  s.appendRow([
-    const TextCellValue('id'),
-    const TextCellValue('customer_phone'),
-    const TextCellValue('payment_method'),
-    const TextCellValue('place'),
-    const TextCellValue('shipping_cost'),
-    const TextCellValue('discount'),
-    const TextCellValue('date'),
-  ]);
+  s.appendRow(['id', 'customer_phone', 'payment_method', 'place', 'shipping_cost', 'discount', 'date']);
   for (final r in sales) {
     s.appendRow([
-      _cv(r['id']),
-      _cv(r['customer_phone']),
-      _cv(r['payment_method']),
-      _cv(r['place']),
-      _cv((r['shipping_cost'] as num?)?.toDouble() ?? 0),
-      _cv((r['discount'] as num?)?.toDouble() ?? 0),
-      _cv(r['date']),
+      (r['id'] as num?)?.toInt() ?? 0,
+      (r['customer_phone'] ?? '').toString(),
+      (r['payment_method'] ?? '').toString(),
+      (r['place'] ?? '').toString(),
+      (r['shipping_cost'] as num?)?.toDouble() ?? 0.0,
+      (r['discount'] as num?)?.toDouble() ?? 0.0,
+      (r['date'] ?? '').toString(),
     ]);
   }
 
   final si = _getOrCreate(ex, 'sale_items');
-  si.appendRow([
-    const TextCellValue('sale_id'),
-    const TextCellValue('product_sku'),
-    const TextCellValue('quantity'),
-    const TextCellValue('unit_price'),
-  ]);
+  si.appendRow(['sale_id', 'product_sku', 'quantity', 'unit_price']);
   for (final r in items) {
     si.appendRow([
-      _cv(r['sale_id']),
-      _cv(r['product_sku']),
-      _cv((r['quantity'] as num?)?.toInt() ?? 0),
-      _cv((r['unit_price'] as num?)?.toDouble() ?? 0),
+      (r['sale_id'] as num?)?.toInt() ?? 0,
+      (r['product_sku'] ?? '').toString(),
+      (r['quantity'] as num?)?.toInt() ?? 0,
+      (r['unit_price'] as num?)?.toDouble() ?? 0.0,
     ]);
   }
 
-  final bytes = ex.encode();
-  final path = await _writeBytes('ventas.xlsx', bytes!);
-  return path;
+  final bytes = ex.encode()!;
+  return _writeBytes('ventas.xlsx', bytes);
 }
 
 Future<String> exportPurchasesXlsx() async {
@@ -201,53 +169,40 @@ Future<String> exportPurchasesXlsx() async {
   final items = await db.query('purchase_items', orderBy: 'purchase_id');
 
   final ex = Excel.createExcel();
+
   final s = _getOrCreate(ex, 'purchases');
-  s.appendRow([
-    const TextCellValue('id'),
-    const TextCellValue('folio'),
-    const TextCellValue('supplier_phone'),
-    const TextCellValue('date'),
-  ]);
+  s.appendRow(['id', 'folio', 'supplier_phone', 'date']);
   for (final r in purchases) {
     s.appendRow([
-      _cv(r['id']),
-      _cv(r['folio']),
-      _cv(r['supplier_phone']),
-      _cv(r['date']),
+      (r['id'] as num?)?.toInt() ?? 0,
+      (r['folio'] ?? '').toString(),
+      (r['supplier_phone'] ?? '').toString(),
+      (r['date'] ?? '').toString(),
     ]);
   }
 
   final si = _getOrCreate(ex, 'purchase_items');
-  si.appendRow([
-    const TextCellValue('purchase_id'),
-    const TextCellValue('product_sku'),
-    const TextCellValue('quantity'),
-    const TextCellValue('unit_cost'),
-  ]);
+  si.appendRow(['purchase_id', 'product_sku', 'quantity', 'unit_cost']);
   for (final r in items) {
     si.appendRow([
-      _cv(r['purchase_id']),
-      _cv(r['product_sku']),
-      _cv((r['quantity'] as num?)?.toInt() ?? 0),
-      _cv((r['unit_cost'] as num?)?.toDouble() ?? 0),
+      (r['purchase_id'] as num?)?.toInt() ?? 0,
+      (r['product_sku'] ?? '').toString(),
+      (r['quantity'] as num?)?.toInt() ?? 0,
+      (r['unit_cost'] as num?)?.toDouble() ?? 0.0,
     ]);
   }
 
-  final bytes = ex.encode();
-  final path = await _writeBytes('compras.xlsx', bytes!);
-  return path;
+  final bytes = ex.encode()!;
+  return _writeBytes('compras.xlsx', bytes);
 }
 
 /// ====== IMPORT ======
-/// Reciben el XLSX en bytes. Valida SKU único (no vacío) en productos.
 
 Future<void> importProductsXlsx(Uint8List bytes) async {
   final ex = Excel.decodeBytes(bytes);
   final sh = ex.sheets['products'] ?? ex.tables.values.firstOrNull;
   if (sh == null) throw 'Hoja "products" no encontrada';
 
-  // Encabezados esperados:
-  // sku | name | category | default_sale_price | last_purchase_price | stock
   final db = await appdb.DatabaseHelper.instance.db;
   await db.transaction((txn) async {
     for (int i = 1; i < sh.maxRows; i++) {
@@ -261,8 +216,8 @@ Future<void> importProductsXlsx(Uint8List bytes) async {
       final lastCost = _asDouble(row.elementAtOrNull(4)?.value);
       final stock = _asInt(row.elementAtOrNull(5)?.value);
 
-      if (sku.isEmpty) continue; // obligatorio
-      // upsert por SKU
+      if (sku.isEmpty) continue;
+
       final existing = await txn.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
       if (existing.isEmpty) {
         await txn.insert('products', {
@@ -350,10 +305,10 @@ Future<void> importSalesXlsx(Uint8List bytes) async {
 
   final db = await appdb.DatabaseHelper.instance.db;
   await db.transaction((txn) async {
-    // ventas
     for (int i = 1; i < sh.maxRows; i++) {
       final row = sh.row(i);
       if (row.isEmpty) continue;
+
       final id = _asInt(row.elementAtOrNull(0)?.value);
       final phone = _asString(row.elementAtOrNull(1)?.value);
       final payment = _asString(row.elementAtOrNull(2)?.value);
@@ -362,7 +317,6 @@ Future<void> importSalesXlsx(Uint8List bytes) async {
       final discount = _asDouble(row.elementAtOrNull(5)?.value);
       final date = _asString(row.elementAtOrNull(6)?.value);
 
-      // insert con id si se provee (si tu tabla usa AUTOINCREMENT, puedes omitir id)
       await txn.insert('sales', {
         if (id > 0) 'id': id,
         'customer_phone': phone,
@@ -373,10 +327,11 @@ Future<void> importSalesXlsx(Uint8List bytes) async {
         'date': date,
       }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
-    // items
+
     for (int i = 1; i < si.maxRows; i++) {
       final row = si.row(i);
       if (row.isEmpty) continue;
+
       final saleId = _asInt(row.elementAtOrNull(0)?.value);
       final sku = _asString(row.elementAtOrNull(1)?.value);
       final qty = _asInt(row.elementAtOrNull(2)?.value);
@@ -405,6 +360,7 @@ Future<void> importPurchasesXlsx(Uint8List bytes) async {
     for (int i = 1; i < sh.maxRows; i++) {
       final row = sh.row(i);
       if (row.isEmpty) continue;
+
       final id = _asInt(row.elementAtOrNull(0)?.value);
       final folio = _asString(row.elementAtOrNull(1)?.value);
       final supplier = _asString(row.elementAtOrNull(2)?.value);
@@ -417,9 +373,11 @@ Future<void> importPurchasesXlsx(Uint8List bytes) async {
         'date': date,
       }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
+
     for (int i = 1; i < si.maxRows; i++) {
       final row = si.row(i);
       if (row.isEmpty) continue;
+
       final pid = _asInt(row.elementAtOrNull(0)?.value);
       final sku = _asString(row.elementAtOrNull(1)?.value);
       final qty = _asInt(row.elementAtOrNull(2)?.value);
@@ -427,7 +385,6 @@ Future<void> importPurchasesXlsx(Uint8List bytes) async {
 
       if (pid <= 0 || sku.isEmpty || qty <= 0) continue;
 
-      // resolver product_id por SKU
       final prod = await txn.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
       if (prod.isEmpty) continue;
       final productId = prod.first['id'] as int;
@@ -439,7 +396,6 @@ Future<void> importPurchasesXlsx(Uint8List bytes) async {
         'unit_cost': cost,
       }, conflictAlgorithm: ConflictAlgorithm.replace);
 
-      // impacta stock y último costo
       await txn.rawUpdate(
         'UPDATE products SET stock = COALESCE(stock,0)+?, last_purchase_price = ? WHERE id = ?',
         [qty, cost, productId],
