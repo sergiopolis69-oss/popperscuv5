@@ -4,38 +4,52 @@ import '../data/db.dart';
 class SalesRepository {
   Future<Database> get _db async => openAppDb();
 
-  Future<int> createSale(Map<String, Object?> sale, List<Map<String, Object?>> items) async {
+  Future<List<Map<String, Object?>>> all() async {
     final db = await _db;
-    return db.transaction<int>((txn) async {
-      final saleId = await txn.insert('sales', sale);
-      for (final it in items) {
-        await txn.insert('sale_items', {
-          'sale_id': saleId,
-          'product_sku': it['product_sku'],
-          'product_name': it['product_name'],
-          'quantity': it['quantity'],
-          'unit_price': it['unit_price'],
-        });
-        // Descuenta stock
-        await txn.rawUpdate(
-          'UPDATE products SET stock = stock - ? WHERE sku = ?',
-          [it['quantity'], it['product_sku']]
-        );
-      }
-      return saleId;
-    });
+    return db.query('sales', orderBy: 'date DESC');
   }
 
-  Future<List<Map<String,Object?>>> salesInRange(String fromIso, String toIso) async {
+  Future<List<Map<String, Object?>>> itemsBySaleId(Object id) async {
     final db = await _db;
-    return db.query('sales',
-        where: 'date BETWEEN ? AND ?',
-        whereArgs: [fromIso, toIso],
-        orderBy: 'date DESC');
+    return db.query(
+      'sale_items',
+      where: 'sale_id = ?',
+      whereArgs: [id],
+      orderBy: 'rowid ASC',
+    );
   }
 
-  Future<List<Map<String,Object?>>> saleItems(int saleId) async {
+  /// Inserta/actualiza venta (PK autoincrement o provisto en data['id'])
+  Future<int> upsert(Map<String, Object?> data) async {
     final db = await _db;
-    return db.query('sale_items', where: 'sale_id=?', whereArgs: [saleId]);
+    return await db.insert(
+      'sales',
+      {
+        'id': data['id'], // puede ser null => autoincrement
+        'date': data['date'], // ISO
+        'customer_phone': data['customer_phone'],
+        'payment_method': data['payment_method'],
+        'place': data['place'],
+        'shipping_cost': data['shipping_cost'] ?? 0,
+        'discount': data['discount'] ?? 0,
+        'total': data['total'] ?? 0,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<void> upsertItem(Map<String, Object?> data) async {
+    final db = await _db;
+    await db.insert(
+      'sale_items',
+      {
+        'sale_id': data['sale_id'],
+        'product_sku': data['product_sku'],
+        'product_name': data['product_name'] ?? '',
+        'quantity': data['quantity'] ?? 0,
+        'unit_price': data['unit_price'] ?? 0,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
   }
 }

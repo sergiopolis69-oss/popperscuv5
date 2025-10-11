@@ -1,71 +1,66 @@
 import 'package:sqflite/sqflite.dart';
-import '../data/database_provider.dart';
+import '../data/db.dart';
+import 'product_repository.dart';
 
 class PurchaseRepository {
-  Future<Database> get _db async => DatabaseProvider.instance.database;
+  Future<Database> get _db async => openAppDb();
+  final _prodRepo = ProductRepository();
 
-  Future<int> create({
-    String? folio,
-    required String dateIso,
-    String? supplierId,
-    required List<Map<String, Object?>> items, // {sku, name, qty, cost}
-  }) async {
+  Future<List<Map<String, Object?>>> all() async {
     final db = await _db;
-    return await db.transaction<int>((txn) async {
-      final id = await txn.insert('purchases', {
-        'folio': folio,
-        'date': dateIso,
-        'supplier_id': supplierId,
-      });
-
-      for (final it in items) {
-        final sku = it['sku'] as String;
-        final name = it['name'] as String;
-        final qty  = (it['qty'] as num).toDouble();
-        final cost = (it['cost'] as num).toDouble();
-
-        await txn.insert('purchase_items', {
-          'purchase_id': id,
-          'product_sku': sku,
-          'product_name': name,
-          'quantity': qty,
-          'unit_cost': cost,
-        });
-
-        // aumentar stock y actualizar último costo/fecha
-        await txn.rawUpdate('''
-          UPDATE products
-             SET stock = COALESCE(stock,0) + ?,
-                 last_purchase_price = ?,
-                 last_purchase_date = ?
-           WHERE sku = ?
-        ''', [qty, cost, dateIso, sku]);
-      }
-      return id;
-    });
+    return db.query('purchases', orderBy: 'date DESC');
   }
 
-  Future<List<Map<String, Object?>>> history({String? folioLike, String? dateFrom, String? dateTo}) async {
+  Future<List<Map<String, Object?>>> itemsByPurchaseId(Object id) async {
     final db = await _db;
-    final where = <String>[];
-    final args = <Object?>[];
-    if (folioLike != null && folioLike.trim().isNotEmpty) {
-      where.add('folio LIKE ?'); args.add('%${folioLike.trim()}%');
+    return db.query(
+      'purchase_items',
+      where: 'purchase_id = ?',
+      whereArgs: [id],
+      orderBy: 'rowid ASC',
+    );
+  }
+
+  /// Inserta/actualiza compra (PK autoincrement o provisto en data['id'])
+  Future<int> upsert(Map<String, Object?> data) async {
+    final db = await _db;
+    return await db.insert(
+      'purchases',
+      {
+        'id': data['id'],
+        'folio': data['folio'],
+        'date': data['date'], // ISO
+        'supplier_id': data['supplier_id'],
+        'total': data['total'] ?? 0,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// Inserta/actualiza item de compra y actualiza inventario/último costo.
+  Future<void> upsertItem(Map<String, Object?> data) async {
+    final db = await _db;
+    await db.insert(
+      'purchase_items',
+      {
+        'purchase_id': data['purchase_id'],
+        'product_sku': data['product_sku'],
+        'product_name': data['product_name'] ?? '',
+        'quantity': data['quantity'] ?? 0,
+        'unit_cost': data['unit_cost'] ?? 0,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+
+    // Actualizar inventario y último costo
+    final sku = data['product_sku'] as String;
+    final qty = (data['quantity'] as num?) ?? 0;
+    final cost = (data['unit_cost'] as num?) ?? 0;
+    final date = (data['purchase_date'] as String?) ?? (data['date'] as String?) ?? DateTime.now().toIso8601String();
+
+    if (qty > 0) {
+      await _prodRepo.increaseStock(sku, qty);
     }
-    if (dateFrom != null) { where.add('date >= ?'); args.add(dateFrom); }
-    if (dateTo   != null) { where.add('date <= ?'); args.add(dateTo); }
-
-    final sql = '''
-      SELECT * FROM purchases
-      ${where.isEmpty ? '' : 'WHERE ${where.join(' AND ')}'}
-      ORDER BY date DESC, id DESC
-      LIMIT 500
-    ''';
-    return db.rawQuery(sql, args);
-  }
-
-  Future<List<Map<String, Object?>>> itemsOf(int purchaseId) async {
-    final db = await _db;
-    return db.query('purchase_items', where: 'purchase_id = ?', whereArgs: [purchaseId], orderBy: 'id ASC');
+    await _prodRepo.updateLastPurchase(sku, cost, date);
   }
 }
