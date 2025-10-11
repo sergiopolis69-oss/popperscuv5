@@ -7,17 +7,18 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 
+import '../data/database_provider.dart';
 import '../repositories/product_repository.dart';
 import '../repositories/customer_repository.dart';
 import '../repositories/supplier_repository.dart';
 import '../repositories/sale_repository.dart';
 import '../repositories/purchase_repository.dart';
 
-CellValue _text(String? v) => v == null ? const TextCellValue('') : TextCellValue(v);
-CellValue _num(num? v) => v == null ? const TextCellValue('') : DoubleCellValue(v.toDouble());
+CellValue _text(String? v) => v == null ? TextCellValue('') : TextCellValue(v);
+CellValue _num(num? v) => v == null ? TextCellValue('') : DoubleCellValue(v.toDouble());
 
 Future<String> _saveXlsxBytes(Uint8List bytes, String fileName) async {
-  // Pedir permisos de escritura (seguro no rompe en Android 13+; si lo niegan, guardamos en documentos de app)
+  // Pedimos permiso de almacenamiento (si lo niegan, guardamos en documentos de la app)
   await Permission.storage.request();
 
   try {
@@ -28,7 +29,9 @@ Future<String> _saveXlsxBytes(Uint8List bytes, String fileName) async {
       mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     );
     if (path != null && path.isNotEmpty) return path;
-  } catch (_) { /* fallback abajo */ }
+  } catch (_) {
+    // fallback abajo
+  }
 
   final dir = await getApplicationDocumentsDirectory();
   final fallback = p.join(dir.path, '$fileName.xlsx');
@@ -37,7 +40,7 @@ Future<String> _saveXlsxBytes(Uint8List bytes, String fileName) async {
   return fallback;
 }
 
-// =========== EXPORTS ============
+// =================== EXPORTS ===================
 
 Future<String> exportProductsXlsx() async {
   final repo = ProductRepository();
@@ -70,18 +73,14 @@ Future<String> exportProductsXlsx() async {
 }
 
 Future<String> exportClientsXlsx() async {
-  final repo = CustomerRepository();
   final excel = Excel.createExcel();
   final sh = excel['customers'];
-  // encabezados
   sh.appendRow([
     TextCellValue('phone'),
     TextCellValue('name'),
     TextCellValue('address'),
   ]);
 
-  // dump
-  // usamos rawQuery simple para no escribir otro repo
   final db = await DatabaseProvider.instance.database;
   final rows = await db.query('customers', orderBy: 'name ASC');
   for (final r in rows) {
@@ -121,7 +120,6 @@ Future<String> exportSalesXlsx() async {
   final repo = SaleRepository();
   final db = await DatabaseProvider.instance.database;
 
-  // Encabezados de ventas
   final excel = Excel.createExcel();
   final shHead = excel['sales'];
   shHead.appendRow([
@@ -196,7 +194,10 @@ Future<String> exportPurchasesXlsx() async {
   for (final h in heads) {
     final id = h['id'] as int;
     shHead.appendRow([
-      _num(id), _text(h['folio']?.toString()), _text(h['date']?.toString()), _text(h['supplier_id']?.toString())
+      _num(id),
+      _text(h['folio']?.toString()),
+      _text(h['date']?.toString()),
+      _text(h['supplier_id']?.toString()),
     ]);
     final items = await repo.itemsOf(id);
     for (final it in items) {
@@ -214,23 +215,14 @@ Future<String> exportPurchasesXlsx() async {
   return _saveXlsxBytes(bytes, 'popperscu_compras');
 }
 
-// =========== IMPORTS ============
-
-Future<void> _importFromPicker(Future<void> Function(Excel) fn) async {
-  final res = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['xlsx'], withData: true);
-  if (res == null || res.files.isEmpty) return;
-  final bytes = res.files.first.bytes;
-  if (bytes == null) throw Exception('No se pudo leer el archivo');
-  final excel = Excel.decodeBytes(bytes);
-  await fn(excel);
-}
+// =================== IMPORTS ===================
 
 Future<void> importProductsXlsx(Uint8List bytes) async {
   final repo = ProductRepository();
   final excel = Excel.decodeBytes(bytes);
   final sh = excel['products'];
   if (sh.maxRows < 2) return;
-  // fila 0 son headers
+
   for (int r = 1; r < sh.maxRows; r++) {
     final row = sh.row(r);
     String sku = (row[0]?.value?.toString() ?? '').trim();
@@ -299,7 +291,6 @@ Future<void> importSalesXlsx(Uint8List bytes) async {
   if (shS.maxRows < 2 || shI.maxRows < 2) return;
   final db = await DatabaseProvider.instance.database;
   await db.transaction((txn) async {
-    // Crear mapa sale_id -> nuevo id
     final idMap = <int,int>{};
     for (int r = 1; r < shS.maxRows; r++) {
       final row = shS.row(r);
@@ -328,7 +319,6 @@ Future<void> importSalesXlsx(Uint8List bytes) async {
       final qty  = double.tryParse(row[3]?.value?.toString() ?? '') ?? 0;
       final price= double.tryParse(row[4]?.value?.toString() ?? '') ?? 0;
       if (sku == null || sku.trim().isEmpty) continue;
-      // no tocamos stock al importar historial
       await txn.insert('sale_items', {
         'sale_id': newId,
         'product_sku': sku,
@@ -378,7 +368,6 @@ Future<void> importPurchasesXlsx(Uint8List bytes) async {
         'quantity': qty,
         'unit_cost': cost,
       });
-      // no tocamos stock al importar historial
     }
   });
 }
