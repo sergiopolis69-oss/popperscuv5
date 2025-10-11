@@ -1,478 +1,142 @@
-// lib/utils/xlsx_backup.dart
-import 'dart:typed_data';
-import 'package:excel/excel.dart';
-import 'package:file_saver/file_saver.dart';
-import 'package:sqflite/sqflite.dart' show Database, ConflictAlgorithm;
-import 'package:popperscuv5/data/db.dart' show AppDb; // Ajusta si tu singleton difiere.
+// lib/data/db.dart
+import 'dart:async';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+import 'package:sqflite/sqflite.dart';
 
-/// ----------------------
-/// Helpers de DB/Excel
-/// ----------------------
+/// Acceso único a la base SQLite de la app.
+/// Usa `AppDb.instance.database` para obtener la conexión.
+class AppDb {
+  AppDb._();
+  static final AppDb instance = AppDb._();
 
-Future<Database> _db() async => AppDb.instance.database;
+  static const _dbFile = 'popperscu_pdv.db'; // nombre del archivo .db
+  static const _dbVersion = 3; // incrementa si cambias esquema
 
-// celdas helper
-CellValue _txt(Object? v) => TextCellValue(v?.toString() ?? '');
-CellValue _num(num? v) => v == null ? TextCellValue('') : DoubleCellValue(v.toDouble());
+  Database? _cached;
 
-DateTime? _parseDate(dynamic v) {
-  if (v == null) return null;
-  if (v is DateTime) return v;
-  final s = v.toString().trim();
-  if (s.isEmpty) return null;
-  // Excel suele venir YYYY-MM-DD o serial date convertido a texto
-  // Intento robusto:
-  try {
-    return DateTime.parse(s);
-  } catch (_) {
-    return null;
-  }
-}
-
-String _toIso(DateTime? d) => d == null ? '' : d.toIso8601String();
-
-Future<String> _saveXlsxBytes(String fileName, List<int> bytes) async {
-  final res = await FileSaver.instance.saveFile(
-    name: fileName,
-    bytes: Uint8List.fromList(bytes),
-    ext: 'xlsx',
-    mimeType: MimeType.microsoftExcelOpenXml,
-  );
-  // `res` puede ser ruta o content-uri, lo devolvemos como cadena
-  return res;
-}
-
-/// ----------------------
-/// EXPORTACIONES
-/// ----------------------
-
-Future<String> exportProductsXlsx() async {
-  final db = await _db();
-  final rows = await db.rawQuery('''
-    SELECT sku, name, category, default_sale_price, last_purchase_price, last_purchase_date, stock
-    FROM products
-    ORDER BY name COLLATE NOCASE
-  ''');
-
-  final excel = Excel.createExcel();
-  final sh = excel['products'];
-
-  // encabezados
-  sh.appendRow([
-    TextCellValue('sku'),
-    TextCellValue('name'),
-    TextCellValue('category'),
-    TextCellValue('default_sale_price'),
-    TextCellValue('last_purchase_price'),
-    TextCellValue('last_purchase_date'),
-    TextCellValue('stock'),
-  ]);
-
-  for (final r in rows) {
-    sh.appendRow([
-      _txt(r['sku']),
-      _txt(r['name']),
-      _txt(r['category']),
-      _num((r['default_sale_price'] as num?)?.toDouble()),
-      _num((r['last_purchase_price'] as num?)?.toDouble()),
-      _txt(r['last_purchase_date']),
-      _num((r['stock'] as num?)?.toDouble()),
-    ]);
+  Future<Database> get database async {
+    if (_cached != null) return _cached!;
+    _cached = await _open();
+    return _cached!;
   }
 
-  return _saveXlsxBytes('productos', excel.encode()!);
-}
+  Future<Database> _open() async {
+    final dir = await getApplicationDocumentsDirectory();
+    final path = p.join(dir.path, _dbFile);
 
-Future<String> exportClientsXlsx() async {
-  final db = await _db();
-  final rows = await db.rawQuery('''
-    SELECT phone AS phone_id, name, address
-    FROM customers
-    ORDER BY name COLLATE NOCASE
-  ''');
-
-  final excel = Excel.createExcel();
-  final sh = excel['clients'];
-
-  sh.appendRow([
-    TextCellValue('phone_id'),
-    TextCellValue('name'),
-    TextCellValue('address'),
-  ]);
-
-  for (final r in rows) {
-    sh.appendRow([
-      _txt(r['phone_id']),
-      _txt(r['name']),
-      _txt(r['address']),
-    ]);
+    return openDatabase(
+      path,
+      version: _dbVersion,
+      onConfigure: (db) async {
+        // Habilita FK para ON DELETE/UPDATE
+        await db.execute('PRAGMA foreign_keys = ON;');
+      },
+      onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
+    );
   }
 
-  return _saveXlsxBytes('clientes', excel.encode()!);
-}
+  /// Crea todo el esquema desde cero.
+  Future<void> _onCreate(Database db, int version) async {
+    // Productos (SKU = PK)
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS products(
+        sku TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        category TEXT NOT NULL,
+        default_sale_price REAL,
+        last_purchase_price REAL,
+        last_purchase_date TEXT,
+        stock REAL NOT NULL DEFAULT 0
+      );
+    ''');
 
-Future<String> exportSuppliersXlsx() async {
-  final db = await _db();
-  final rows = await db.rawQuery('''
-    SELECT id, name, phone, address
-    FROM suppliers
-    ORDER BY name COLLATE NOCASE
-  ''');
+    // Clientes (teléfono = PK)
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS customers(
+        phone TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        address TEXT
+      );
+    ''');
 
-  final excel = Excel.createExcel();
-  final sh = excel['suppliers'];
+    // Proveedores (id libre, puede ser teléfono u otro identificador)
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS suppliers(
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        phone TEXT,
+        address TEXT
+      );
+    ''');
 
-  sh.appendRow([
-    TextCellValue('id'),
-    TextCellValue('name'),
-    TextCellValue('phone'),
-    TextCellValue('address'),
-  ]);
+    // Ventas (usar TEXT para permitir importar IDs/folios)
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS sales(
+        id TEXT PRIMARY KEY,
+        date TEXT NOT NULL,                -- ISO8601
+        customer_phone TEXT,
+        payment_method TEXT,
+        place TEXT,
+        shipping_cost REAL NOT NULL DEFAULT 0,
+        discount REAL NOT NULL DEFAULT 0,
+        FOREIGN KEY (customer_phone) REFERENCES customers(phone) ON DELETE SET NULL
+      );
+    ''');
 
-  for (final r in rows) {
-    sh.appendRow([
-      _txt(r['id']),
-      _txt(r['name']),
-      _txt(r['phone']),
-      _txt(r['address']),
-    ]);
+    // Partidas de venta (detalle por SKU)
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS sale_items(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sale_id TEXT NOT NULL,
+        product_sku TEXT NOT NULL,
+        quantity REAL NOT NULL,
+        unit_price REAL NOT NULL,
+        FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+        FOREIGN KEY (product_sku) REFERENCES products(sku) ON DELETE RESTRICT
+      );
+    ''');
+
+    // Compras (usar TEXT para permitir importar IDs/folios)
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS purchases(
+        id TEXT PRIMARY KEY,
+        folio TEXT,
+        date TEXT NOT NULL,               -- ISO8601
+        supplier_id TEXT,
+        FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE SET NULL
+      );
+    ''');
+
+    // Partidas de compra (detalle por SKU)
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS purchase_items(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        purchase_id TEXT NOT NULL,
+        product_sku TEXT NOT NULL,
+        quantity REAL NOT NULL,
+        unit_cost REAL NOT NULL,
+        FOREIGN KEY (purchase_id) REFERENCES purchases(id) ON DELETE CASCADE,
+        FOREIGN KEY (product_sku) REFERENCES products(sku) ON DELETE RESTRICT
+      );
+    ''');
+
+    // Índices útiles
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_products_name ON products(name);');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_sales_date ON sales(date);');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_sale_items_sale ON sale_items(sale_id);');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_purchase_date ON purchases(date);');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_purchase_items_purchase ON purchase_items(purchase_id);');
   }
 
-  return _saveXlsxBytes('proveedores', excel.encode()!);
-}
+  /// Migraciones ligeras y seguras: sólo crea lo que falte.
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    // Asegura todas las tablas e índices (idempotente)
+    await _onCreate(db, newVersion);
 
-Future<String> exportSalesXlsx() async {
-  final db = await _db();
-
-  final sales = await db.rawQuery('''
-    SELECT s.id, s.date, s.customer_phone, s.payment_method, s.place, s.shipping_cost, s.discount
-    FROM sales s
-    ORDER BY s.date DESC, s.id DESC
-  ''');
-
-  final items = await db.rawQuery('''
-    SELECT si.sale_id, si.product_sku, p.name AS product_name, si.quantity, si.unit_price
-    FROM sale_items si
-    LEFT JOIN products p ON p.sku = si.product_sku
-    ORDER BY si.sale_id
-  ''');
-
-  final excel = Excel.createExcel();
-  final shSales = excel['sales'];
-  final shItems = excel['sale_items'];
-
-  shSales.appendRow([
-    TextCellValue('sale_id'),
-    TextCellValue('date'),
-    TextCellValue('customer_phone'),
-    TextCellValue('payment_method'),
-    TextCellValue('place'),
-    TextCellValue('shipping_cost'),
-    TextCellValue('discount'),
-  ]);
-
-  for (final s in sales) {
-    shSales.appendRow([
-      _txt(s['id']),
-      _txt(s['date']),
-      _txt(s['customer_phone']),
-      _txt(s['payment_method']),
-      _txt(s['place']),
-      _num((s['shipping_cost'] as num?)?.toDouble()),
-      _num((s['discount'] as num?)?.toDouble()),
-    ]);
+    // Ejemplos de columnas nuevas (si alguna vez se agregan):
+    // try { await db.execute('ALTER TABLE products ADD COLUMN some_new_col TEXT;'); } catch (_) {}
   }
-
-  shItems.appendRow([
-    TextCellValue('sale_id'),
-    TextCellValue('product_sku'),
-    TextCellValue('product_name'),
-    TextCellValue('quantity'),
-    TextCellValue('unit_price'),
-  ]);
-
-  for (final it in items) {
-    shItems.appendRow([
-      _txt(it['sale_id']),
-      _txt(it['product_sku']),
-      _txt(it['product_name']),
-      _num((it['quantity'] as num?)?.toDouble()),
-      _num((it['unit_price'] as num?)?.toDouble()),
-    ]);
-  }
-
-  return _saveXlsxBytes('ventas', excel.encode()!);
-}
-
-Future<String> exportPurchasesXlsx() async {
-  final db = await _db();
-
-  final purchases = await db.rawQuery('''
-    SELECT p.id, p.folio, p.date, p.supplier_id
-    FROM purchases p
-    ORDER BY p.date DESC, p.id DESC
-  ''');
-
-  final items = await db.rawQuery('''
-    SELECT pi.purchase_id, pi.product_sku, pr.name AS product_name, pi.quantity, pi.unit_cost
-    FROM purchase_items pi
-    LEFT JOIN products pr ON pr.sku = pi.product_sku
-    ORDER BY pi.purchase_id
-  ''');
-
-  final excel = Excel.createExcel();
-  final shP = excel['purchases'];
-  final shI = excel['purchase_items'];
-
-  shP.appendRow([
-    TextCellValue('purchase_id'),
-    TextCellValue('folio'),
-    TextCellValue('date'),
-    TextCellValue('supplier_id'),
-  ]);
-
-  for (final p in purchases) {
-    shP.appendRow([
-      _txt(p['id']),
-      _txt(p['folio']),
-      _txt(p['date']),
-      _txt(p['supplier_id']),
-    ]);
-  }
-
-  shI.appendRow([
-    TextCellValue('purchase_id'),
-    TextCellValue('product_sku'),
-    TextCellValue('product_name'),
-    TextCellValue('quantity'),
-    TextCellValue('unit_cost'),
-  ]);
-
-  for (final it in items) {
-    shI.appendRow([
-      _txt(it['purchase_id']),
-      _txt(it['product_sku']),
-      _txt(it['product_name']),
-      _num((it['quantity'] as num?)?.toDouble()),
-      _num((it['unit_cost'] as num?)?.toDouble()),
-    ]);
-  }
-
-  return _saveXlsxBytes('compras', excel.encode()!);
-}
-
-/// ----------------------
-/// IMPORTACIONES
-/// ----------------------
-
-Future<void> importProductsXlsx(Uint8List bytes) async {
-  final db = await _db();
-  final ex = Excel.decodeBytes(bytes);
-  final sh = ex['products'];
-  if (sh.maxRows < 2) return;
-
-  // Espera encabezados:
-  // sku,name,category,default_sale_price,last_purchase_price,last_purchase_date,stock
-  await db.transaction((txn) async {
-    for (int r = 1; r < sh.maxRows; r++) {
-      final row = sh.row(r);
-      String sku = (row.elementAtOrNull(0)?.value ?? '').toString().trim();
-      if (sku.isEmpty) continue; // SKU obligatorio
-
-      final name = (row.elementAtOrNull(1)?.value ?? '').toString().trim();
-      final category = (row.elementAtOrNull(2)?.value ?? '').toString().trim();
-      final dsp = num.tryParse((row.elementAtOrNull(3)?.value ?? '').toString());
-      final lpp = num.tryParse((row.elementAtOrNull(4)?.value ?? '').toString());
-      final lpd = _parseDate(row.elementAtOrNull(5)?.value);
-      final stock = num.tryParse((row.elementAtOrNull(6)?.value ?? '').toString());
-
-      await txn.insert('products', {
-        'sku': sku,
-        'name': name,
-        'category': category,
-        'default_sale_price': dsp,
-        'last_purchase_price': lpp,
-        'last_purchase_date': _toIso(lpd),
-        'stock': stock ?? 0,
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
-    }
-  });
-}
-
-Future<void> importClientsXlsx(Uint8List bytes) async {
-  final db = await _db();
-  final ex = Excel.decodeBytes(bytes);
-  final sh = ex['clients'];
-  if (sh.maxRows < 2) return;
-
-  // phone_id,name,address
-  await db.transaction((txn) async {
-    for (int r = 1; r < sh.maxRows; r++) {
-      final row = sh.row(r);
-      final phone = (row.elementAtOrNull(0)?.value ?? '').toString().trim();
-      if (phone.isEmpty) continue; // obligatorio
-
-      final name = (row.elementAtOrNull(1)?.value ?? '').toString().trim();
-      final address = (row.elementAtOrNull(2)?.value ?? '').toString().trim();
-
-      await txn.insert('customers', {
-        'phone': phone,
-        'name': name,
-        'address': address,
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
-    }
-  });
-}
-
-Future<void> importSuppliersXlsx(Uint8List bytes) async {
-  final db = await _db();
-  final ex = Excel.decodeBytes(bytes);
-  final sh = ex['suppliers'];
-  if (sh.maxRows < 2) return;
-
-  // id,name,phone,address
-  await db.transaction((txn) async {
-    for (int r = 1; r < sh.maxRows; r++) {
-      final row = sh.row(r);
-      final id = (row.elementAtOrNull(0)?.value ?? '').toString().trim();
-      if (id.isEmpty) continue;
-
-      final name = (row.elementAtOrNull(1)?.value ?? '').toString().trim();
-      final phone = (row.elementAtOrNull(2)?.value ?? '').toString().trim();
-      final address = (row.elementAtOrNull(3)?.value ?? '').toString().trim();
-
-      await txn.insert('suppliers', {
-        'id': id,
-        'name': name,
-        'phone': phone,
-        'address': address,
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
-    }
-  });
-}
-
-Future<void> importSalesXlsx(Uint8List bytes) async {
-  final db = await _db();
-  final ex = Excel.decodeBytes(bytes);
-  final shSales = ex['sales'];
-  final shItems = ex['sale_items'];
-  if (shSales.maxRows < 2) return;
-
-  // sales: sale_id,date,customer_phone,payment_method,place,shipping_cost,discount
-  // sale_items: sale_id,product_sku,product_name,quantity,unit_price
-  await db.transaction((txn) async {
-    // Primero ventas (cabeceras)
-    for (int r = 1; r < shSales.maxRows; r++) {
-      final row = shSales.row(r);
-      final id = (row.elementAtOrNull(0)?.value ?? '').toString().trim();
-      if (id.isEmpty) continue;
-
-      final date = _parseDate(row.elementAtOrNull(1)?.value);
-      final phone = (row.elementAtOrNull(2)?.value ?? '').toString().trim();
-      final pm = (row.elementAtOrNull(3)?.value ?? '').toString().trim();
-      final place = (row.elementAtOrNull(4)?.value ?? '').toString().trim();
-      final shipping = num.tryParse((row.elementAtOrNull(5)?.value ?? '').toString()) ?? 0;
-      final discount = num.tryParse((row.elementAtOrNull(6)?.value ?? '').toString()) ?? 0;
-
-      await txn.insert('sales', {
-        'id': id,
-        'date': _toIso(date) ,
-        'customer_phone': phone,
-        'payment_method': pm,
-        'place': place,
-        'shipping_cost': shipping,
-        'discount': discount,
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
-    }
-
-    // Luego items
-    if (shItems.maxRows >= 2) {
-      for (int r = 1; r < shItems.maxRows; r++) {
-        final row = shItems.row(r);
-        final saleId = (row.elementAtOrNull(0)?.value ?? '').toString().trim();
-        final sku = (row.elementAtOrNull(1)?.value ?? '').toString().trim();
-        if (saleId.isEmpty || sku.isEmpty) continue; // SKU obligatorio
-
-        final qty = num.tryParse((row.elementAtOrNull(3)?.value ?? '').toString()) ?? 0;
-        final unitPrice = num.tryParse((row.elementAtOrNull(4)?.value ?? '').toString()) ?? 0;
-
-        // Verificar que el producto existe (seguridad)
-        final prod = await txn.query('products', where: 'sku=?', whereArgs: [sku], limit: 1);
-        if (prod.isEmpty) continue;
-
-        await txn.insert('sale_items', {
-          'sale_id': saleId,
-          'product_sku': sku,
-          'quantity': qty,
-          'unit_price': unitPrice,
-        });
-
-        // Baja inventario
-        await txn.rawUpdate(
-          'UPDATE products SET stock = COALESCE(stock,0) - ? WHERE sku = ?',
-          [qty, sku],
-        );
-      }
-    }
-  });
-}
-
-Future<void> importPurchasesXlsx(Uint8List bytes) async {
-  final db = await _db();
-  final ex = Excel.decodeBytes(bytes);
-  final shP = ex['purchases'];
-  final shI = ex['purchase_items'];
-  if (shP.maxRows < 2) return;
-
-  // purchases: purchase_id,folio,date,supplier_id
-  // purchase_items: purchase_id,product_sku,product_name,quantity,unit_cost
-  await db.transaction((txn) async {
-    for (int r = 1; r < shP.maxRows; r++) {
-      final row = shP.row(r);
-      final id = (row.elementAtOrNull(0)?.value ?? '').toString().trim();
-      if (id.isEmpty) continue;
-
-      final folio = (row.elementAtOrNull(1)?.value ?? '').toString().trim();
-      final date = _parseDate(row.elementAtOrNull(2)?.value);
-      final supplierId = (row.elementAtOrNull(3)?.value ?? '').toString().trim();
-
-      await txn.insert('purchases', {
-        'id': id,
-        'folio': folio,
-        'date': _toIso(date),
-        'supplier_id': supplierId,
-      }, conflictAlgorithm: ConflictAlgorithm.replace);
-    }
-
-    if (shI.maxRows >= 2) {
-      for (int r = 1; r < shI.maxRows; r++) {
-        final row = shI.row(r);
-        final pid = (row.elementAtOrNull(0)?.value ?? '').toString().trim();
-        final sku = (row.elementAtOrNull(1)?.value ?? '').toString().trim();
-        if (pid.isEmpty || sku.isEmpty) continue;
-
-        final qty = num.tryParse((row.elementAtOrNull(3)?.value ?? '').toString()) ?? 0;
-        final unitCost = num.tryParse((row.elementAtOrNull(4)?.value ?? '').toString()) ?? 0;
-
-        // Debe existir el producto
-        final prod = await txn.query('products', where: 'sku=?', whereArgs: [sku], limit: 1);
-        if (prod.isEmpty) continue;
-
-        await txn.insert('purchase_items', {
-          'purchase_id': pid,
-          'product_sku': sku,
-          'quantity': qty,
-          'unit_cost': unitCost,
-        });
-
-        // Sube inventario
-        await txn.rawUpdate(
-          'UPDATE products SET stock = COALESCE(stock,0) + ?, '
-          'last_purchase_price = ?, last_purchase_date = ? '
-          'WHERE sku = ?',
-          [qty, unitCost, _toIso(DateTime.now()), sku],
-        );
-      }
-    }
-  });
 }
