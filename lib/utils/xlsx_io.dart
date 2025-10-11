@@ -10,55 +10,44 @@ import 'package:sqflite/sqflite.dart';
 import '../data/database.dart';
 import '../repositories/product_repository.dart';
 
-/// Reporte simple para importaciones XLSX.
 class ImportReport {
   final int ok;
   final List<String> errors;
   ImportReport(this.ok, this.errors);
 }
 
-/// ------------------------------------------------------------
-/// Utilidades: permisos, carpeta Descargas y celdas de Excel.
-/// ------------------------------------------------------------
-
+/// Permiso de almacenamiento (para escribir en /Download cuando aplica).
 Future<void> _ensureStoragePermission() async {
-  // En Android 10–12 se requiere el permiso de almacenamiento para escribir en /Download.
   final status = await Permission.storage.status;
   if (!status.isGranted) {
     await Permission.storage.request();
   }
 }
 
-/// Intenta usar /storage/emulated/0/Download si existe.
-/// Si no, usa getExternalStorageDirectory() y por último la carpeta de DB.
+/// Directorio Descargas si existe; si no, externo de app; si no, DB dir.
 Future<Directory> _downloadsDir() async {
-  // 1) Intento directo a Descargas en Android.
   final dl = Directory('/storage/emulated/0/Download');
-  if (Platform.isAndroid && await dl.exists()) {
-    return dl;
-  }
+  if (Platform.isAndroid && await dl.exists()) return dl;
 
-  // 2) External Storage (propia de la app).
   try {
     final ext = await getExternalStorageDirectory();
     if (ext != null) return ext;
   } catch (_) {}
 
-  // 3) Fallback: carpeta de la DB (siempre existe).
   final dbPath = await getDatabasesPath();
   return Directory(dbPath);
 }
 
-// Convierte cualquier valor a CellValue para excel ^4.x
+/// Convierte dinámico -> CellValue (excel ^4.x)
 CellValue _cv(dynamic v) {
-  if (v == null) return const TextCellValue('');
+  if (v == null) return TextCellValue('');
   if (v is num) return DoubleCellValue(v.toDouble());
   return TextCellValue(v.toString());
 }
 
-// ------------------------------------------------------------
-// EXPORTACIONES
-// ------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// EXPORTAR
+// ---------------------------------------------------------------------------
 
 Future<File> exportProductsXlsx() async {
   await _ensureStoragePermission();
@@ -68,12 +57,12 @@ Future<File> exportProductsXlsx() async {
   final x = Excel.createExcel();
   final s = x['productos'];
   s.appendRow([
-    const TextCellValue('sku'),
-    const TextCellValue('name'),
-    const TextCellValue('category'),
-    const TextCellValue('default_sale_price'),
-    const TextCellValue('last_purchase_price'),
-    const TextCellValue('stock'),
+    TextCellValue('sku'),
+    TextCellValue('name'),
+    TextCellValue('category'),
+    TextCellValue('default_sale_price'),
+    TextCellValue('last_purchase_price'),
+    TextCellValue('stock'),
   ]);
 
   for (final r in rows) {
@@ -101,9 +90,9 @@ Future<File> exportClientsXlsx() async {
   final x = Excel.createExcel();
   final s = x['clientes'];
   s.appendRow([
-    const TextCellValue('phone'),
-    const TextCellValue('name'),
-    const TextCellValue('address'),
+    TextCellValue('phone'),
+    TextCellValue('name'),
+    TextCellValue('address'),
   ]);
 
   for (final r in rows) {
@@ -124,9 +113,9 @@ Future<File> exportSuppliersXlsx() async {
   final x = Excel.createExcel();
   final s = x['proveedores'];
   s.appendRow([
-    const TextCellValue('phone'),
-    const TextCellValue('name'),
-    const TextCellValue('address'),
+    TextCellValue('phone'),
+    TextCellValue('name'),
+    TextCellValue('address'),
   ]);
 
   for (final r in rows) {
@@ -139,7 +128,6 @@ Future<File> exportSuppliersXlsx() async {
   return file..writeAsBytesSync(bytes, flush: true);
 }
 
-/// Ventas: hoja `ventas` y `venta_items` (product_sku).
 Future<File> exportSalesXlsx() async {
   await _ensureStoragePermission();
   final db = await DatabaseHelper.instance.db;
@@ -149,13 +137,13 @@ Future<File> exportSalesXlsx() async {
   final si = x['venta_items'];
 
   s.appendRow([
-    const TextCellValue('id'),
-    const TextCellValue('customer_phone'),
-    const TextCellValue('payment_method'),
-    const TextCellValue('place'),
-    const TextCellValue('shipping_cost'),
-    const TextCellValue('discount'),
-    const TextCellValue('date'),
+    TextCellValue('id'),
+    TextCellValue('customer_phone'),
+    TextCellValue('payment_method'),
+    TextCellValue('place'),
+    TextCellValue('shipping_cost'),
+    TextCellValue('discount'),
+    TextCellValue('date'),
   ]);
 
   final sales = await db.query('sales', orderBy: 'date DESC');
@@ -172,10 +160,10 @@ Future<File> exportSalesXlsx() async {
   }
 
   si.appendRow([
-    const TextCellValue('sale_id'),
-    const TextCellValue('product_sku'),
-    const TextCellValue('quantity'),
-    const TextCellValue('unit_price'),
+    TextCellValue('sale_id'),
+    TextCellValue('product_sku'),
+    TextCellValue('quantity'),
+    TextCellValue('unit_price'),
   ]);
 
   final items = await db.rawQuery('''
@@ -200,7 +188,6 @@ Future<File> exportSalesXlsx() async {
   return file..writeAsBytesSync(bytes, flush: true);
 }
 
-/// Compras: hoja `compras` y `compra_items` (product_sku).
 Future<File> exportPurchasesXlsx() async {
   await _ensureStoragePermission();
   final db = await DatabaseHelper.instance.db;
@@ -210,10 +197,10 @@ Future<File> exportPurchasesXlsx() async {
   final si = x['compra_items'];
 
   s.appendRow([
-    const TextCellValue('id'),
-    const TextCellValue('folio'),
-    const TextCellValue('supplier_id'),
-    const TextCellValue('date'),
+    TextCellValue('id'),
+    TextCellValue('folio'),
+    TextCellValue('supplier_id'),
+    TextCellValue('date'),
   ]);
 
   final purchases = await db.query('purchases', orderBy: 'date DESC');
@@ -222,10 +209,10 @@ Future<File> exportPurchasesXlsx() async {
   }
 
   si.appendRow([
-    const TextCellValue('purchase_id'),
-    const TextCellValue('product_sku'),
-    const TextCellValue('quantity'),
-    const TextCellValue('unit_cost'),
+    TextCellValue('purchase_id'),
+    TextCellValue('product_sku'),
+    TextCellValue('quantity'),
+    TextCellValue('unit_cost'),
   ]);
 
   final items = await db.rawQuery('''
@@ -250,9 +237,9 @@ Future<File> exportPurchasesXlsx() async {
   return file..writeAsBytesSync(bytes, flush: true);
 }
 
-// ------------------------------------------------------------
-// IMPORTACIONES
-// ------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// IMPORTAR
+// ---------------------------------------------------------------------------
 
 Future<ImportReport> importProductsXlsx(Uint8List data) async {
   final x = Excel.decodeBytes(data);
@@ -261,7 +248,6 @@ Future<ImportReport> importProductsXlsx(Uint8List data) async {
 
   final hdr = sheet.row(0).map((c) => c?.value.toString().trim().toLowerCase()).toList();
   int idx(String name) => hdr.indexOf(name);
-
   if (idx('sku') < 0) return ImportReport(0, ['Columna "sku" requerida']);
 
   final repo = ProductRepository();
@@ -464,7 +450,6 @@ Future<ImportReport> importPurchasesXlsx(Uint8List data) async {
       'unit_cost': cost,
     });
 
-    // Actualiza inventario y costo promedio
     await db.rawUpdate(
       'UPDATE products SET stock = stock + ?, last_purchase_price = ?, last_purchase_date = ? WHERE id = ?',
       [qty, cost, DateTime.now().toIso8601String(), prod['id']]
