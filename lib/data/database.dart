@@ -4,29 +4,40 @@ import 'package:path/path.dart' as p;
 class DatabaseHelper {
   DatabaseHelper._();
   static final DatabaseHelper instance = DatabaseHelper._();
-  static Database? _db;
 
-  Future<Database> get db async {
-    _db ??= await _open();
-    return _db!;
-  }
+  static const _dbName = 'pdv.db';
+  static const _dbVersion = 7; // sube versión para aplicar migraciones
+
+  Database? _db;
+  Future<Database> get db async => _db ??= await _open();
 
   Future<Database> _open() async {
-    final base = await getDatabasesPath();
-    final dbPath = p.join(base, 'pdv.sqlite');
-    final database = await openDatabase(
-      dbPath,
-      version: 3, // súbelo si ya usabas 2
+    final path = p.join(await getDatabasesPath(), _dbName);
+    return openDatabase(
+      path,
+      version: _dbVersion,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
-    await _ensureSkuColumns(database);
-    return database;
   }
 
   Future<void> _onCreate(Database db, int version) async {
+    // productos: SKU único y requerido
     await db.execute('''
-      CREATE TABLE IF NOT EXISTS customers(
+      CREATE TABLE products(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sku TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        category TEXT,
+        default_sale_price REAL DEFAULT 0,
+        last_purchase_price REAL DEFAULT 0,
+        last_purchase_date TEXT,
+        stock INTEGER DEFAULT 0
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE customers(
         phone TEXT PRIMARY KEY,
         name TEXT,
         address TEXT
@@ -34,102 +45,101 @@ class DatabaseHelper {
     ''');
 
     await db.execute('''
-      CREATE TABLE IF NOT EXISTS suppliers(
+      CREATE TABLE suppliers(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT,
         phone TEXT UNIQUE,
+        name TEXT,
         address TEXT
       )
     ''');
 
     await db.execute('''
-      CREATE TABLE IF NOT EXISTS products(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sku TEXT UNIQUE,
-        name TEXT,
-        category TEXT,
-        default_sale_price REAL,
-        last_purchase_price REAL,
-        last_purchase_date TEXT,
-        stock INTEGER DEFAULT 0
-      )
-    ''');
-
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS sales(
+      CREATE TABLE sales(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         customer_phone TEXT,
         payment_method TEXT,
         place TEXT,
-        shipping_cost REAL,
-        discount REAL,
+        shipping_cost REAL DEFAULT 0,
+        discount REAL DEFAULT 0,
         date TEXT
       )
     ''');
 
     await db.execute('''
-      CREATE TABLE IF NOT EXISTS sale_items(
+      CREATE TABLE sale_items(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sale_id INTEGER,
-        product_id INTEGER,
-        sku TEXT,
-        quantity INTEGER,
-        unit_price REAL
+        sale_id INTEGER NOT NULL,
+        product_id INTEGER NOT NULL,
+        quantity INTEGER NOT NULL,
+        unit_price REAL NOT NULL
       )
     ''');
 
     await db.execute('''
-      CREATE TABLE IF NOT EXISTS purchases(
+      CREATE TABLE purchases(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        supplier_id INTEGER,
         folio TEXT,
+        supplier_id INTEGER,
         date TEXT
       )
     ''');
 
     await db.execute('''
-      CREATE TABLE IF NOT EXISTS purchase_items(
+      CREATE TABLE purchase_items(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        purchase_id INTEGER,
-        product_id INTEGER,
-        sku TEXT,
-        quantity INTEGER,
-        unit_cost REAL
+        purchase_id INTEGER NOT NULL,
+        product_id INTEGER NOT NULL,
+        quantity INTEGER NOT NULL,
+        unit_cost REAL NOT NULL
       )
     ''');
+
+    // Índices útiles
+    await db.execute('CREATE INDEX idx_products_sku ON products(sku)');
+    await db.execute('CREATE INDEX idx_products_name ON products(name)');
+    await db.execute('CREATE INDEX idx_sales_date ON sales(date)');
+    await db.execute('CREATE INDEX idx_purchases_date ON purchases(date)');
   }
 
-  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
-    await _ensureSkuColumns(db);
-  }
-
-  /// Asegura columnas SKU en items y hace backfill desde products
-  Future<void> _ensureSkuColumns(Database db) async {
-    // sale_items.sku
-    final saleCols = await db.rawQuery('PRAGMA table_info(sale_items)');
-    final hasSaleSku = saleCols.any((c) => c['name'] == 'sku');
-    if (!hasSaleSku) {
-      await db.execute('ALTER TABLE sale_items ADD COLUMN sku TEXT');
+  Future<void> _onUpgrade(Database db, int oldV, int newV) async {
+    // Migraciones defensivas para colocar UNIQUE sku y columna sku si faltara
+    if (oldV < 6) {
+      final tables = await db.rawQuery("PRAGMA table_info(products)");
+      final hasSku = tables.any((c) => (c['name'] == 'sku'));
+      if (!hasSku) {
+        await db.execute('ALTER TABLE products ADD COLUMN sku TEXT');
+      }
+      // Normaliza y aplica UNIQUE:
+      // crea tabla temporal con constraint y vuelca datos
       await db.execute('''
-        UPDATE sale_items SET sku = (
-          SELECT p.sku FROM products p WHERE p.id = sale_items.product_id
+        CREATE TABLE IF NOT EXISTS _products_new(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          sku TEXT NOT NULL UNIQUE,
+          name TEXT NOT NULL,
+          category TEXT,
+          default_sale_price REAL DEFAULT 0,
+          last_purchase_price REAL DEFAULT 0,
+          last_purchase_date TEXT,
+          stock INTEGER DEFAULT 0
         )
       ''');
-    }
-
-    // purchase_items.sku
-    final purchCols = await db.rawQuery('PRAGMA table_info(purchase_items)');
-    final hasPurchSku = purchCols.any((c) => c['name'] == 'sku');
-    if (!hasPurchSku) {
-      await db.execute('ALTER TABLE purchase_items ADD COLUMN sku TEXT');
       await db.execute('''
-        UPDATE purchase_items SET sku = (
-          SELECT p.sku FROM products p WHERE p.id = purchase_items.product_id
-        )
+        INSERT OR IGNORE INTO _products_new(id, sku, name, category, default_sale_price, last_purchase_price, last_purchase_date, stock)
+        SELECT id,
+               COALESCE(NULLIF(TRIM(sku),''), printf('MIGR-%d', id)),
+               COALESCE(NULLIF(TRIM(name),''), printf('Producto %d', id)),
+               category, default_sale_price, last_purchase_price, last_purchase_date, stock
+        FROM products
       ''');
+      await db.execute('DROP TABLE products');
+      await db.execute('ALTER TABLE _products_new RENAME TO products');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku)');
+      await db.execute('CREATE INDEX IF NOT EXISTS idx_products_name ON products(name)');
     }
 
-    // Forzar REAL en costos (por si vienen como texto desde XLSX)
-    await db.execute('UPDATE products SET last_purchase_price = CAST(IFNULL(last_purchase_price,0) AS REAL)');
+    if (oldV < 7) {
+      // Asegura REAL en last_purchase_price
+      await db.execute('UPDATE products SET last_purchase_price = CAST(IFNULL(last_purchase_price,0) AS REAL)');
+    }
   }
 }

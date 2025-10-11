@@ -1,85 +1,69 @@
 import 'package:sqflite/sqflite.dart';
-import '../data/db.dart';
+import '../data/database.dart';
 
 class ProductRepository {
-  Future<Database> get _db async => openAppDb();
-
-  Future<List<Map<String, Object?>>> all() async {
-    final db = await _db;
-    return db.query('products', orderBy: 'name COLLATE NOCASE');
+  Future<Map<String, dynamic>?> getBySku(String sku) async {
+    final db = await DatabaseHelper.instance.db;
+    final rows = await db.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
+    return rows.isEmpty ? null : rows.first;
   }
 
-  Future<List<Map<String, Object?>>> searchLite(String q, {int limit = 25}) async {
-    final db = await _db;
-    final like = '%$q%';
+  Future<bool> existsSku(String sku) async {
+    final db = await DatabaseHelper.instance.db;
+    final r = await db.rawQuery('SELECT 1 FROM products WHERE sku = ? LIMIT 1', [sku]);
+    return r.isNotEmpty;
+  }
+
+  /// Inserta o actualiza por SKU (upsert). Valida que SKU no sea vacío.
+  Future<int> upsertBySku(Map<String, dynamic> p) async {
+    final db = await DatabaseHelper.instance.db;
+    final sku = (p['sku'] ?? '').toString().trim();
+    if (sku.isEmpty) {
+      throw ArgumentError('SKU vacío');
+    }
+    // normaliza valores
+    final row = {
+      'sku': sku,
+      'name': (p['name'] ?? '').toString().trim(),
+      'category': (p['category'] ?? '').toString().trim(),
+      'default_sale_price': (p['default_sale_price'] as num?)?.toDouble() ?? 0.0,
+      'last_purchase_price': (p['last_purchase_price'] as num?)?.toDouble() ?? 0.0,
+      'last_purchase_date': p['last_purchase_date'],
+      'stock': (p['stock'] as num?)?.toInt() ?? 0,
+    };
+    final existing = await getBySku(sku);
+    if (existing == null) {
+      return await db.insert('products', row, conflictAlgorithm: ConflictAlgorithm.abort);
+    } else {
+      await db.update('products', row, where: 'sku = ?', whereArgs: [sku]);
+      return existing['id'] as int;
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> searchByNameOrSku(String q, {int limit = 30}) async {
+    final db = await DatabaseHelper.instance.db;
+    final like = '%${q.trim()}%';
     return db.query(
       'products',
-      columns: [
-        'sku','name','category',
-        'default_sale_price','last_purchase_price','last_purchase_date','stock'
-      ],
-      where: 'name LIKE ? OR sku LIKE ? OR category LIKE ?',
+      columns: ['id','sku','name','category','default_sale_price','last_purchase_price','stock'],
+      where: 'name LIKE ? OR IFNULL(category,"") LIKE ? OR IFNULL(sku,"") LIKE ?',
       whereArgs: [like, like, like],
-      orderBy: 'name COLLATE NOCASE',
+      orderBy: 'name COLLATE NOCASE ASC',
       limit: limit,
     );
   }
 
-  Future<Map<String, Object?>?> findBySku(String sku) async {
-    final db = await _db;
-    final r = await db.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
-    return r.isEmpty ? null : r.first;
-  }
-
-  /// Inserta (si no existe) o actualiza por sku.
-  Future<void> upsert(Map<String, Object?> data) async {
-    final db = await _db;
-    await db.insert(
+  /// Lista lite para autocompletes
+  Future<List<Map<String, dynamic>>> searchLite(String q, {int limit = 25}) async {
+    final db = await DatabaseHelper.instance.db;
+    final like = '%${q.trim()}%';
+    return db.query(
       'products',
-      {
-        'sku': data['sku'],
-        'name': data['name'] ?? '',
-        'category': data['category'] ?? '',
-        'default_sale_price': data['default_sale_price'] ?? 0,
-        'last_purchase_price': data['last_purchase_price'] ?? 0,
-        'last_purchase_date': data['last_purchase_date'],
-        'stock': data['stock'] ?? 0,
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
-  }
-
-  /// Método simple de inserción (alias de upsert por compatibilidad con UI).
-  Future<void> insert(Map<String, Object?> data) => upsert(data);
-
-  Future<void> deleteBySku(String sku) async {
-    final db = await _db;
-    await db.delete('products', where: 'sku = ?', whereArgs: [sku]);
-  }
-
-  Future<void> increaseStock(String sku, num qty) async {
-    final db = await _db;
-    await db.rawUpdate(
-      'UPDATE products SET stock = COALESCE(stock,0) + ? WHERE sku = ?',
-      [qty, sku],
-    );
-  }
-
-  Future<void> decreaseStock(String sku, num qty) async {
-    final db = await _db;
-    await db.rawUpdate(
-      'UPDATE products SET stock = MAX(0, COALESCE(stock,0) - ?) WHERE sku = ?',
-      [qty, sku],
-    );
-  }
-
-  Future<void> updateLastPurchase(String sku, num price, String isoDate) async {
-    final db = await _db;
-    await db.update(
-      'products',
-      {'last_purchase_price': price, 'last_purchase_date': isoDate},
-      where: 'sku = ?',
-      whereArgs: [sku],
+      columns: ['id','sku','name'],
+      where: 'name LIKE ? OR IFNULL(sku,"") LIKE ? OR IFNULL(category,"") LIKE ?',
+      whereArgs: [like, like, like],
+      orderBy: 'name COLLATE NOCASE ASC',
+      limit: limit,
     );
   }
 }
