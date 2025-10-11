@@ -1,33 +1,43 @@
 import 'package:sqflite/sqflite.dart';
-import '../data/db.dart';
+import '../data/database_provider.dart';
 
 class CustomerRepository {
-  Future<Database> get _db async => await openAppDb();
+  Future<Database> get _db async => DatabaseProvider.instance.database;
 
-  Future<List<Map<String, Object?>>> searchByPhoneOrName(String q, {int limit = 20}) async {
+  Future<int> count() async {
     final db = await _db;
-    final like = '%$q%';
-    return db.query(
-      'customers',
-      where: 'phone LIKE ? OR name LIKE ?',
-      whereArgs: [like, like],
-      orderBy: 'name COLLATE NOCASE ASC',
-      limit: limit,
-    );
+    final r = await db.rawQuery('SELECT COUNT(*) c FROM customers');
+    return Sqflite.firstIntValue(r) ?? 0;
   }
 
-  Future<int> insertQuick({required String phone, required String name, String? address}) async {
+  Future<List<Map<String, Object?>>> top(int limit) async {
+    final db = await _db;
+    return db.rawQuery('''
+      SELECT c.phone, c.name, COUNT(s.id) as sales
+      FROM customers c
+      LEFT JOIN sales s ON s.customer_phone = c.phone
+      GROUP BY c.phone, c.name
+      ORDER BY sales DESC, c.name ASC
+      LIMIT ?
+    ''', [limit]);
+  }
+
+  Future<List<Map<String, Object?>>> search(String q) async {
+    final db = await _db;
+    final like = '%${q.trim()}%';
+    return db.query('customers',
+        where: 'phone LIKE ? OR name LIKE ?',
+        whereArgs: [like, like],
+        limit: 20,
+        orderBy: 'name ASC');
+  }
+
+  Future<int> upsert(String phone, String name, String? address) async {
     final db = await _db;
     return db.insert('customers', {
       'phone': phone,
       'name': name,
-      'address': address ?? '',
-    }, conflictAlgorithm: ConflictAlgorithm.ignore);
-  }
-
-  Future<Map<String, Object?>?> findByPhone(String phone) async {
-    final db = await _db;
-    final r = await db.query('customers', where: 'phone = ?', whereArgs: [phone], limit: 1);
-    return r.isEmpty ? null : r.first;
+      'address': address,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 }
