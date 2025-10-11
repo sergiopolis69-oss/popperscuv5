@@ -11,7 +11,7 @@ class BackupPage extends StatelessWidget {
       final path = await fn();
       if (ctx.mounted) {
         ScaffoldMessenger.of(ctx).showSnackBar(
-          SnackBar(content: Text('$label exportado en: $path')),
+          SnackBar(content: Text('$label exportado: $path')),
         );
       }
     } catch (e) {
@@ -25,25 +25,17 @@ class BackupPage extends StatelessWidget {
 
   Future<void> _import(BuildContext ctx, String label, Future<void> Function(Uint8List) fn) async {
     try {
-      final res = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['xlsx'],
-        withData: true,
-      );
+      final res = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['xlsx'], withData: true);
       if (res == null || res.files.isEmpty) return;
       final bytes = res.files.first.bytes;
-      if (bytes == null) throw Exception('No se pudo leer el archivo XLSX');
+      if (bytes == null) throw Exception('No se pudo leer el archivo');
       await fn(bytes);
       if (ctx.mounted) {
-        ScaffoldMessenger.of(ctx).showSnackBar(
-          SnackBar(content: Text('$label importado correctamente')),
-        );
+        ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('$label importado correctamente')));
       }
     } catch (e) {
       if (ctx.mounted) {
-        ScaffoldMessenger.of(ctx).showSnackBar(
-          SnackBar(content: Text('Error importando $label: $e')),
-        );
+        ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Error importando $label: $e')));
       }
     }
   }
@@ -53,31 +45,16 @@ class BackupPage extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(12),
       children: [
-        const Text('Exportar a XLSX (carpeta Descargas)'),
+        const Text('Exportar a XLSX'),
         const SizedBox(height: 8),
         Wrap(
           spacing: 8, runSpacing: 8,
           children: [
-            FilledButton(
-              onPressed: ()=>_export(context, 'Clientes', exportClientsXlsx),
-              child: const Text('Clientes'),
-            ),
-            FilledButton(
-              onPressed: ()=>_export(context, 'Productos', exportProductsXlsx),
-              child: const Text('Productos'),
-            ),
-            FilledButton(
-              onPressed: ()=>_export(context, 'Proveedores', exportSuppliersXlsx),
-              child: const Text('Proveedores'),
-            ),
-            FilledButton(
-              onPressed: ()=>_export(context, 'Ventas', exportSalesXlsx),
-              child: const Text('Ventas (con SKU)'),
-            ),
-            FilledButton(
-              onPressed: ()=>_export(context, 'Compras', exportPurchasesXlsx),
-              child: const Text('Compras (con SKU)'),
-            ),
+            FilledButton(onPressed: ()=>_export(context, 'Productos', exportProductsXlsx), child: const Text('Productos')),
+            FilledButton(onPressed: ()=>_export(context, 'Clientes', exportClientsXlsx), child: const Text('Clientes')),
+            FilledButton(onPressed: ()=>_export(context, 'Proveedores', exportSuppliersXlsx), child: const Text('Proveedores')),
+            FilledButton(onPressed: ()=>_export(context, 'Ventas', exportSalesXlsx), child: const Text('Ventas (con detalle)')),
+            FilledButton(onPressed: ()=>_export(context, 'Compras', exportPurchasesXlsx), child: const Text('Compras (con detalle)')),
           ],
         ),
         const SizedBox(height: 24),
@@ -86,34 +63,19 @@ class BackupPage extends StatelessWidget {
         Wrap(
           spacing: 8, runSpacing: 8,
           children: [
-            OutlinedButton(
-              onPressed: ()=>_import(context, 'Clientes', importClientsXlsx),
-              child: const Text('Clientes'),
-            ),
-            OutlinedButton(
-              onPressed: ()=>_import(context, 'Productos', importProductsXlsx),
-              child: const Text('Productos'),
-            ),
-            OutlinedButton(
-              onPressed: ()=>_import(context, 'Proveedores', importSuppliersXlsx),
-              child: const Text('Proveedores'),
-            ),
-            OutlinedButton(
-              onPressed: ()=>_import(context, 'Ventas (+items por SKU)', importSalesXlsx),
-              child: const Text('Ventas'),
-            ),
-            OutlinedButton(
-              onPressed: ()=>_import(context, 'Compras (+items por SKU)', importPurchasesXlsx),
-              child: const Text('Compras'),
-            ),
+            OutlinedButton(onPressed: ()=>_import(context, 'Productos', importProductsXlsx), child: const Text('Productos')),
+            OutlinedButton(onPressed: ()=>_import(context, 'Clientes', importClientsXlsx), child: const Text('Clientes')),
+            OutlinedButton(onPressed: ()=>_import(context, 'Proveedores', importSuppliersXlsx), child: const Text('Proveedores')),
+            OutlinedButton(onPressed: ()=>_import(context, 'Ventas', importSalesXlsx), child: const Text('Ventas')),
+            OutlinedButton(onPressed: ()=>_import(context, 'Compras', importPurchasesXlsx), child: const Text('Compras')),
           ],
         ),
         const SizedBox(height: 16),
         const Text(
           'Notas:\n'
-          '• En ventas y compras, los renglones de detalle usan el SKU para enlazar productos.\n'
-          '• Si el SKU de un renglón no existe en la tabla de productos, ese renglón se omite por seguridad.\n'
-          '• Flujo recomendado de restauración: Productos → Clientes/Proveedores → Ventas/Compras.',
+          '• Las hojas: products, customers, suppliers, sales (+ sale_items), purchases (+ purchase_items).\n'
+          '• El detalle usa SKU para enlazar productos. SKU es obligatorio.\n'
+          '• La exportación intenta guardar en Descargas vía FileSaver; si no, guarda en documentos de la app.',
         ),
       ],
     );
