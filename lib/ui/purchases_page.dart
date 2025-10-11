@@ -1,11 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:sqflite/sqflite.dart';
-
 import '../data/db.dart' as appdb;
 
+/// Página de Compras:
+/// - Selector de proveedor (lista + botón "nuevo").
+/// - Folio y fecha.
+/// - Búsqueda de producto por SKU o nombre (live search).
+/// - Captura de cantidad y costo unitario.
+/// - Carrito de compra, total.
+/// - Guarda la compra: purchase + purchase_items, actualiza stock y last_purchase_price.
+/// - Confirmación con desglose.
 class PurchasesPage extends StatefulWidget {
-  const PurchasesPage({super.key});
+  const PurchasesPage({Key? key}) : super(key: key);
 
   @override
   State<PurchasesPage> createState() => _PurchasesPageState();
@@ -15,97 +22,217 @@ class _PurchasesPageState extends State<PurchasesPage> {
   final _folioCtrl = TextEditingController();
   DateTime _date = DateTime.now();
 
-  // Proveedor (phone = ID)
-  final _supplierPhoneCtrl = TextEditingController();
-  final _supplierSearchCtrl = TextEditingController();
-  List<Map<String, Object?>> _supplierOptions = [];
+  String? _supplierPhone;
+  List<Map<String, dynamic>> _suppliers = [];
 
-  // Producto a agregar
-  final _productSearchCtrl = TextEditingController();
-  final _skuCtrl = TextEditingController();
+  // Búsqueda de productos
+  final _searchCtrl = TextEditingController();
+  List<Map<String, dynamic>> _productResults = [];
+  Map<String, dynamic>? _selectedProduct;
+
+  // Captura de renglón
   final _qtyCtrl = TextEditingController(text: '1');
-  final _costCtrl = TextEditingController();
-  List<Map<String, Object?>> _productOptions = [];
+  final _costCtrl = TextEditingController(text: '0');
 
-  final List<_PurchaseItem> _items = [];
-  int _pieces = 0;
-  double _amount = 0;
+  // Carrito
+  final List<_PurchaseItemRow> _cart = [];
+
+  final _money = NumberFormat.currency(locale: 'es_MX', symbol: '\$');
 
   @override
   void initState() {
     super.initState();
-    _loadSuppliers('');
-    _loadProducts('');
+    _loadSuppliers();
   }
 
   @override
   void dispose() {
     _folioCtrl.dispose();
-    _supplierPhoneCtrl.dispose();
-    _supplierSearchCtrl.dispose();
-    _productSearchCtrl.dispose();
-    _skuCtrl.dispose();
+    _searchCtrl.dispose();
     _qtyCtrl.dispose();
     _costCtrl.dispose();
     super.dispose();
   }
 
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
-
-  void _recalc() {
-    int p = 0;
-    double a = 0;
-    for (final it in _items) {
-      p += it.qty;
-      a += it.qty * it.cost;
-    }
+  Future<void> _loadSuppliers() async {
+    final db = await appdb.getDb();
+    final rows = await db.query('suppliers', orderBy: 'name COLLATE NOCASE');
     setState(() {
-      _pieces = p;
-      _amount = a;
+      _suppliers = rows;
+      if (_suppliers.isNotEmpty && _supplierPhone == null) {
+        _supplierPhone = _suppliers.first['phone'] as String?;
+      }
     });
   }
 
-  Future<void> _pickDate() async {
-    final d = await showDatePicker(
+  Future<void> _searchProducts(String q) async {
+    q = q.trim();
+    if (q.isEmpty) {
+      setState(() {
+        _productResults = [];
+      });
+      return;
+    }
+    final db = await appdb.getDb();
+    final rows = await db.rawQuery(
+      '''
+      SELECT id, sku, name, category, default_sale_price, last_purchase_price, stock
+      FROM products
+      WHERE sku LIKE ? OR name LIKE ?
+      ORDER BY name COLLATE NOCASE
+      LIMIT 20
+      ''',
+      ['%$q%', '%$q%'],
+    );
+    setState(() {
+      _productResults = rows;
+    });
+  }
+
+  void _pickProduct(Map<String, dynamic> p) {
+    setState(() {
+      _selectedProduct = p;
+      // Por defecto sugerimos el último costo de compra como costo unitario
+      final lastCost = (p['last_purchase_price'] as num?)?.toDouble() ?? 0.0;
+      _costCtrl.text = lastCost > 0 ? lastCost.toStringAsFixed(2) : '0';
+      _qtyCtrl.text = '1';
+    });
+  }
+
+  void _addLine() {
+    if (_selectedProduct == null) {
+      _snack('Selecciona un producto');
+      return;
+    }
+    final qty = int.tryParse(_qtyCtrl.text.trim());
+    final cost = double.tryParse(_costCtrl.text.trim().replaceAll(',', '.'));
+    if (qty == null || qty <= 0 || cost == null || cost < 0) {
+      _snack('Cantidad / costo inválidos');
+      return;
+    }
+
+    final p = _selectedProduct!;
+    final sku = (p['sku'] ?? '').toString();
+    final id = p['id'] as int;
+    final name = (p['name'] ?? '').toString();
+
+    // Si ya existe en carrito, solo acumula
+    final idx = _cart.indexWhere((e) => e.productId == id);
+    setState(() {
+      if (idx >= 0) {
+        final prev = _cart[idx];
+        _cart[idx] = prev.copyWith(quantity: prev.quantity + qty, unitCost: cost);
+      } else {
+        _cart.add(_PurchaseItemRow(
+          productId: id,
+          sku: sku,
+          name: name,
+          quantity: qty,
+          unitCost: cost,
+        ));
+      }
+      // limpiar selección
+      _selectedProduct = null;
+      _searchCtrl.clear();
+      _productResults = [];
+      _qtyCtrl.text = '1';
+      _costCtrl.text = '0';
+    });
+  }
+
+  double get _cartTotal {
+    return _cart.fold<double>(0.0, (sum, r) => sum + (r.quantity * r.unitCost));
+  }
+
+  Future<void> _save() async {
+    if (_supplierPhone == null || _supplierPhone!.trim().isEmpty) {
+      _snack('Selecciona un proveedor');
+      return;
+    }
+    if (_cart.isEmpty) {
+      _snack('Carrito vacío');
+      return;
+    }
+
+    try {
+      final db = await appdb.getDb();
+      final folio = _folioCtrl.text.trim();
+      final dateTxt = DateFormat('yyyy-MM-dd').format(_date);
+
+      int purchaseId = 0;
+
+      await db.transaction((txn) async {
+        purchaseId = await txn.insert('purchases', {
+          'folio': folio,
+          'supplier_phone': _supplierPhone,
+          'date': dateTxt,
+        });
+
+        for (final r in _cart) {
+          await txn.insert('purchase_items', {
+            'purchase_id': purchaseId,
+            'product_id': r.productId,
+            'quantity': r.quantity,
+            'unit_cost': r.unitCost,
+          });
+
+          // Actualizar stock y último costo
+          await txn.rawUpdate(
+            'UPDATE products SET stock = COALESCE(stock,0) + ?, last_purchase_price = ? WHERE id = ?',
+            [r.quantity, r.unitCost, r.productId],
+          );
+        }
+      });
+
+      await _showConfirmation(purchaseId, folio, dateTxt);
+
+      setState(() {
+        _cart.clear();
+        _folioCtrl.clear();
+        _selectedProduct = null;
+        _searchCtrl.clear();
+        _productResults = [];
+      });
+      _snack('Compra registrada');
+    } catch (e) {
+      _snack('Error al guardar: $e');
+    }
+  }
+
+  Future<void> _showConfirmation(int purchaseId, String folio, String dateTxt) async {
+    final total = _cartTotal;
+    final lines = _cart
+        .map((r) => '${r.sku} · ${r.name}\n  ${r.quantity} × ${_money.format(r.unitCost)} = ${_money.format(r.quantity * r.unitCost)}')
+        .join('\n');
+
+    await showDialog<void>(
       context: context,
-      initialDate: _date,
-      firstDate: DateTime(2020),
-      lastDate: DateTime(2100),
+      builder: (_) => AlertDialog(
+        title: const Text('Compra guardada'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _kv('Folio', folio.isEmpty ? '(sin folio)' : folio),
+            _kv('Fecha', dateTxt),
+            const SizedBox(height: 12),
+            const Text('Productos:', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            Text(lines),
+            const SizedBox(height: 12),
+            _kv('Total', _money.format(total), bold: true),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cerrar')),
+        ],
+      ),
     );
-    if (d != null) setState(() => _date = d);
-  }
-
-  Future<void> _loadSuppliers(String q) async {
-    final db = await appdb.DatabaseHelper.instance.db;
-    final rows = await db.query(
-      'suppliers',
-      where: q.isEmpty ? null : '(name LIKE ? OR phone LIKE ?)',
-      whereArgs: q.isEmpty ? null : ['%$q%', '%$q%'],
-      orderBy: 'name COLLATE NOCASE',
-      limit: 25,
-    );
-    setState(() => _supplierOptions = rows);
-  }
-
-  Future<void> _loadProducts(String q) async {
-    final db = await appdb.DatabaseHelper.instance.db;
-    final rows = await db.query(
-      'products',
-      columns: ['id', 'sku', 'name', 'last_purchase_price'],
-      where: q.isEmpty ? null : '(name LIKE ? OR sku LIKE ?)',
-      whereArgs: q.isEmpty ? null : ['%$q%', '%$q%'],
-      orderBy: 'name COLLATE NOCASE',
-      limit: 25,
-    );
-    setState(() => _productOptions = rows);
   }
 
   Future<void> _quickAddSupplierDialog() async {
-    final nameCtrl = TextEditingController();
     final phoneCtrl = TextEditingController();
+    final nameCtrl = TextEditingController();
     final addrCtrl = TextEditingController();
 
     final ok = await showDialog<bool>(
@@ -118,14 +245,12 @@ class _PurchasesPageState extends State<PurchasesPage> {
             TextField(
               controller: phoneCtrl,
               keyboardType: TextInputType.phone,
-              decoration: const InputDecoration(labelText: 'Teléfono (ID)'),
+              decoration: const InputDecoration(labelText: 'Teléfono (ID) *'),
             ),
-            const SizedBox(height: 8),
             TextField(
               controller: nameCtrl,
               decoration: const InputDecoration(labelText: 'Nombre'),
             ),
-            const SizedBox(height: 8),
             TextField(
               controller: addrCtrl,
               decoration: const InputDecoration(labelText: 'Dirección'),
@@ -133,335 +258,268 @@ class _PurchasesPageState extends State<PurchasesPage> {
           ],
         ),
         actions: [
-          TextButton(onPressed: ()=>Navigator.pop(context, false), child: const Text('Cancelar')),
-          FilledButton(onPressed: ()=>Navigator.pop(context, true), child: const Text('Guardar')),
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancelar')),
+          FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Guardar')),
         ],
       ),
     );
 
-    if (ok == true) {
-      if (phoneCtrl.text.trim().isEmpty) {
-        _snack('El teléfono (ID) es obligatorio');
-        return;
-      }
-      try {
-        final db = await appdb.DatabaseHelper.instance.db;
-        await db.insert('suppliers', {
-          'phone': phoneCtrl.text.trim(),
-          'name': nameCtrl.text.trim(),
-          'address': addrCtrl.text.trim(),
-        }, conflictAlgorithm: ConflictAlgorithm.abort);
-        setState(() {
-          _supplierPhoneCtrl.text = phoneCtrl.text.trim();
-        });
-        await _loadSuppliers('');
-        _snack('Proveedor agregado');
-      } catch (e) {
-        _snack('No se pudo agregar: $e');
-      }
-    }
-  }
-
-  Future<void> _addItemBySku() async {
-    final sku = _skuCtrl.text.trim();
-    final qty = int.tryParse(_qtyCtrl.text.trim()) ?? 0;
-    final cost = double.tryParse(_costCtrl.text.trim().replaceAll(',', '.')) ?? -1;
-
-    if (sku.isEmpty) {
-      _snack('Captura SKU');
-      return;
-    }
-    if (qty <= 0) {
-      _snack('Cantidad inválida');
-      return;
-    }
-    if (cost < 0) {
-      _snack('Costo inválido');
-      return;
-    }
-
-    final db = await appdb.DatabaseHelper.instance.db;
-    final prod = await db.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
-    if (prod.isEmpty) {
-      _snack('SKU no encontrado');
-      return;
-    }
-    final p = prod.first;
-    setState(() {
-      _items.add(_PurchaseItem(
-        productId: p['id'] as int,
-        sku: p['sku'] as String,
-        name: p['name'] as String,
-        qty: qty,
-        cost: cost,
-      ));
-      _skuCtrl.clear();
-      _qtyCtrl.text = '1';
-      _costCtrl.clear();
-    });
-    _recalc();
-  }
-
-  Future<void> _savePurchase() async {
-    if (_folioCtrl.text.trim().isEmpty) {
-      _snack('Captura el folio');
-      return;
-    }
-    if (_supplierPhoneCtrl.text.trim().isEmpty) {
-      _snack('Selecciona un proveedor');
-      return;
-    }
-    if (_items.isEmpty) {
-      _snack('Agrega al menos un producto');
-      return;
-    }
-
-    final money = NumberFormat.currency(symbol: '\$');
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Confirmar compra'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Align(alignment: Alignment.centerLeft, child: Text('Folio: ${_folioCtrl.text}')),
-            Align(alignment: Alignment.centerLeft, child: Text('Proveedor: ${_supplierPhoneCtrl.text}')),
-            const Divider(),
-            ..._items.map((e)=>Align(
-              alignment: Alignment.centerLeft,
-              child: Text('${e.sku} • ${e.name}  x${e.qty}  @ ${money.format(e.cost)}'),
-            )),
-            const Divider(),
-            Align(alignment: Alignment.centerLeft, child: Text('Piezas: $_pieces')),
-            Align(alignment: Alignment.centerLeft, child: Text('Total: ${money.format(_amount)}')),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: ()=>Navigator.pop(context, false), child: const Text('Cancelar')),
-          FilledButton(onPressed: ()=>Navigator.pop(context, true), child: const Text('Guardar')),
-        ],
-      ),
-    );
     if (ok != true) return;
 
-    try {
-      final db = await appdb.DatabaseHelper.instance.db;
-      await db.transaction((txn) async {
-        final id = await txn.insert('purchases', {
-          'folio': _folioCtrl.text.trim(),
-          'supplier_phone': _supplierPhoneCtrl.text.trim(),
-          'date': DateFormat("yyyy-MM-dd").format(_date),
-        });
+    final phone = phoneCtrl.text.trim();
+    final name = nameCtrl.text.trim();
+    final addr = addrCtrl.text.trim();
 
-        for (final it in _items) {
-          await txn.insert('purchase_items', {
-            'purchase_id': id,
-            'product_id': it.productId,
-            'quantity': it.qty,
-            'unit_cost': it.cost,
-          });
-          await txn.rawUpdate(
-            'UPDATE products SET stock = COALESCE(stock,0)+?, last_purchase_price = ? WHERE id = ?',
-            [it.qty, it.cost, it.productId],
-          );
-        }
-      });
-
-      _snack('Compra guardada');
-      setState(() {
-        _items.clear();
-        _pieces = 0;
-        _amount = 0;
-        _skuCtrl.clear();
-        _qtyCtrl.text = '1';
-        _costCtrl.clear();
-      });
-    } catch (e) {
-      _snack('Error al guardar: $e');
+    if (phone.isEmpty) {
+      _snack('El teléfono es obligatorio');
+      return;
     }
+
+    final db = await appdb.getDb();
+    await db.insert('suppliers', {
+      'phone': phone,
+      'name': name,
+      'address': addr,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+
+    await _loadSuppliers();
+    setState(() {
+      _supplierPhone = phone;
+    });
+    _snack('Proveedor agregado');
+  }
+
+  void _snack(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  Widget _kv(String k, String v, {bool bold = false}) {
+    final style = TextStyle(fontWeight: bold ? FontWeight.bold : FontWeight.normal);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        children: [
+          Expanded(child: Text(k, style: style)),
+          Text(v, style: style),
+        ],
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final money = NumberFormat.currency(symbol: '\$');
+    final total = _cartTotal;
 
     return Scaffold(
-      body: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _folioCtrl,
-                    decoration: const InputDecoration(labelText: 'Folio de compra'),
+      appBar: AppBar(
+        title: const Text('Compras'),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          // Proveedor + botón nuevo
+          Row(
+            children: [
+              Expanded(
+                child: DropdownButtonFormField<String>(
+                  value: _supplierPhone,
+                  items: _suppliers
+                      .map((s) => DropdownMenuItem<String>(
+                            value: (s['phone'] ?? '').toString(),
+                            child: Text(
+                              '${(s['name'] ?? '').toString().isEmpty ? '(Sin nombre)' : s['name']} — ${s['phone']}',
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ))
+                      .toList(),
+                  onChanged: (v) => setState(() => _supplierPhone = v),
+                  decoration: const InputDecoration(labelText: 'Proveedor'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton(
+                onPressed: _quickAddSupplierDialog,
+                icon: const Icon(Icons.add_business),
+                tooltip: 'Nuevo proveedor',
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 12),
+
+          // Folio + Fecha
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _folioCtrl,
+                  decoration: const InputDecoration(labelText: 'Folio'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: InkWell(
+                  onTap: () async {
+                    final picked = await showDatePicker(
+                      context: context,
+                      initialDate: _date,
+                      firstDate: DateTime(2020),
+                      lastDate: DateTime(2100),
+                    );
+                    if (picked != null) setState(() => _date = picked);
+                  },
+                  child: InputDecorator(
+                    decoration: const InputDecoration(labelText: 'Fecha'),
+                    child: Text(DateFormat('yyyy-MM-dd').format(_date)),
                   ),
                 ),
-                const SizedBox(width: 12),
-                FilledButton.tonal(
-                  onPressed: _pickDate,
-                  child: Text(DateFormat('yyyy-MM-dd').format(_date)),
-                ),
-              ],
+              ),
+            ],
+          ),
+
+          const Divider(height: 32),
+
+          // Búsqueda de productos
+          TextField(
+            controller: _searchCtrl,
+            decoration: const InputDecoration(
+              labelText: 'Buscar producto (SKU o nombre)',
+              prefixIcon: Icon(Icons.search),
             ),
-            const SizedBox(height: 12),
-            // Proveedor
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Proveedor'),
-                      const SizedBox(height: 6),
-                      TextField(
-                        controller: _supplierSearchCtrl,
-                        decoration: const InputDecoration(
-                          hintText: 'Buscar proveedor (nombre o teléfono)…',
-                          prefixIcon: Icon(Icons.search),
-                        ),
-                        onChanged: _loadSuppliers,
-                      ),
-                      const SizedBox(height: 6),
-                      DropdownButtonFormField<String>(
-                        value: _supplierPhoneCtrl.text.isEmpty ? null : _supplierPhoneCtrl.text,
-                        items: _supplierOptions
-                            .map((r) => DropdownMenuItem<String>(
-                                  value: r['phone'] as String,
-                                  child: Text('${r['name']} — ${r['phone']}'),
-                                ))
-                            .toList(),
-                        onChanged: (v) => setState(() => _supplierPhoneCtrl.text = v ?? ''),
-                        hint: const Text('Selecciona proveedor'),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 12),
-                FilledButton.icon(
-                  onPressed: _quickAddSupplierDialog,
-                  icon: const Icon(Icons.person_add),
-                  label: const Text('Nuevo'),
-                ),
-              ],
+            onChanged: _searchProducts,
+          ),
+          if (_productResults.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Container(
+              constraints: const BoxConstraints(maxHeight: 220),
+              decoration: BoxDecoration(
+                border: Border.all(color: Theme.of(context).dividerColor),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: _productResults.length,
+                itemBuilder: (_, i) {
+                  final p = _productResults[i];
+                  return ListTile(
+                    dense: true,
+                    title: Text('${p['name']}'),
+                    subtitle: Text('SKU: ${p['sku']}  ·  Cat: ${p['category']}  ·  Últ. costo: ${_money.format((p['last_purchase_price'] as num?)?.toDouble() ?? 0)}'),
+                    onTap: () => _pickProduct(p),
+                  );
+                },
+              ),
             ),
+          ],
+
+          if (_selectedProduct != null) ...[
             const SizedBox(height: 12),
-            const Divider(),
-            // Productos
+            Text('Producto seleccionado: ${_selectedProduct!['name']} (SKU: ${_selectedProduct!['sku']})'),
             Row(
               children: [
                 Expanded(
-                  child: TextField(
-                    controller: _productSearchCtrl,
-                    decoration: const InputDecoration(
-                      labelText: 'Buscar producto (nombre o SKU)',
-                      prefixIcon: Icon(Icons.search),
-                    ),
-                    onChanged: _loadProducts,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                SizedBox(
-                  width: 140,
-                  child: TextField(
-                    controller: _skuCtrl,
-                    decoration: const InputDecoration(labelText: 'SKU'),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                SizedBox(
-                  width: 80,
                   child: TextField(
                     controller: _qtyCtrl,
                     keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: 'Cant.'),
+                    decoration: const InputDecoration(labelText: 'Cantidad'),
                   ),
                 ),
                 const SizedBox(width: 12),
-                SizedBox(
-                  width: 120,
+                Expanded(
                   child: TextField(
                     controller: _costCtrl,
                     keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    decoration: const InputDecoration(labelText: 'Costo'),
+                    decoration: const InputDecoration(labelText: 'Costo unitario'),
                   ),
                 ),
                 const SizedBox(width: 12),
                 FilledButton.icon(
-                  onPressed: _addItemBySku,
+                  onPressed: _addLine,
                   icon: const Icon(Icons.add),
                   label: const Text('Agregar'),
                 ),
               ],
             ),
-            const SizedBox(height: 8),
-            // Sugerencias productos
-            SizedBox(
-              height: 120,
-              child: ListView.builder(
-                itemCount: _productOptions.length,
-                itemBuilder: (_, i) {
-                  final r = _productOptions[i];
-                  final sku = r['sku'] as String;
-                  final name = r['name'] as String;
-                  final lastCost = (r['last_purchase_price'] as num?)?.toDouble() ?? 0;
-                  return ListTile(
-                    dense: true,
-                    title: Text(name),
-                    subtitle: Text('SKU: $sku  • último costo: ${money.format(lastCost)}'),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.add_shopping_cart),
-                      onPressed: () {
-                        _skuCtrl.text = sku;
-                        if (_costCtrl.text.trim().isEmpty && lastCost > 0) {
-                          _costCtrl.text = lastCost.toStringAsFixed(2);
-                        }
-                      },
-                    ),
-                  );
-                },
-              ),
-            ),
-            const Divider(),
-            // Items
-            Expanded(
-              child: ListView.separated(
-                itemCount: _items.length,
-                separatorBuilder: (_, __) => const Divider(height: 1),
-                itemBuilder: (_, i) {
-                  final it = _items[i];
-                  return ListTile(
-                    title: Text('${it.name} (SKU ${it.sku})'),
-                    subtitle: Text('x${it.qty}  @ ${money.format(it.cost)}  = ${money.format(it.qty * it.cost)}'),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.delete),
-                      onPressed: () {
-                        setState(() {
-                          _items.removeAt(i);
-                        });
-                        _recalc();
-                      },
-                    ),
-                  );
-                },
-              ),
-            ),
-            const Divider(),
-            // Totales + Guardar
-            Row(
-              children: [
-                Text('Piezas: $_pieces', style: const TextStyle(fontWeight: FontWeight.w600)),
-                const SizedBox(width: 16),
-                Text('Total: ${money.format(_amount)}', style: const TextStyle(fontWeight: FontWeight.w600)),
-                const Spacer(),
-                FilledButton.icon(
-                  onPressed: _savePurchase,
-                  icon: const Icon(Icons.save),
-                  label: const Text('Guardar compra'),
+          ],
+
+          const Divider(height: 32),
+
+          // Carrito
+          Row(
+            children: [
+              const Text('Renglones', style: TextStyle(fontWeight: FontWeight.bold)),
+              const Spacer(),
+              if (_cart.isNotEmpty)
+                TextButton.icon(
+                  onPressed: () => setState(() => _cart.clear()),
+                  icon: const Icon(Icons.delete_sweep),
+                  label: const Text('Vaciar'),
                 ),
-              ],
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (_cart.isEmpty)
+            const Text('Sin productos en la compra')
+          else
+            Column(
+              children: _cart
+                  .asMap()
+                  .entries
+                  .map((e) => _CartTile(
+                        row: e.value,
+                        onDelete: () => setState(() => _cart.removeAt(e.key)),
+                        money: _money,
+                      ))
+                  .toList(),
+            ),
+
+          const SizedBox(height: 12),
+          Align(
+            alignment: Alignment.centerRight,
+            child: Text('Total: ${_money.format(total)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          ),
+
+          const SizedBox(height: 24),
+          FilledButton.icon(
+            onPressed: _save,
+            icon: const Icon(Icons.save),
+            label: const Text('Guardar compra'),
+          ),
+          const SizedBox(height: 24),
+        ],
+      ),
+    );
+  }
+}
+
+class _CartTile extends StatelessWidget {
+  const _CartTile({
+    Key? key,
+    required this.row,
+    required this.onDelete,
+    required this.money,
+  }) : super(key: key);
+
+  final _PurchaseItemRow row;
+  final VoidCallback onDelete;
+  final NumberFormat money;
+
+  @override
+  Widget build(BuildContext context) {
+    final subtotal = row.quantity * row.unitCost;
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      child: ListTile(
+        title: Text('${row.name}'),
+        subtitle: Text('SKU: ${row.sku} · Cant: ${row.quantity} × ${money.format(row.unitCost)}'),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(money.format(subtotal)),
+            IconButton(
+              onPressed: onDelete,
+              icon: const Icon(Icons.close),
+              tooltip: 'Quitar',
             ),
           ],
         ),
@@ -470,18 +528,34 @@ class _PurchasesPageState extends State<PurchasesPage> {
   }
 }
 
-class _PurchaseItem {
+class _PurchaseItemRow {
   final int productId;
   final String sku;
   final String name;
-  final int qty;
-  final double cost;
+  final int quantity;
+  final double unitCost;
 
-  _PurchaseItem({
+  _PurchaseItemRow({
     required this.productId,
     required this.sku,
     required this.name,
-    required this.qty,
-    required this.cost,
+    required this.quantity,
+    required this.unitCost,
   });
+
+  _PurchaseItemRow copyWith({
+    int? productId,
+    String? sku,
+    String? name,
+    int? quantity,
+    double? unitCost,
+  }) {
+    return _PurchaseItemRow(
+      productId: productId ?? this.productId,
+      sku: sku ?? this.sku,
+      name: name ?? this.name,
+      quantity: quantity ?? this.quantity,
+      unitCost: unitCost ?? this.unitCost,
+    );
+    }
 }
