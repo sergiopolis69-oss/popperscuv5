@@ -67,10 +67,10 @@ DateTime? _cellDate(List<dynamic> row, int idx) {
 }
 
 // ---------------------------------------------------------------------
-// EXPORTACIONES
+// EXPORTACIONES (DEVUELVEN el nombre/ruta reportado por FileSaver)
 // ---------------------------------------------------------------------
 
-Future<void> exportProductsXlsx() async {
+Future<String?> exportProductsXlsx() async {
   final db = await DatabaseHelper.instance.db;
   final rows = await db.rawQuery(
     'SELECT sku,name,category,default_sale_price,last_purchase_price,stock '
@@ -101,7 +101,7 @@ Future<void> exportProductsXlsx() async {
   }
 
   final bytes = ex.save()!;
-  await FileSaver.instance.saveFile(
+  return FileSaver.instance.saveFile(
     name: 'productos_${_ts()}',
     bytes: Uint8List.fromList(bytes),
     ext: 'xlsx',
@@ -109,7 +109,7 @@ Future<void> exportProductsXlsx() async {
   );
 }
 
-Future<void> exportClientsXlsx() async {
+Future<String?> exportClientsXlsx() async {
   final db = await DatabaseHelper.instance.db;
   final rows = await db.rawQuery(
     'SELECT phone,name,address FROM customers ORDER BY name COLLATE NOCASE',
@@ -133,7 +133,7 @@ Future<void> exportClientsXlsx() async {
   }
 
   final bytes = ex.save()!;
-  await FileSaver.instance.saveFile(
+  return FileSaver.instance.saveFile(
     name: 'clientes_${_ts()}',
     bytes: Uint8List.fromList(bytes),
     ext: 'xlsx',
@@ -141,7 +141,7 @@ Future<void> exportClientsXlsx() async {
   );
 }
 
-Future<void> exportSuppliersXlsx() async {
+Future<String?> exportSuppliersXlsx() async {
   final db = await DatabaseHelper.instance.db;
   final rows = await db.rawQuery(
     'SELECT phone,name,address FROM suppliers ORDER BY name COLLATE NOCASE',
@@ -165,7 +165,7 @@ Future<void> exportSuppliersXlsx() async {
   }
 
   final bytes = ex.save()!;
-  await FileSaver.instance.saveFile(
+  return FileSaver.instance.saveFile(
     name: 'proveedores_${_ts()}',
     bytes: Uint8List.fromList(bytes),
     ext: 'xlsx',
@@ -173,7 +173,7 @@ Future<void> exportSuppliersXlsx() async {
   );
 }
 
-Future<void> exportSalesXlsx() async {
+Future<String?> exportSalesXlsx() async {
   final db = await DatabaseHelper.instance.db;
 
   final sales = await db.rawQuery(
@@ -227,7 +227,7 @@ Future<void> exportSalesXlsx() async {
   }
 
   final bytes = ex.save()!;
-  await FileSaver.instance.saveFile(
+  return FileSaver.instance.saveFile(
     name: 'ventas_${_ts()}',
     bytes: Uint8List.fromList(bytes),
     ext: 'xlsx',
@@ -235,7 +235,7 @@ Future<void> exportSalesXlsx() async {
   );
 }
 
-Future<void> exportPurchasesXlsx() async {
+Future<String?> exportPurchasesXlsx() async {
   final db = await DatabaseHelper.instance.db;
 
   final purchases = await db.rawQuery(
@@ -283,7 +283,7 @@ Future<void> exportPurchasesXlsx() async {
   }
 
   final bytes = ex.save()!;
-  await FileSaver.instance.saveFile(
+  return FileSaver.instance.saveFile(
     name: 'compras_${_ts()}',
     bytes: Uint8List.fromList(bytes),
     ext: 'xlsx',
@@ -413,7 +413,7 @@ Future<ImportReport> importClientsXlsx(Uint8List bytes) async {
   }
 
   await batch.commit(noResult: true);
-  return const ImportReport(0, 0, 0, []); // Snack muestra totales arriba si lo deseas
+  return ImportReport(ins, upd, skip, const []);
 }
 
 Future<ImportReport> importSuppliersXlsx(Uint8List bytes) async {
