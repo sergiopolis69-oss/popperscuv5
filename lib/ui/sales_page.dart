@@ -1,5 +1,4 @@
 import 'dart:math';
-
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:sqflite/sqflite.dart';
@@ -10,33 +9,31 @@ final _money = NumberFormat.currency(locale: 'es_MX', symbol: r'$');
 
 class SalesPage extends StatefulWidget {
   const SalesPage({super.key});
-
   @override
   State<SalesPage> createState() => _SalesPageState();
 }
 
 class _SalesPageState extends State<SalesPage> {
-  // Cliente seleccionado (phone es el ID)
+  // Selección de cliente
   String? _customerPhone;
   String? _customerName;
 
-  // Método de pago y lugar
+  // Pago / lugar
   String _paymentMethod = 'efectivo';
   final _placeCtrl = TextEditingController();
 
-  // Envío y descuento
+  // Envío / descuento
   final _shippingCtrl = TextEditingController(text: '0');
   final _discountCtrl = TextEditingController(text: '0');
 
-  // Buscadores
+  // Live search
   final _customerSearchCtrl = TextEditingController();
   final _productSearchCtrl = TextEditingController();
 
-  // Resultados de búsqueda
   List<Map<String, Object?>> _customerResults = [];
   List<Map<String, Object?>> _productResults = [];
 
-  // Carrito: cada item es un map con product_id, sku, name, quantity, unit_price, last_purchase_price
+  // Carrito: product_id, sku, name, quantity, unit_price, last_purchase_price
   final List<Map<String, dynamic>> _cart = [];
 
   bool _saving = false;
@@ -52,9 +49,8 @@ class _SalesPageState extends State<SalesPage> {
   }
 
   // -----------------------
-  // BUSCADORES (async SQL)
+  // BÚSQUEDAS
   // -----------------------
-
   Future<void> _searchCustomers(String q) async {
     final db = await DatabaseHelper.instance.db;
     final like = '%${q.trim()}%';
@@ -84,9 +80,7 @@ class _SalesPageState extends State<SalesPage> {
   // -----------------------
   // CARRITO
   // -----------------------
-
   void _addProductToCart(Map<String, Object?> p) {
-    // Precio por defecto = default_sale_price
     final unit = (p['default_sale_price'] as num?)?.toDouble() ?? 0.0;
     final cost = (p['last_purchase_price'] as num?)?.toDouble() ?? 0.0;
 
@@ -112,23 +106,55 @@ class _SalesPageState extends State<SalesPage> {
     setState(() => _cart.removeAt(index));
   }
 
-  // Totales (subtotal = suma qty*unit), total = subtotal + envío - descuento
-  double get subtotal {
-    return _cart.fold<double>(
-      0.0,
-      (sum, e) => sum + (e['quantity'] as int) * (e['unit_price'] as double),
-    );
+  // -----------------------
+  // TOTALES / UTILIDAD EN VIVO
+  // -----------------------
+  double get _shipping => double.tryParse(_shippingCtrl.text.replaceAll(',', '.')) ?? 0.0;
+  double get _discount => double.tryParse(_discountCtrl.text.replaceAll(',', '.')) ?? 0.0;
+
+  double get subtotal => _cart.fold<double>(
+        0.0,
+        (sum, e) => sum + (e['quantity'] as int) * (e['unit_price'] as double),
+      );
+
+  double get total => max(0.0, subtotal + _shipping - _discount);
+
+  /// Descuento proporcional por renglón, utilidad por renglón y utilidad total
+  Map<String, dynamic> _liveProfit() {
+    final details = <Map<String, dynamic>>[];
+    final sub = subtotal;
+    double totalProfit = 0;
+
+    for (final e in _cart) {
+      final qty = e['quantity'] as int;
+      final unit = e['unit_price'] as double;
+      final cost = (e['last_purchase_price'] as num?)?.toDouble() ?? 0.0;
+      final lineGross = unit * qty;
+
+      final lineDiscount = sub > 0 ? _discount * (lineGross / sub) : 0.0;
+      final lineProfit = (unit - cost) * qty - lineDiscount;
+
+      details.add({
+        'name': e['name'],
+        'sku': e['sku'],
+        'qty': qty,
+        'unit': unit,
+        'cost': cost,
+        'lineDiscount': lineDiscount,
+        'profit': lineProfit,
+      });
+      totalProfit += lineProfit;
+    }
+
+    return {
+      'details': details,
+      'profit': totalProfit, // Envío NO afecta utilidad
+    };
   }
-
-  double get shipping => double.tryParse(_shippingCtrl.text.replaceAll(',', '.')) ?? 0.0;
-  double get discount => double.tryParse(_discountCtrl.text.replaceAll(',', '.')) ?? 0.0;
-
-  double get total => max(0.0, subtotal + shipping - discount);
 
   // -----------------------
   // GUARDAR VENTA
   // -----------------------
-
   Future<void> _saveSale() async {
     if (_saving) return;
     if (_customerPhone == null || _customerPhone!.isEmpty) {
@@ -143,7 +169,7 @@ class _SalesPageState extends State<SalesPage> {
       _snack('Subtotal no puede ser 0');
       return;
     }
-    if (discount < 0 || shipping < 0) {
+    if (_discount < 0 || _shipping < 0) {
       _snack('Descuento/Envío no válidos');
       return;
     }
@@ -157,12 +183,11 @@ class _SalesPageState extends State<SalesPage> {
           'customer_phone': _customerPhone,
           'payment_method': _paymentMethod,
           'place': _placeCtrl.text.trim().isEmpty ? null : _placeCtrl.text.trim(),
-          'shipping_cost': shipping,
-          'discount': discount,
+          'shipping_cost': _shipping,
+          'discount': _discount,
           'date': DateTime.now().toIso8601String(),
         });
 
-        // Inserta items y decrementa stock
         for (final e in _cart) {
           final productId = e['product_id'] as int;
           final qty = e['quantity'] as int;
@@ -179,7 +204,11 @@ class _SalesPageState extends State<SalesPage> {
         }
       });
 
-      // Diálogo de confirmación con resumen
+      // Diálogo de confirmación
+      final profitData = _liveProfit();
+      final profit = profitData['profit'] as double;
+      final items = profitData['details'] as List<Map<String, dynamic>>;
+
       await showDialog(
         context: context,
         builder: (_) => AlertDialog(
@@ -194,28 +223,32 @@ class _SalesPageState extends State<SalesPage> {
                 Text('Pago: $_paymentMethod'),
                 if (_placeCtrl.text.isNotEmpty) Text('Lugar: ${_placeCtrl.text}'),
                 const Divider(),
-                ..._cart.map((e) => ListTile(
+                ...items.map((e) => ListTile(
                       dense: true,
                       title: Text('${e['name']}'),
-                      subtitle: Text('SKU: ${e['sku']}  •  Cant: ${e['quantity']}  •  PU: ${_money.format(e['unit_price'])}'),
-                      trailing: Text(_money.format((e['quantity'] as int) * (e['unit_price'] as double))),
+                      subtitle: Text('SKU: ${e['sku']}  •  Cant: ${e['qty']}  •  PU: ${_money.format(e['unit'])}  •  Costo: ${_money.format(e['cost'])}'),
+                      trailing: Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text('Desc: ${_money.format(e['lineDiscount'])}'),
+                          Text('Util: ${_money.format(e['profit'])}', style: const TextStyle(fontWeight: FontWeight.w600)),
+                        ],
+                      ),
                     )),
                 const Divider(),
-                _rowKV('Subtotal', _money.format(subtotal)),
-                _rowKV('Envío', _money.format(shipping)),
-                _rowKV('Descuento', '- ${_money.format(discount)}'),
+                _kv('Subtotal', _money.format(subtotal)),
+                _kv('Envío (no afecta utilidad)', _money.format(_shipping)),
+                _kv('Descuento total', '- ${_money.format(_discount)}'),
                 const SizedBox(height: 4),
-                _rowKV('Total', _money.format(total), bold: true),
+                _kv('Total', _money.format(total), bold: true),
+                _kv('Utilidad (en vivo)', _money.format(profit), bold: true),
               ],
             ),
           ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK')),
-          ],
+          actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK'))],
         ),
       );
 
-      // Limpia
       setState(() {
         _cart.clear();
         _shippingCtrl.text = '0';
@@ -232,9 +265,10 @@ class _SalesPageState extends State<SalesPage> {
   // -----------------------
   // UI
   // -----------------------
-
   @override
   Widget build(BuildContext context) {
+    final profit = _liveProfit()['profit'] as double;
+
     return Padding(
       padding: const EdgeInsets.all(12),
       child: ListView(
@@ -245,7 +279,7 @@ class _SalesPageState extends State<SalesPage> {
           const SizedBox(height: 12),
           _cartCard(),
           const SizedBox(height: 12),
-          _totalsCard(),
+          _totalsCard(profit),
           const SizedBox(height: 12),
           FilledButton.icon(
             onPressed: _saving ? null : _saveSale,
@@ -257,8 +291,6 @@ class _SalesPageState extends State<SalesPage> {
     );
   }
 
-  // --- Widgets ---
-
   Widget _clientSearchBar() {
     return SearchAnchor.bar(
       barHintText: _customerPhone == null
@@ -269,7 +301,6 @@ class _SalesPageState extends State<SalesPage> {
       barElevation: const MaterialStatePropertyAll(0),
       barShape: MaterialStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
       suggestionsBuilder: (context, controller) async {
-        // Guardamos para usar el mismo controller como “live search”
         if (_customerSearchCtrl != controller) {
           _customerSearchCtrl.text = controller.text;
         }
@@ -281,7 +312,7 @@ class _SalesPageState extends State<SalesPage> {
           final address = (c['address'] ?? '').toString();
           return ListTile(
             leading: const Icon(Icons.person),
-            title: Text('$name'),
+            title: Text(name.isEmpty ? phone : name),
             subtitle: Text(phone + (address.isNotEmpty ? '  •  $address' : '')),
             onTap: () {
               setState(() {
@@ -293,7 +324,7 @@ class _SalesPageState extends State<SalesPage> {
           );
         });
       },
-      viewHintText: 'Escribe nombre o teléfono del cliente',
+      viewHintText: 'Escribe nombre o teléfono…',
       viewLeading: IconButton(
         icon: const Icon(Icons.add),
         tooltip: 'Agregar cliente rápido',
@@ -356,10 +387,7 @@ class _SalesPageState extends State<SalesPage> {
     return Card(
       child: Column(
         children: [
-          const ListTile(
-            leading: Icon(Icons.shopping_cart),
-            title: Text('Carrito'),
-          ),
+          const ListTile(leading: Icon(Icons.shopping_cart), title: Text('Carrito')),
           const Divider(height: 1),
           ..._cart.asMap().entries.map((entry) {
             final idx = entry.key;
@@ -373,7 +401,6 @@ class _SalesPageState extends State<SalesPage> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
-                    // Cantidad
                     IconButton(
                       tooltip: 'Menos',
                       onPressed: () {
@@ -383,7 +410,7 @@ class _SalesPageState extends State<SalesPage> {
                       },
                       icon: const Icon(Icons.remove_circle_outline),
                     ),
-                    Text('${e['quantity']}', style: const TextStyle(fontFeatures: [FontFeature.tabularFigures()])),
+                    Text('${e['quantity']}'),
                     IconButton(
                       tooltip: 'Más',
                       onPressed: () {
@@ -394,13 +421,12 @@ class _SalesPageState extends State<SalesPage> {
                       icon: const Icon(Icons.add_circle_outline),
                     ),
                     const SizedBox(width: 8),
-                    // Precio unitario
                     SizedBox(
                       width: 90,
                       child: TextFormField(
                         initialValue: (e['unit_price'] as double).toStringAsFixed(2),
                         textAlign: TextAlign.end,
-                        keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: false),
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
                         decoration: const InputDecoration(isDense: true, labelText: 'PU'),
                         onChanged: (v) {
                           final val = double.tryParse(v.replaceAll(',', '.')) ?? (e['unit_price'] as double);
@@ -412,7 +438,7 @@ class _SalesPageState extends State<SalesPage> {
                       tooltip: 'Quitar',
                       onPressed: () => _removeFromCart(idx),
                       icon: const Icon(Icons.delete_outline),
-                    )
+                    ),
                   ],
                 ),
               ),
@@ -424,7 +450,7 @@ class _SalesPageState extends State<SalesPage> {
     );
   }
 
-  Widget _totalsCard() {
+  Widget _totalsCard(double liveProfit) {
     return Card(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
@@ -477,11 +503,14 @@ class _SalesPageState extends State<SalesPage> {
               ],
             ),
             const SizedBox(height: 12),
-            _rowKV('Subtotal', _money.format(subtotal)),
-            _rowKV('Envío (no afecta utilidad)', _money.format(shipping)),
-            _rowKV('Descuento', '- ${_money.format(discount)}'),
+            _kv('Subtotal', _money.format(subtotal)),
+            _kv('Envío (no afecta utilidad)', _money.format(_shipping)),
+            _kv('Descuento', '- ${_money.format(_discount)}'),
             const Divider(),
-            _rowKV('Total', _money.format(total), bold: true, big: true),
+            _kv('Total', _money.format(total), bold: true, big: true),
+            const SizedBox(height: 6),
+            _kv('Utilidad (en vivo)', _money.format(liveProfit),
+                bold: true, big: true),
           ],
         ),
       ),
@@ -489,7 +518,7 @@ class _SalesPageState extends State<SalesPage> {
   }
 
   // -----------------------
-  // Diálogo cliente rápido
+  // Cliente rápido
   // -----------------------
   Future<void> _quickAddCustomerDialog(BuildContext context) async {
     final phoneCtrl = TextEditingController();
@@ -543,8 +572,7 @@ class _SalesPageState extends State<SalesPage> {
   // -----------------------
   // Helpers
   // -----------------------
-
-  static Widget _rowKV(String k, String v, {bool bold = false, bool big = false}) {
+  static Widget _kv(String k, String v, {bool bold = false, bool big = false}) {
     final styleV = TextStyle(
       fontWeight: bold ? FontWeight.w700 : FontWeight.w500,
       fontSize: big ? 18 : 16,
