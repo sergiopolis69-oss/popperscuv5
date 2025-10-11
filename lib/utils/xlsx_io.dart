@@ -5,6 +5,7 @@ import 'package:excel/excel.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:collection/collection.dart';
 import 'package:intl/intl.dart';
+import 'package:sqflite/sqflite.dart'; // 👈 AGREGA ESTA LÍNEA
 
 import '../data/db.dart' as appdb; // usamos appdb.getDb()
 
