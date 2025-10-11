@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:sqflite/sqflite.dart';
 
-import '../data/db.dart'; // 👈 usamos DatabaseHelper directo
+import '../data/db.dart' as appdb; // 👈 usa alias consistente
 
 class PurchasesPage extends StatefulWidget {
   const PurchasesPage({super.key});
@@ -15,16 +15,16 @@ class _PurchasesPageState extends State<PurchasesPage> {
   final _folioCtrl = TextEditingController();
   DateTime _date = DateTime.now();
 
-  // Proveedor
-  final _supplierPhoneCtrl = TextEditingController(); // seleccionado (phone = ID)
+  // Proveedor (phone = ID)
+  final _supplierPhoneCtrl = TextEditingController();
   final _supplierSearchCtrl = TextEditingController();
   List<Map<String, Object?>> _supplierOptions = [];
 
   // Producto a agregar
+  final _productSearchCtrl = TextEditingController();
   final _skuCtrl = TextEditingController();
   final _qtyCtrl = TextEditingController(text: '1');
   final _costCtrl = TextEditingController();
-  final _productSearchCtrl = TextEditingController();
   List<Map<String, Object?>> _productOptions = [];
 
   final List<_PurchaseItem> _items = [];
@@ -43,10 +43,10 @@ class _PurchasesPageState extends State<PurchasesPage> {
     _folioCtrl.dispose();
     _supplierPhoneCtrl.dispose();
     _supplierSearchCtrl.dispose();
+    _productSearchCtrl.dispose();
     _skuCtrl.dispose();
     _qtyCtrl.dispose();
     _costCtrl.dispose();
-    _productSearchCtrl.dispose();
     super.dispose();
   }
 
@@ -79,7 +79,7 @@ class _PurchasesPageState extends State<PurchasesPage> {
   }
 
   Future<void> _loadSuppliers(String q) async {
-    final db = await DatabaseHelper.instance.db;
+    final db = await appdb.DatabaseHelper.instance.db;
     final rows = await db.query(
       'suppliers',
       where: q.isEmpty ? null : '(name LIKE ? OR phone LIKE ?)',
@@ -91,7 +91,7 @@ class _PurchasesPageState extends State<PurchasesPage> {
   }
 
   Future<void> _loadProducts(String q) async {
-    final db = await DatabaseHelper.instance.db;
+    final db = await appdb.DatabaseHelper.instance.db;
     final rows = await db.query(
       'products',
       columns: ['id', 'sku', 'name', 'last_purchase_price'],
@@ -115,11 +115,21 @@ class _PurchasesPageState extends State<PurchasesPage> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: phoneCtrl, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Teléfono (ID)')),
+            TextField(
+              controller: phoneCtrl,
+              keyboardType: TextInputType.phone,
+              decoration: const InputDecoration(labelText: 'Teléfono (ID)'),
+            ),
             const SizedBox(height: 8),
-            TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Nombre')),
+            TextField(
+              controller: nameCtrl,
+              decoration: const InputDecoration(labelText: 'Nombre'),
+            ),
             const SizedBox(height: 8),
-            TextField(controller: addrCtrl, decoration: const InputDecoration(labelText: 'Dirección')),
+            TextField(
+              controller: addrCtrl,
+              decoration: const InputDecoration(labelText: 'Dirección'),
+            ),
           ],
         ),
         actions: [
@@ -135,7 +145,7 @@ class _PurchasesPageState extends State<PurchasesPage> {
         return;
       }
       try {
-        final db = await DatabaseHelper.instance.db;
+        final db = await appdb.DatabaseHelper.instance.db;
         await db.insert('suppliers', {
           'phone': phoneCtrl.text.trim(),
           'name': nameCtrl.text.trim(),
@@ -170,7 +180,7 @@ class _PurchasesPageState extends State<PurchasesPage> {
       return;
     }
 
-    final db = await DatabaseHelper.instance.db;
+    final db = await appdb.DatabaseHelper.instance.db;
     final prod = await db.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
     if (prod.isEmpty) {
       _snack('SKU no encontrado');
@@ -235,7 +245,7 @@ class _PurchasesPageState extends State<PurchasesPage> {
     if (ok != true) return;
 
     try {
-      final db = await DatabaseHelper.instance.db;
+      final db = await appdb.DatabaseHelper.instance.db;
       await db.transaction((txn) async {
         final id = await txn.insert('purchases', {
           'folio': _folioCtrl.text.trim(),
@@ -415,7 +425,7 @@ class _PurchasesPageState extends State<PurchasesPage> {
               ),
             ),
             const Divider(),
-            // Items agregados
+            // Items
             Expanded(
               child: ListView.separated(
                 itemCount: _items.length,
