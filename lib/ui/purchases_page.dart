@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:sqflite/sqflite.dart';
 
-import '../data/db.dart' as appdb; // 👈 alias para usar appdb.DatabaseHelper
+import '../data/db.dart'; // 👈 usamos DatabaseHelper directo
 
 class PurchasesPage extends StatefulWidget {
   const PurchasesPage({super.key});
@@ -11,57 +11,75 @@ class PurchasesPage extends StatefulWidget {
   State<PurchasesPage> createState() => _PurchasesPageState();
 }
 
-class _PurchasesPageState extends State<PurchasesPage>
-    with SingleTickerProviderStateMixin {
+class _PurchasesPageState extends State<PurchasesPage> {
   final _folioCtrl = TextEditingController();
-  final _date = ValueNotifier<DateTime>(DateTime.now());
+  DateTime _date = DateTime.now();
 
   // Proveedor
-  final _supplierCtrl = TextEditingController(); // phone seleccionado
+  final _supplierPhoneCtrl = TextEditingController(); // seleccionado (phone = ID)
   final _supplierSearchCtrl = TextEditingController();
   List<Map<String, Object?>> _supplierOptions = [];
 
-  // Ítems de compra (sku, qty, cost)
+  // Producto a agregar
   final _skuCtrl = TextEditingController();
   final _qtyCtrl = TextEditingController(text: '1');
   final _costCtrl = TextEditingController();
   final _productSearchCtrl = TextEditingController();
   List<Map<String, Object?>> _productOptions = [];
+
   final List<_PurchaseItem> _items = [];
-
-  // Totales
-  final _pieces = ValueNotifier<int>(0);
-  final _amount = ValueNotifier<double>(0);
-
-  late final TabController _tab;
+  int _pieces = 0;
+  double _amount = 0;
 
   @override
   void initState() {
     super.initState();
-    _tab = TabController(length: 2, vsync: this);
     _loadSuppliers('');
     _loadProducts('');
-    _recalc();
   }
 
   @override
   void dispose() {
     _folioCtrl.dispose();
-    _supplierCtrl.dispose();
+    _supplierPhoneCtrl.dispose();
     _supplierSearchCtrl.dispose();
     _skuCtrl.dispose();
     _qtyCtrl.dispose();
     _costCtrl.dispose();
     _productSearchCtrl.dispose();
-    _pieces.dispose();
-    _amount.dispose();
-    _date.dispose();
-    _tab.dispose();
     super.dispose();
   }
 
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  void _recalc() {
+    int p = 0;
+    double a = 0;
+    for (final it in _items) {
+      p += it.qty;
+      a += it.qty * it.cost;
+    }
+    setState(() {
+      _pieces = p;
+      _amount = a;
+    });
+  }
+
+  Future<void> _pickDate() async {
+    final d = await showDatePicker(
+      context: context,
+      initialDate: _date,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2100),
+    );
+    if (d != null) setState(() => _date = d);
+  }
+
   Future<void> _loadSuppliers(String q) async {
-    final db = await appdb.DatabaseHelper.instance.db;
+    final db = await DatabaseHelper.instance.db;
     final rows = await db.query(
       'suppliers',
       where: q.isEmpty ? null : '(name LIKE ? OR phone LIKE ?)',
@@ -73,143 +91,16 @@ class _PurchasesPageState extends State<PurchasesPage>
   }
 
   Future<void> _loadProducts(String q) async {
-    final db = await appdb.DatabaseHelper.instance.db;
+    final db = await DatabaseHelper.instance.db;
     final rows = await db.query(
       'products',
-      columns: ['id', 'sku', 'name', 'default_sale_price', 'last_purchase_price'],
+      columns: ['id', 'sku', 'name', 'last_purchase_price'],
       where: q.isEmpty ? null : '(name LIKE ? OR sku LIKE ?)',
       whereArgs: q.isEmpty ? null : ['%$q%', '%$q%'],
       orderBy: 'name COLLATE NOCASE',
       limit: 25,
     );
     setState(() => _productOptions = rows);
-  }
-
-  void _recalc() {
-    int p = 0;
-    double a = 0;
-    for (final it in _items) {
-      p += it.qty;
-      a += it.qty * it.cost;
-    }
-    _pieces.value = p;
-    _amount.value = a;
-  }
-
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
-
-  Future<void> _pickDate() async {
-    final d = await showDatePicker(
-      context: context,
-      initialDate: _date.value,
-      firstDate: DateTime(2020),
-      lastDate: DateTime(2100),
-    );
-    if (d != null) _date.value = d;
-  }
-
-  Future<void> _savePurchase() async {
-    if (_folioCtrl.text.trim().isEmpty) {
-      _snack('Captura el folio');
-      return;
-    }
-    if (_supplierCtrl.text.trim().isEmpty) {
-      _snack('Selecciona un proveedor');
-      return;
-    }
-    if (_items.isEmpty) {
-      _snack('Agrega al menos un producto');
-      return;
-    }
-
-    // Confirmación con detalle de ítems
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Confirmar compra'),
-        content: SizedBox(
-          width: 420,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Text('Folio: ${_folioCtrl.text}', style: const TextStyle(fontWeight: FontWeight.w600)),
-              ),
-              const SizedBox(height: 8),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Text('Proveedor: ${_supplierCtrl.text}', style: const TextStyle(fontWeight: FontWeight.w600)),
-              ),
-              const Divider(),
-              ..._items.map((e) => Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text('${e.sku} • ${e.name}  x${e.qty}  @ ${e.cost.toStringAsFixed(2)}'),
-                  )),
-              const Divider(),
-              ValueListenableBuilder<int>(
-                valueListenable: _pieces,
-                builder: (_, v, __) => Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('Piezas: $v'),
-                ),
-              ),
-              ValueListenableBuilder<double>(
-                valueListenable: _amount,
-                builder: (_, v, __) => Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('Total: ${NumberFormat.currency(symbol: '\$').format(v)}'),
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: ()=>Navigator.pop(context, false), child: const Text('Cancelar')),
-          FilledButton(onPressed: ()=>Navigator.pop(context, true), child: const Text('Guardar')),
-        ],
-      ),
-    );
-    if (ok != true) return;
-
-    try {
-      final db = await appdb.DatabaseHelper.instance.db;
-      await db.transaction((txn) async {
-        final id = await txn.insert('purchases', {
-          'folio': _folioCtrl.text.trim(),
-          'supplier_phone': _supplierCtrl.text.trim(),
-          'date': DateFormat("yyyy-MM-dd'T'HH:mm:ss").format(_date.value),
-        });
-
-        for (final it in _items) {
-          await txn.insert('purchase_items', {
-            'purchase_id': id,
-            'product_id': it.productId,
-            'quantity': it.qty,
-            'unit_cost': it.cost,
-          });
-          // stock y último costo
-          await txn.rawUpdate(
-            'UPDATE products SET stock = COALESCE(stock,0)+?, last_purchase_price = ? WHERE id = ?',
-            [it.qty, it.cost, it.productId],
-          );
-        }
-      });
-
-      _snack('Compra guardada');
-      setState(() {
-        _items.clear();
-        _skuCtrl.clear();
-        _qtyCtrl.text = '1';
-        _costCtrl.clear();
-      });
-      _recalc();
-    } catch (e) {
-      _snack('Error al guardar: $e');
-    }
   }
 
   Future<void> _quickAddSupplierDialog() async {
@@ -224,7 +115,7 @@ class _PurchasesPageState extends State<PurchasesPage>
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: phoneCtrl, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Teléfono (ID)', hintText: '10 dígitos')),
+            TextField(controller: phoneCtrl, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Teléfono (ID)')),
             const SizedBox(height: 8),
             TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Nombre')),
             const SizedBox(height: 8),
@@ -244,13 +135,15 @@ class _PurchasesPageState extends State<PurchasesPage>
         return;
       }
       try {
-        final db = await appdb.DatabaseHelper.instance.db;
+        final db = await DatabaseHelper.instance.db;
         await db.insert('suppliers', {
           'phone': phoneCtrl.text.trim(),
           'name': nameCtrl.text.trim(),
           'address': addrCtrl.text.trim(),
         }, conflictAlgorithm: ConflictAlgorithm.abort);
-        _supplierCtrl.text = phoneCtrl.text.trim();
+        setState(() {
+          _supplierPhoneCtrl.text = phoneCtrl.text.trim();
+        });
         await _loadSuppliers('');
         _snack('Proveedor agregado');
       } catch (e) {
@@ -277,7 +170,7 @@ class _PurchasesPageState extends State<PurchasesPage>
       return;
     }
 
-    final db = await appdb.DatabaseHelper.instance.db;
+    final db = await DatabaseHelper.instance.db;
     final prod = await db.query('products', where: 'sku = ?', whereArgs: [sku], limit: 1);
     if (prod.isEmpty) {
       _snack('SKU no encontrado');
@@ -295,8 +188,87 @@ class _PurchasesPageState extends State<PurchasesPage>
       _skuCtrl.clear();
       _qtyCtrl.text = '1';
       _costCtrl.clear();
-      _recalc();
     });
+    _recalc();
+  }
+
+  Future<void> _savePurchase() async {
+    if (_folioCtrl.text.trim().isEmpty) {
+      _snack('Captura el folio');
+      return;
+    }
+    if (_supplierPhoneCtrl.text.trim().isEmpty) {
+      _snack('Selecciona un proveedor');
+      return;
+    }
+    if (_items.isEmpty) {
+      _snack('Agrega al menos un producto');
+      return;
+    }
+
+    final money = NumberFormat.currency(symbol: '\$');
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Confirmar compra'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Align(alignment: Alignment.centerLeft, child: Text('Folio: ${_folioCtrl.text}')),
+            Align(alignment: Alignment.centerLeft, child: Text('Proveedor: ${_supplierPhoneCtrl.text}')),
+            const Divider(),
+            ..._items.map((e)=>Align(
+              alignment: Alignment.centerLeft,
+              child: Text('${e.sku} • ${e.name}  x${e.qty}  @ ${money.format(e.cost)}'),
+            )),
+            const Divider(),
+            Align(alignment: Alignment.centerLeft, child: Text('Piezas: $_pieces')),
+            Align(alignment: Alignment.centerLeft, child: Text('Total: ${money.format(_amount)}')),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: ()=>Navigator.pop(context, false), child: const Text('Cancelar')),
+          FilledButton(onPressed: ()=>Navigator.pop(context, true), child: const Text('Guardar')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    try {
+      final db = await DatabaseHelper.instance.db;
+      await db.transaction((txn) async {
+        final id = await txn.insert('purchases', {
+          'folio': _folioCtrl.text.trim(),
+          'supplier_phone': _supplierPhoneCtrl.text.trim(),
+          'date': DateFormat("yyyy-MM-dd").format(_date),
+        });
+
+        for (final it in _items) {
+          await txn.insert('purchase_items', {
+            'purchase_id': id,
+            'product_id': it.productId,
+            'quantity': it.qty,
+            'unit_cost': it.cost,
+          });
+          await txn.rawUpdate(
+            'UPDATE products SET stock = COALESCE(stock,0)+?, last_purchase_price = ? WHERE id = ?',
+            [it.qty, it.cost, it.productId],
+          );
+        }
+      });
+
+      _snack('Compra guardada');
+      setState(() {
+        _items.clear();
+        _pieces = 0;
+        _amount = 0;
+        _skuCtrl.clear();
+        _qtyCtrl.text = '1';
+        _costCtrl.clear();
+      });
+    } catch (e) {
+      _snack('Error al guardar: $e');
+    }
   }
 
   @override
@@ -317,43 +289,41 @@ class _PurchasesPageState extends State<PurchasesPage>
                   ),
                 ),
                 const SizedBox(width: 12),
-                ValueListenableBuilder<DateTime>(
-                  valueListenable: _date,
-                  builder: (_, d, __) => FilledButton.tonal(
-                    onPressed: _pickDate,
-                    child: Text(DateFormat('yyyy-MM-dd').format(d)),
-                  ),
+                FilledButton.tonal(
+                  onPressed: _pickDate,
+                  child: Text(DateFormat('yyyy-MM-dd').format(_date)),
                 ),
               ],
             ),
             const SizedBox(height: 12),
-            // Proveedor (live search + botón nuevo)
+            // Proveedor
             Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('Proveedor (teléfono / nombre)'),
+                      const Text('Proveedor'),
                       const SizedBox(height: 6),
                       TextField(
                         controller: _supplierSearchCtrl,
                         decoration: const InputDecoration(
-                          hintText: 'Buscar proveedor…',
+                          hintText: 'Buscar proveedor (nombre o teléfono)…',
                           prefixIcon: Icon(Icons.search),
                         ),
                         onChanged: _loadSuppliers,
                       ),
                       const SizedBox(height: 6),
                       DropdownButtonFormField<String>(
-                        value: _supplierCtrl.text.isEmpty ? null : _supplierCtrl.text,
+                        value: _supplierPhoneCtrl.text.isEmpty ? null : _supplierPhoneCtrl.text,
                         items: _supplierOptions
                             .map((r) => DropdownMenuItem<String>(
                                   value: r['phone'] as String,
                                   child: Text('${r['name']} — ${r['phone']}'),
                                 ))
                             .toList(),
-                        onChanged: (v) => setState(() => _supplierCtrl.text = v ?? ''),
+                        onChanged: (v) => setState(() => _supplierPhoneCtrl.text = v ?? ''),
                         hint: const Text('Selecciona proveedor'),
                       ),
                     ],
@@ -363,7 +333,7 @@ class _PurchasesPageState extends State<PurchasesPage>
                 FilledButton.icon(
                   onPressed: _quickAddSupplierDialog,
                   icon: const Icon(Icons.person_add),
-                  label: const Text('Nuevo proveedor'),
+                  label: const Text('Nuevo'),
                 ),
               ],
             ),
@@ -417,7 +387,7 @@ class _PurchasesPageState extends State<PurchasesPage>
               ],
             ),
             const SizedBox(height: 8),
-            // Sugerencias de productos (live)
+            // Sugerencias productos
             SizedBox(
               height: 120,
               child: ListView.builder(
@@ -435,8 +405,8 @@ class _PurchasesPageState extends State<PurchasesPage>
                       icon: const Icon(Icons.add_shopping_cart),
                       onPressed: () {
                         _skuCtrl.text = sku;
-                        if (_costCtrl.text.trim().isEmpty) {
-                          _costCtrl.text = lastCost > 0 ? lastCost.toStringAsFixed(2) : '';
+                        if (_costCtrl.text.trim().isEmpty && lastCost > 0) {
+                          _costCtrl.text = lastCost.toStringAsFixed(2);
                         }
                       },
                     ),
@@ -460,8 +430,8 @@ class _PurchasesPageState extends State<PurchasesPage>
                       onPressed: () {
                         setState(() {
                           _items.removeAt(i);
-                          _recalc();
                         });
+                        _recalc();
                       },
                     ),
                   );
@@ -469,18 +439,12 @@ class _PurchasesPageState extends State<PurchasesPage>
               ),
             ),
             const Divider(),
-            // Totales
+            // Totales + Guardar
             Row(
               children: [
-                ValueListenableBuilder<int>(
-                  valueListenable: _pieces,
-                  builder: (_, v, __) => Text('Piezas: $v', style: const TextStyle(fontWeight: FontWeight.w600)),
-                ),
+                Text('Piezas: $_pieces', style: const TextStyle(fontWeight: FontWeight.w600)),
                 const SizedBox(width: 16),
-                ValueListenableBuilder<double>(
-                  valueListenable: _amount,
-                  builder: (_, v, __) => Text('Total: ${money.format(v)}', style: const TextStyle(fontWeight: FontWeight.w600)),
-                ),
+                Text('Total: ${money.format(_amount)}', style: const TextStyle(fontWeight: FontWeight.w600)),
                 const Spacer(),
                 FilledButton.icon(
                   onPressed: _savePurchase,
