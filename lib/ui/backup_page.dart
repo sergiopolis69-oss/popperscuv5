@@ -1,95 +1,110 @@
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../utils/xlsx_io.dart';
 
 class BackupPage extends StatefulWidget {
-  /// Provee los bytes del archivo XLSX a importar (ej. usando file_picker en tu app).
-  final Future<Uint8List?> Function()? onPickXlsx;
-
-  const BackupPage({super.key, this.onPickXlsx});
+  const BackupPage({super.key});
 
   @override
   State<BackupPage> createState() => _BackupPageState();
 }
 
 class _BackupPageState extends State<BackupPage> {
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
+  bool _busy = false;
 
   Future<void> _export(
-    String titulo,
-    Future<String> Function() fnExport,
+    BuildContext ctx,
+    String what,
+    Future<String> Function() fn,
   ) async {
-    _snack('Exportando $titulo…');
+    if (_busy) return;
+    setState(() => _busy = true);
     try {
-      final path = await fnExport();
-      _snack('$titulo exportado: $path');
-    } catch (e) {
-      _snack('Error al exportar $titulo: $e');
-    }
-  }
+      final savedPath = await fn();
 
-  Future<void> _import(
-    String titulo,
-    Future<void> Function(Uint8List) fnImport,
-  ) async {
-    if (widget.onPickXlsx == null) {
-      _snack('Selector de archivos no configurado');
-      return;
-    }
-    final bytes = await widget.onPickXlsx!.call();
-    if (bytes == null) {
-      _snack('Importación cancelada');
-      return;
-    }
-    _snack('Importando $titulo…');
-    try {
-      await fnImport(bytes);
-      _snack('$titulo importado');
+      // Snack con acceso rápido (copiar ruta)
+      if (mounted) {
+        ScaffoldMessenger.of(ctx).showSnackBar(
+          SnackBar(
+            content: Text('$what exportado a:\n$savedPath'),
+            duration: const Duration(seconds: 6),
+            action: SnackBarAction(
+              label: 'Copiar ruta',
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: savedPath));
+              },
+            ),
+          ),
+        );
+      }
     } catch (e) {
-      _snack('Error al importar $titulo: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(ctx).showSnackBar(
+          SnackBar(content: Text('Error exportando $what: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        const Text('Exportar a XLSX', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            FilledButton(onPressed: ()=>_export('Productos', exportProductsXlsx), child: const Text('Productos')),
-            FilledButton(onPressed: ()=>_export('Clientes', exportClientsXlsx), child: const Text('Clientes')),
-            FilledButton(onPressed: ()=>_export('Proveedores', exportSuppliersXlsx), child: const Text('Proveedores')),
-            FilledButton(onPressed: ()=>_export('Ventas', exportSalesXlsx), child: const Text('Ventas')),
-            FilledButton(onPressed: ()=>_export('Compras', exportPurchasesXlsx), child: const Text('Compras')),
-          ],
-        ),
-        const SizedBox(height: 24),
-        const Text('Importar desde XLSX', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: [
-            OutlinedButton(onPressed: ()=>_import('Productos', importProductsXlsx), child: const Text('Productos')),
-            OutlinedButton(onPressed: ()=>_import('Clientes', importClientsXlsx), child: const Text('Clientes')),
-            OutlinedButton(onPressed: ()=>_import('Proveedores', importSuppliersXlsx), child: const Text('Proveedores')),
-            OutlinedButton(onPressed: ()=>_import('Ventas', importSalesXlsx), child: const Text('Ventas')),
-            OutlinedButton(onPressed: ()=>_import('Compras', importPurchasesXlsx), child: const Text('Compras')),
-          ],
-        ),
-        const SizedBox(height: 12),
-        const Text('Nota: los archivos se guardan en la carpeta de documentos interna de la app. '
-            'Puedes mostrar un acceso directo usando el path devuelto por “Exportar”.'),
-      ],
+    final widgets = <Widget>[
+      const SizedBox(height: 12),
+      const Text(
+        'Exportar a XLSX',
+        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+      ),
+      const SizedBox(height: 8),
+      Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          FilledButton(
+            onPressed: _busy ? null : () => _export(context, 'Productos', exportProductsXlsx),
+            child: const Text('Productos'),
+          ),
+          FilledButton(
+            onPressed: _busy ? null : () => _export(context, 'Clientes', exportClientsXlsx),
+            child: const Text('Clientes'),
+          ),
+          FilledButton(
+            onPressed: _busy ? null : () => _export(context, 'Proveedores', exportSuppliersXlsx),
+            child: const Text('Proveedores'),
+          ),
+          FilledButton(
+            onPressed: _busy ? null : () => _export(context, 'Ventas', exportSalesXlsx),
+            child: const Text('Ventas'),
+          ),
+          FilledButton(
+            onPressed: _busy ? null : () => _export(context, 'Compras', exportPurchasesXlsx),
+            child: const Text('Compras'),
+          ),
+        ],
+      ),
+      const SizedBox(height: 24),
+      const Divider(),
+      const SizedBox(height: 12),
+      const Text(
+        'Importar desde XLSX',
+        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+      ),
+      const SizedBox(height: 8),
+      const Text(
+        'La importación permanece igual que la versión actual. '
+        'Cuando activemos el selector nuevamente, se mostrarán los resultados aquí.',
+      ),
+    ];
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Respaldo XLSX')),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(children: widgets),
+      ),
     );
   }
 }
