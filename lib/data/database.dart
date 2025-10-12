@@ -1,3 +1,4 @@
+// lib/data/database.dart
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart' as p;
 
@@ -6,13 +7,33 @@ class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._();
 
   static const _dbName = 'pdv.db';
-  static const _dbVersion = 7; // sube versión para aplicar migraciones
+  static const _dbVersion = 7;
 
   Database? _db;
+
+  /// Acceso principal a la BD (abre si no está abierta)
   Future<Database> get db async => _db ??= await _open();
 
+  /// Alias por compatibilidad con código existente
+  Future<Database> getDb() async => db;
+
+  /// Ruta completa del archivo .db
+  Future<String> dbFilePath() async => p.join(await getDatabasesPath(), _dbName);
+
+  /// Carpeta que contiene la BD
+  Future<String> dbFolderPath() async => await getDatabasesPath();
+
+  /// Cierra/desasocia la BD en memoria (útil antes de copiar/restaurar)
+  Future<void> reset() async {
+    final d = _db;
+    _db = null;
+    if (d != null && d.isOpen) {
+      await d.close();
+    }
+  }
+
   Future<Database> _open() async {
-    final path = p.join(await getDatabasesPath(), _dbName);
+    final path = await dbFilePath();
     return openDatabase(
       path,
       version: _dbVersion,
@@ -22,7 +43,6 @@ class DatabaseHelper {
   }
 
   Future<void> _onCreate(Database db, int version) async {
-    // productos: SKU único y requerido
     await db.execute('''
       CREATE TABLE products(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -94,7 +114,6 @@ class DatabaseHelper {
       )
     ''');
 
-    // Índices útiles
     await db.execute('CREATE INDEX idx_products_sku ON products(sku)');
     await db.execute('CREATE INDEX idx_products_name ON products(name)');
     await db.execute('CREATE INDEX idx_sales_date ON sales(date)');
@@ -102,15 +121,12 @@ class DatabaseHelper {
   }
 
   Future<void> _onUpgrade(Database db, int oldV, int newV) async {
-    // Migraciones defensivas para colocar UNIQUE sku y columna sku si faltara
     if (oldV < 6) {
-      final tables = await db.rawQuery("PRAGMA table_info(products)");
-      final hasSku = tables.any((c) => (c['name'] == 'sku'));
+      final cols = await db.rawQuery('PRAGMA table_info(products)');
+      final hasSku = cols.any((c) => c['name'] == 'sku');
       if (!hasSku) {
         await db.execute('ALTER TABLE products ADD COLUMN sku TEXT');
       }
-      // Normaliza y aplica UNIQUE:
-      // crea tabla temporal con constraint y vuelca datos
       await db.execute('''
         CREATE TABLE IF NOT EXISTS _products_new(
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,7 +140,10 @@ class DatabaseHelper {
         )
       ''');
       await db.execute('''
-        INSERT OR IGNORE INTO _products_new(id, sku, name, category, default_sale_price, last_purchase_price, last_purchase_date, stock)
+        INSERT OR IGNORE INTO _products_new(
+          id, sku, name, category, default_sale_price,
+          last_purchase_price, last_purchase_date, stock
+        )
         SELECT id,
                COALESCE(NULLIF(TRIM(sku),''), printf('MIGR-%d', id)),
                COALESCE(NULLIF(TRIM(name),''), printf('Producto %d', id)),
@@ -138,13 +157,9 @@ class DatabaseHelper {
     }
 
     if (oldV < 7) {
-      // Asegura REAL en last_purchase_price
-      await db.execute('UPDATE products SET last_purchase_price = CAST(IFNULL(last_purchase_price,0) AS REAL)');
+      await db.execute(
+        'UPDATE products SET last_purchase_price = CAST(IFNULL(last_purchase_price,0) AS REAL)',
+      );
     }
   }
 }
-
-// --------------------------------------------------------
-// Helper global opcional para acceder a la base de datos
-// --------------------------------------------------------
-Future<Database> getDb() => DatabaseHelper.instance.db;
