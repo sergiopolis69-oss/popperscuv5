@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
-
+import 'package:open_filex/open_filex.dart'; // 👈 nuevo
 import '../utils/xlsx_io.dart';
 
 class BackupPage extends StatefulWidget {
@@ -61,7 +61,6 @@ class _BackupPageState extends State<BackupPage> {
             TextButton(
               onPressed: () {
                 Clipboard.setData(ClipboardData(text: path));
-                Navigator.of(context).pop();
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('Ruta copiada al portapapeles')),
                 );
@@ -69,8 +68,20 @@ class _BackupPageState extends State<BackupPage> {
               child: const Text('Copiar ruta'),
             ),
             TextButton(
+              onPressed: () async {
+                Navigator.of(context).pop();
+                final result = await OpenFilex.open(path);
+                if (result.type != ResultType.done && mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('No se pudo abrir el archivo: ${result.message}')),
+                  );
+                }
+              },
+              child: const Text('Abrir archivo'),
+            ),
+            TextButton(
               onPressed: () => Navigator.of(context).pop(),
-              child: const Text('OK'),
+              child: const Text('Cerrar'),
             ),
           ],
         ),
@@ -96,7 +107,6 @@ class _BackupPageState extends State<BackupPage> {
 
       if (!mounted) return;
 
-      // Soportamos ImportReport (definida en xlsx_io.dart)
       String summary;
       if (result is ImportReport) {
         final errCount = result.errors.length;
@@ -272,11 +282,7 @@ class _BackupPageState extends State<BackupPage> {
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: expButtons,
-                ),
+                Wrap(spacing: 8, runSpacing: 8, children: expButtons),
                 const SizedBox(height: 24),
                 const Divider(),
                 const SizedBox(height: 24),
@@ -285,20 +291,13 @@ class _BackupPageState extends State<BackupPage> {
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: impButtons,
-                ),
+                Wrap(spacing: 8, runSpacing: 8, children: impButtons),
                 const SizedBox(height: 24),
-                const Text(
-                  'Notas:',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
+                const Text('Notas:', style: TextStyle(fontWeight: FontWeight.bold)),
                 const SizedBox(height: 8),
                 const Text(
                     '• Los archivos se guardan en el directorio de documentos de la app. '
-                    'Usa “Copiar ruta” para acceder desde un explorador de archivos.\n'
+                    'Puedes abrirlos directamente con el botón “Abrir archivo”.\n'
                     '• La importación valida SKU único (productos) y teléfono (clientes/proveedores).'),
               ],
             ),
