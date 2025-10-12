@@ -41,52 +41,61 @@ class ImportReport {
 /// ---------- Utilidades internas ----------
 
 ex.Sheet _sheet(ex.Excel book, String name) {
-  // crea u obtiene la hoja
-  if (!book.sheets.containsKey(name)) {
-    book.addSheet(name);
-  }
-  return book.sheets[name]!;
+  // En excel 4.x se crea/obtiene con el operador []
+  return book[name];
 }
 
-// Atajos de celda (evita conflictos de TextSpan de Flutter):
+// Atajos de escritura (constructores posicionales en excel 4.x)
 ex.CellValue _tx(String s) => ex.TextCellValue(s);
 ex.CellValue _dbl(num n) => ex.DoubleCellValue(n.toDouble());
 ex.CellValue _int(int n) => ex.IntCellValue(n);
 
-String _cellAsString(ex.CellValue? v) {
+// Helpers para leer desde ex.Data? (no desde CellValue directamente)
+String _dAsString(ex.Data? d) {
+  final v = d?.value;
   if (v == null) return '';
-  if (v is ex.TextCellValue) return v.value.text;
-  return v.value.toString();
+  if (v is ex.TextCellValue) return v.value?.text ?? '';
+  if (v is ex.IntCellValue) return v.value.toString();
+  if (v is ex.DoubleCellValue) return v.value.toString();
+  if (v is ex.DateCellValue) {
+    final y = v.year.toString().padLeft(4, '0');
+    final m = v.month.toString().padLeft(2, '0');
+    final dd = v.day.toString().padLeft(2, '0');
+    return '$y-$m-$dd';
+  }
+  return v.toString();
 }
 
-double _cellAsDouble(ex.CellValue? v) {
+double _dAsDouble(ex.Data? d) {
+  final v = d?.value;
   if (v == null) return 0.0;
   if (v is ex.DoubleCellValue) return v.value;
   if (v is ex.IntCellValue) return v.value.toDouble();
   if (v is ex.TextCellValue) {
-    final s = v.value.text.replaceAll(',', '.');
+    final s = (v.value?.text ?? '').replaceAll(',', '.');
     return double.tryParse(s) ?? 0.0;
   }
-  return double.tryParse(v.value.toString()) ?? 0.0;
+  return double.tryParse(v.toString()) ?? 0.0;
 }
 
-int _cellAsInt(ex.CellValue? v) {
+int _dAsInt(ex.Data? d) {
+  final v = d?.value;
   if (v == null) return 0;
   if (v is ex.IntCellValue) return v.value;
   if (v is ex.DoubleCellValue) return v.value.toInt();
-  if (v is ex.TextCellValue) return int.tryParse(v.value.text) ?? 0;
-  return int.tryParse(v.value.toString()) ?? 0;
+  if (v is ex.TextCellValue) return int.tryParse(v.value?.text ?? '') ?? 0;
+  return int.tryParse(v.toString()) ?? 0;
 }
 
-DateTime? _cellAsDate(ex.CellValue? v) {
+DateTime? _dAsDate(ex.Data? d) {
+  final v = d?.value;
   if (v == null) return null;
   if (v is ex.DateCellValue) {
     return DateTime(v.year, v.month, v.day);
   }
   if (v is ex.TextCellValue) {
-    final s = v.value.text.trim();
+    final s = (v.value?.text ?? '').trim();
     if (s.isEmpty) return null;
-    // intentar parse ISO / yyyy-MM-dd
     try {
       return DateTime.parse(s);
     } catch (_) {
@@ -95,6 +104,8 @@ DateTime? _cellAsDate(ex.CellValue? v) {
   }
   return null;
 }
+
+ex.Data? _cell(List<ex.Data?> row, int idx) => (idx >= 0 && idx < row.length) ? row[idx] : null;
 
 /// Devuelve el primer entero de una consulta COUNT(*)
 int? _firstInt(List<Map<String, Object?>> rows) {
@@ -313,19 +324,18 @@ Future<ImportReport> importProductsXlsx(Uint8List bytes) async {
   final sh = book.sheets['products'];
   if (sh == null) throw 'Hoja "products" no encontrada';
 
-  // encabezados esperados:
-  // sku | name | category | default_sale_price | last_purchase_price | stock
   var rep = const ImportReport();
   final errors = <String>[];
 
+  // Esperado: sku | name | category | default_sale_price | last_purchase_price | stock
   for (var i = 1; i < sh.rows.length; i++) {
     final row = sh.rows[i];
-    final sku = _cellAsString(row.elementAtOrNull(0));
-    final name = _cellAsString(row.elementAtOrNull(1));
-    final category = _cellAsString(row.elementAtOrNull(2));
-    final dsp = _cellAsDouble(row.elementAtOrNull(3));
-    final lpp = _cellAsDouble(row.elementAtOrNull(4));
-    final stock = _cellAsInt(row.elementAtOrNull(5));
+    final sku = _dAsString(_cell(row, 0));
+    final name = _dAsString(_cell(row, 1));
+    final category = _dAsString(_cell(row, 2));
+    final dsp = _dAsDouble(_cell(row, 3));
+    final lpp = _dAsDouble(_cell(row, 4));
+    final stock = _dAsInt(_cell(row, 5));
 
     if (sku.isEmpty || name.isEmpty) {
       rep = rep.copyWith(skipped: rep.skipped + 1);
@@ -384,19 +394,16 @@ Future<ImportReport> importClientsXlsx(Uint8List bytes) async {
 
   for (var i = 1; i < sh.rows.length; i++) {
     final r = sh.rows[i];
-    final phone = _cellAsString(r.elementAtOrNull(0));
-    final name = _cellAsString(r.elementAtOrNull(1));
-    final address = _cellAsString(r.elementAtOrNull(2));
+    final phone = _dAsString(_cell(r, 0));
+    final name = _dAsString(_cell(r, 1));
+    final address = _dAsString(_cell(r, 2));
     if (phone.isEmpty) {
       rep = rep.copyWith(skipped: rep.skipped + 1);
       errors.add('Línea ${i + 1}: phone obligatorio');
       continue;
     }
     try {
-      final exist = _firstInt(
-            await db.rawQuery('SELECT COUNT(*) FROM customers WHERE phone=?', [phone]),
-          ) ??
-          0;
+      final exist = _firstInt(await db.rawQuery('SELECT COUNT(*) FROM customers WHERE phone=?', [phone])) ?? 0;
       if (exist == 0) {
         await db.insert(
           'customers',
@@ -433,9 +440,9 @@ Future<ImportReport> importSuppliersXlsx(Uint8List bytes) async {
 
   for (var i = 1; i < sh.rows.length; i++) {
     final r = sh.rows[i];
-    final phone = _cellAsString(r.elementAtOrNull(0));
-    final name = _cellAsString(r.elementAtOrNull(1));
-    final address = _cellAsString(r.elementAtOrNull(2));
+    final phone = _dAsString(_cell(r, 0));
+    final name = _dAsString(_cell(r, 1));
+    final address = _dAsString(_cell(r, 2));
     if (phone.isEmpty) {
       rep = rep.copyWith(skipped: rep.skipped + 1);
       errors.add('Línea ${i + 1}: phone obligatorio');
@@ -478,19 +485,17 @@ Future<ImportReport> importSalesXlsx(Uint8List bytes) async {
   var rep = const ImportReport();
   final errors = <String>[];
 
-  // Mapear ventas por ID externo
-  // Encabezado: id | customer_phone | payment_method | place | shipping_cost | discount | date
-  final tx = await db.transaction((txn) async {
-    // primero, insertar/actualizar sales
+  await db.transaction((txn) async {
+    // sales: id | customer_phone | payment_method | place | shipping_cost | discount | date
     for (var i = 1; i < sh.rows.length; i++) {
       final r = sh.rows[i];
-      final extId = _cellAsInt(r.elementAtOrNull(0));
-      final phone = _cellAsString(r.elementAtOrNull(1));
-      final pay = _cellAsString(r.elementAtOrNull(2));
-      final place = _cellAsString(r.elementAtOrNull(3));
-      final ship = _cellAsDouble(r.elementAtOrNull(4));
-      final disc = _cellAsDouble(r.elementAtOrNull(5));
-      final date = _cellAsString(r.elementAtOrNull(6));
+      final extId = _dAsInt(_cell(r, 0));
+      final phone = _dAsString(_cell(r, 1));
+      final pay = _dAsString(_cell(r, 2));
+      final place = _dAsString(_cell(r, 3));
+      final ship = _dAsDouble(_cell(r, 4));
+      final disc = _dAsDouble(_cell(r, 5));
+      final date = _dAsString(_cell(r, 6));
 
       try {
         final exist = _firstInt(await txn.rawQuery('SELECT id FROM sales WHERE id=?', [extId]));
@@ -532,14 +537,14 @@ Future<ImportReport> importSalesXlsx(Uint8List bytes) async {
       }
     }
 
-    // limpiar e insertar sale_items por sale_id
+    // sale_items: sale_id | product_sku | quantity | unit_price
     await txn.delete('sale_items');
     for (var i = 1; i < shi.rows.length; i++) {
       final r = shi.rows[i];
-      final saleId = _cellAsInt(r.elementAtOrNull(0));
-      final sku = _cellAsString(r.elementAtOrNull(1));
-      final qty = _cellAsInt(r.elementAtOrNull(2));
-      final unit = _cellAsDouble(r.elementAtOrNull(3));
+      final saleId = _dAsInt(_cell(r, 0));
+      final sku = _dAsString(_cell(r, 1));
+      final qty = _dAsInt(_cell(r, 2));
+      final unit = _dAsDouble(_cell(r, 3));
 
       if (sku.isEmpty || qty <= 0) {
         rep = rep.copyWith(skipped: rep.skipped + 1);
@@ -583,17 +588,15 @@ Future<ImportReport> importPurchasesXlsx(Uint8List bytes) async {
     // purchases: id | folio | supplier_phone | date
     for (var i = 1; i < sh.rows.length; i++) {
       final r = sh.rows[i];
-      final id = _cellAsInt(r.elementAtOrNull(0));
-      final folio = _cellAsString(r.elementAtOrNull(1));
-      final supplierPhone = _cellAsString(r.elementAtOrNull(2));
-      final date = _cellAsString(r.elementAtOrNull(3));
+      final id = _dAsInt(_cell(r, 0));
+      final folio = _dAsString(_cell(r, 1));
+      final supplierPhone = _dAsString(_cell(r, 2));
+      final date = _dAsString(_cell(r, 3));
 
       try {
         int? supplierId;
         if (supplierPhone.isNotEmpty) {
-          supplierId = _firstInt(
-            await txn.rawQuery('SELECT id FROM suppliers WHERE phone=?', [supplierPhone]),
-          );
+          supplierId = _firstInt(await txn.rawQuery('SELECT id FROM suppliers WHERE phone=?', [supplierPhone]));
         }
 
         final exist = _firstInt(await txn.rawQuery('SELECT id FROM purchases WHERE id=?', [id]));
@@ -623,14 +626,14 @@ Future<ImportReport> importPurchasesXlsx(Uint8List bytes) async {
       }
     }
 
-    // items: purchase_id | product_sku | quantity | unit_cost
+    // purchase_items: purchase_id | product_sku | quantity | unit_cost
     await txn.delete('purchase_items');
     for (var i = 1; i < shi.rows.length; i++) {
       final r = shi.rows[i];
-      final pid = _cellAsInt(r.elementAtOrNull(0));
-      final sku = _cellAsString(r.elementAtOrNull(1));
-      final qty = _cellAsInt(r.elementAtOrNull(2));
-      final cost = _cellAsDouble(r.elementAtOrNull(3));
+      final pid = _dAsInt(_cell(r, 0));
+      final sku = _dAsString(_cell(r, 1));
+      final qty = _dAsInt(_cell(r, 2));
+      final cost = _dAsDouble(_cell(r, 3));
 
       if (sku.isEmpty || qty <= 0) {
         rep = rep.copyWith(skipped: rep.skipped + 1);
