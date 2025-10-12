@@ -5,7 +5,7 @@ import 'package:excel/excel.dart';
 import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
-import '../data/db.dart' as appdb;
+import '../data/database.dart' as appdb;
 
 /// ===== Helpers de Excel (CellValue) =====
 
