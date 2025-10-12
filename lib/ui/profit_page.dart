@@ -3,11 +3,10 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:sqflite/sqflite.dart';
-import '../db/database.dart';
+import '../data/database.dart';
 
 class ProfitPage extends StatefulWidget {
   const ProfitPage({super.key});
-
   @override
   State<ProfitPage> createState() => _ProfitPageState();
 }
@@ -39,8 +38,8 @@ class _ProfitPageState extends State<ProfitPage> {
         final start = DateTime(now.year, now.month, now.day);
         return DateTimeRange(start: start, end: start.add(const Duration(days: 1)));
       case Period.week:
-        final dow = now.weekday;
-        final start = DateTime(now.year, now.month, now.day).subtract(Duration(days: dow - 1));
+        final start = DateTime(now.year, now.month, now.day)
+            .subtract(Duration(days: now.weekday - 1));
         return DateTimeRange(start: start, end: start.add(const Duration(days: 7)));
       case Period.month:
         final start = DateTime(now.year, now.month, 1);
@@ -85,7 +84,6 @@ class _ProfitPageState extends State<ProfitPage> {
     final r = _rangeActual();
     final startIso = r.start.toIso8601String();
     final endIso = r.end.toIso8601String();
-
     final Database db = await DatabaseHelper.instance.db;
 
     final rows = await db.rawQuery('''
@@ -205,23 +203,18 @@ class _ProfitPageState extends State<ProfitPage> {
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                   const SizedBox(height: 12),
-                  _kv('Ventas netas (sin envío)', _money.format(_ventasNetasSinEnvio),
-                      bold: true),
+                  _kv('Ventas netas (sin envío)', _money.format(_ventasNetasSinEnvio), bold: true),
                   _kv('Descuento total', '- ${_money.format(_totalDescuento)}'),
                   _kv('Envío cobrado', _money.format(_totalEnvio)),
                   const Divider(height: 24),
-                  _kv('Utilidad', _money.format(_utilidad),
-                      big: true, bold: true),
-                  _kv('% utilidad sobre ventas netas',
-                      '${pct.toStringAsFixed(2)}%', big: true, bold: true),
+                  _kv('Utilidad', _money.format(_utilidad), big: true, bold: true),
+                  _kv('% utilidad sobre ventas netas', '${pct.toStringAsFixed(2)}%', big: true, bold: true),
                   const SizedBox(height: 16),
                   Text('Ventas por método de pago',
                       style: Theme.of(context).textTheme.titleMedium),
                   const SizedBox(height: 6),
                   ..._ventasPorMetodo.entries.map(
-                    (e) => _kv(
-                        '• ${e.key.isEmpty ? "(sin método)" : e.key}',
-                        _money.format(e.value)),
+                    (e) => _kv('• ${e.key.isEmpty ? "(sin método)" : e.key}', _money.format(e.value)),
                   ),
                   const SizedBox(height: 24),
                   FilledButton.icon(
@@ -239,9 +232,8 @@ class _ProfitPageState extends State<ProfitPage> {
     final base = big
         ? Theme.of(context).textTheme.titleLarge
         : Theme.of(context).textTheme.bodyLarge;
-    final style =
-        (bold ? base?.copyWith(fontWeight: FontWeight.w700) : base) ??
-            const TextStyle();
+    final style = (bold ? base?.copyWith(fontWeight: FontWeight.w700) : base) ??
+        const TextStyle();
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
