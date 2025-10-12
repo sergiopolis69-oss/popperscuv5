@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:sqflite/sqflite.dart';
-import '../data/db.dart' as appdb;
+import '../data/database.dart' as appdb;
 
 /// Página de Compras:
 /// - Selector de proveedor (lista + botón "nuevo").
