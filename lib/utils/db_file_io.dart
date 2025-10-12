@@ -1,62 +1,65 @@
 // lib/utils/db_file_io.dart
 import 'dart:io';
 import 'package:path/path.dart' as p;
-import 'package:sqflite/sqflite.dart';
-import 'package:path_provider/path_provider.dart';
-import '../db/database.dart';
+import '../data/database.dart';
 
-/// Copia el archivo SQLite (pdv.db) a Documentos de la app y devuelve la ruta del respaldo.
-Future<String> backupDbToDocuments() async {
-  final dbPathBase = await getDatabasesPath();
-  final src = File(p.join(dbPathBase, 'pdv.db'));
-
-  if (!await src.exists()) {
-    throw Exception('No se encontró pdv.db en $dbPathBase');
+/// RESPALDO: crea una copia del archivo SQLite actual
+/// dentro de la carpeta 'backups' junto a la BD.
+/// Devuelve la ruta completa del archivo creado.
+Future<String> exportToExcel() async {
+  final helper = DatabaseHelper.instance;
+  final dbPath = await helper.dbFilePath();
+  final folder = await helper.dbFolderPath();
+  final backupsDir = Directory(p.join(folder, 'backups'));
+  if (!await backupsDir.exists()) {
+    await backupsDir.create(recursive: true);
   }
 
-  // Cierra la conexión si está abierta para asegurar flush de disco.
-  try {
-    final db = await DatabaseHelper.instance.db;
-    await db.close();
-  } catch (_) {}
-  DatabaseHelper.instance.reset();
+  // Cerrar antes de copiar
+  await helper.reset();
 
-  final docsDir = await getApplicationDocumentsDirectory();
-  final ts = DateTime.now();
-  final fileName =
-      'pdv-backup-${ts.year.toString().padLeft(4, '0')}${ts.month.toString().padLeft(2, '0')}${ts.day.toString().padLeft(2, '0')}-${ts.hour.toString().padLeft(2, '0')}${ts.minute.toString().padLeft(2, '0')}${ts.second.toString().padLeft(2, '0')}.db';
-  final dstPath = p.join(docsDir.path, fileName);
+  final ts = DateTime.now()
+      .toIso8601String()
+      .replaceAll(':', '')
+      .replaceAll('.', '')
+      .replaceAll('-', '');
+  final destPath = p.join(backupsDir.path, 'pdv_backup_$ts.db');
+  await File(dbPath).copy(destPath);
 
-  await src.copy(dstPath);
-  return dstPath;
+  // Reabrir para seguir operando
+  await helper.db;
+
+  return destPath;
 }
 
-/// Restaura el archivo SQLite desde [sourceFilePath] y reemplaza pdv.db.
-Future<void> restoreDbFromFile(String sourceFilePath) async {
-  final src = File(sourceFilePath);
-  if (!await src.exists()) {
-    throw Exception('El archivo no existe: $sourceFilePath');
+/// RESTAURAR: toma el archivo .db más reciente de 'backups'
+/// y lo copia sobre la BD oficial de la app.
+/// Devuelve la ruta final de la BD.
+Future<String> importFromExcel() async {
+  final helper = DatabaseHelper.instance;
+  final folder = await helper.dbFolderPath();
+  final backupsDir = Directory(p.join(folder, 'backups'));
+  if (!await backupsDir.exists()) {
+    throw Exception('No hay carpeta de respaldos');
   }
 
-  final dbPathBase = await getDatabasesPath();
-  final dstPath = p.join(dbPathBase, 'pdv.db');
+  final backups = backupsDir
+      .listSync()
+      .whereType<File>()
+      .where((f) => f.path.toLowerCase().endsWith('.db'))
+      .toList()
+    ..sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
 
-  try {
-    final db = await DatabaseHelper.instance.db;
-    await db.close();
-  } catch (_) {}
-  DatabaseHelper.instance.reset();
-
-  await Directory(dbPathBase).create(recursive: true);
-  final dst = File(dstPath);
-  if (await dst.exists()) {
-    await dst.delete();
+  if (backups.isEmpty) {
+    throw Exception('No se encontraron archivos de respaldo');
   }
-  await src.copy(dstPath);
-}
 
-/// Devuelve la ruta actual de pdv.db
-Future<String> currentDbPath() async {
-  final dbPathBase = await getDatabasesPath();
-  return p.join(dbPathBase, 'pdv.db');
+  final latest = backups.first;
+  final dbPath = await helper.dbFilePath();
+
+  await helper.reset();
+  await File(latest.path).copy(dbPath);
+  await helper.db;
+
+  return dbPath;
 }
