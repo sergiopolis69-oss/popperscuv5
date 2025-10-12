@@ -11,19 +11,19 @@ class DatabaseHelper {
 
   Database? _db;
 
-  /// Acceso principal a la BD (abre si no está abierta)
+  /// Acceso principal a la base de datos
   Future<Database> get db async => _db ??= await _open();
 
-  /// Alias por compatibilidad con código existente
+  /// Alias por compatibilidad
   Future<Database> getDb() async => db;
 
   /// Ruta completa del archivo .db
   Future<String> dbFilePath() async => p.join(await getDatabasesPath(), _dbName);
 
-  /// Carpeta que contiene la BD
+  /// Carpeta que contiene la base de datos
   Future<String> dbFolderPath() async => await getDatabasesPath();
 
-  /// Cierra/desasocia la BD en memoria (útil antes de copiar/restaurar)
+  /// Reinicia/cierra la conexión a la base de datos (para respaldo/restauración)
   Future<void> reset() async {
     final d = _db;
     _db = null;
@@ -43,6 +43,7 @@ class DatabaseHelper {
   }
 
   Future<void> _onCreate(Database db, int version) async {
+    // Productos (SKU único y obligatorio)
     await db.execute('''
       CREATE TABLE products(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,6 +57,7 @@ class DatabaseHelper {
       )
     ''');
 
+    // Clientes
     await db.execute('''
       CREATE TABLE customers(
         phone TEXT PRIMARY KEY,
@@ -64,6 +66,7 @@ class DatabaseHelper {
       )
     ''');
 
+    // Proveedores
     await db.execute('''
       CREATE TABLE suppliers(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,6 +76,7 @@ class DatabaseHelper {
       )
     ''');
 
+    // Ventas
     await db.execute('''
       CREATE TABLE sales(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,6 +89,7 @@ class DatabaseHelper {
       )
     ''');
 
+    // Detalles de ventas
     await db.execute('''
       CREATE TABLE sale_items(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,6 +100,7 @@ class DatabaseHelper {
       )
     ''');
 
+    // Compras
     await db.execute('''
       CREATE TABLE purchases(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -104,6 +110,7 @@ class DatabaseHelper {
       )
     ''');
 
+    // Detalles de compras
     await db.execute('''
       CREATE TABLE purchase_items(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,6 +121,7 @@ class DatabaseHelper {
       )
     ''');
 
+    // Índices
     await db.execute('CREATE INDEX idx_products_sku ON products(sku)');
     await db.execute('CREATE INDEX idx_products_name ON products(name)');
     await db.execute('CREATE INDEX idx_sales_date ON sales(date)');
@@ -121,6 +129,7 @@ class DatabaseHelper {
   }
 
   Future<void> _onUpgrade(Database db, int oldV, int newV) async {
+    // Migraciones seguras
     if (oldV < 6) {
       final cols = await db.rawQuery('PRAGMA table_info(products)');
       final hasSku = cols.any((c) => c['name'] == 'sku');
@@ -163,3 +172,11 @@ class DatabaseHelper {
     }
   }
 }
+
+/// ------------------------------------------------------
+/// Compatibilidad con código existente tipo `appdb.getDb()`
+/// ------------------------------------------------------
+
+import 'package:sqflite/sqflite.dart';
+
+Future<Database> getDb() => DatabaseHelper.instance.db;
