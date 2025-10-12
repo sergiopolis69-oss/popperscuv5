@@ -143,3 +143,8 @@ class DatabaseHelper {
     }
   }
 }
+
+// --------------------------------------------------------
+// Helper global opcional para acceder a la base de datos
+// --------------------------------------------------------
+Future<Database> getDb() => DatabaseHelper.instance.db;
