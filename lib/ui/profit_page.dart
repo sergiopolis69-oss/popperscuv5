@@ -1,24 +1,30 @@
+// lib/ui/profit_page.dart
+import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:sqflite/sqflite.dart';
-import '../data/database.dart';
-
-enum ProfitRange { hoy, semana, mes, anio, personalizado }
+import '../db/database.dart';
 
 class ProfitPage extends StatefulWidget {
   const ProfitPage({super.key});
+
   @override
   State<ProfitPage> createState() => _ProfitPageState();
 }
 
-class _ProfitPageState extends State<ProfitPage> {
-  ProfitRange _range = ProfitRange.hoy;
-  DateTimeRange? _custom;
+enum Period { today, week, month, year, custom }
 
-  double _totalVentas = 0; // (Σ pv*qty) - Σ descuentos + Σ envío  (solo informativo)
-  double _totalEnvio = 0;
-  double _totalDesc = 0;
-  double _utilidad = 0;
-  List<Map<String,dynamic>> _porMetodo = [];
+class _ProfitPageState extends State<ProfitPage> {
+  final _money = NumberFormat.currency(locale: 'es_MX', symbol: '\$');
+  Period _period = Period.today;
+  DateTimeRange? _customRange;
+
+  double _ventasNetasSinEnvio = 0.0;
+  double _totalEnvio = 0.0;
+  double _totalDescuento = 0.0;
+  double _utilidad = 0.0;
+  final Map<String, double> _ventasPorMetodo = {};
+  bool _loading = false;
 
   @override
   void initState() {
@@ -26,199 +32,249 @@ class _ProfitPageState extends State<ProfitPage> {
     _load();
   }
 
-  (DateTime from, DateTime to) _calcRange() {
+  DateTimeRange _rangeActual() {
     final now = DateTime.now();
-    switch (_range) {
-      case ProfitRange.hoy:
-        final from = DateTime(now.year, now.month, now.day);
-        final to = from.add(const Duration(days: 1));
-        return (from, to);
-      case ProfitRange.semana:
-        final start = DateTime(now.year, now.month, now.day).subtract(Duration(days: now.weekday - 1));
-        return (start, start.add(const Duration(days: 7)));
-      case ProfitRange.mes:
-        final from = DateTime(now.year, now.month, 1);
-        final to = DateTime(now.year, now.month + 1, 1);
-        return (from, to);
-      case ProfitRange.anio:
-        final from = DateTime(now.year, 1, 1);
-        final to = DateTime(now.year + 1, 1, 1);
-        return (from, to);
-      case ProfitRange.personalizado:
-        if (_custom != null) return (_custom!.start, _custom!.end);
-        final from = DateTime(now.year, now.month, now.day);
-        return (from, from.add(const Duration(days: 1)));
+    switch (_period) {
+      case Period.today:
+        final start = DateTime(now.year, now.month, now.day);
+        return DateTimeRange(start: start, end: start.add(const Duration(days: 1)));
+      case Period.week:
+        final dow = now.weekday;
+        final start = DateTime(now.year, now.month, now.day).subtract(Duration(days: dow - 1));
+        return DateTimeRange(start: start, end: start.add(const Duration(days: 7)));
+      case Period.month:
+        final start = DateTime(now.year, now.month, 1);
+        final end = (now.month == 12)
+            ? DateTime(now.year + 1, 1, 1)
+            : DateTime(now.year, now.month + 1, 1);
+        return DateTimeRange(start: start, end: end);
+      case Period.year:
+        final start = DateTime(now.year, 1, 1);
+        final end = DateTime(now.year + 1, 1, 1);
+        return DateTimeRange(start: start, end: end);
+      case Period.custom:
+        return _customRange ??
+            DateTimeRange(
+              start: DateTime(now.year, now.month, now.day),
+              end: DateTime(now.year, now.month, now.day).add(const Duration(days: 1)),
+            );
+    }
+  }
+
+  Future<void> _pickRange() async {
+    final now = DateTime.now();
+    final picked = await showDateRangePicker(
+      context: context,
+      firstDate: DateTime(now.year - 5),
+      lastDate: DateTime(now.year + 1),
+      initialDateRange: _rangeActual(),
+      locale: const Locale('es', 'MX'),
+    );
+    if (picked != null) {
+      setState(() {
+        _period = Period.custom;
+        _customRange = picked;
+      });
+      await _load();
     }
   }
 
   Future<void> _load() async {
-    final (from, to) = _calcRange();
-    final fromIso = from.toIso8601String();
-    final toIso = to.toIso8601String();
-    final db = await DatabaseHelper.instance.db;
+    setState(() => _loading = true);
 
-    // Ventas en rango (para descuentos y envío)
-    final sales = await db.rawQuery('''
-      SELECT id, payment_method, 
-             CAST(IFNULL(discount,0) AS REAL)    AS discount,
-             CAST(IFNULL(shipping_cost,0) AS REAL) AS shipping_cost
-      FROM sales
-      WHERE date >= ? AND date < ?
-    ''', [fromIso, toIso]);
+    final r = _rangeActual();
+    final startIso = r.start.toIso8601String();
+    final endIso = r.end.toIso8601String();
 
-    // Items con costo (forzado a REAL)
-    final items = await db.rawQuery('''
-      SELECT si.sale_id,
-             CAST(si.quantity AS INTEGER)           AS quantity,
-             CAST(si.unit_price AS REAL)            AS unit_price,
-             CAST(IFNULL(p.last_purchase_price,0) AS REAL) AS cost
-      FROM sale_items si
-      JOIN sales s ON s.id = si.sale_id
-      JOIN products p ON p.id = si.product_id
+    final Database db = await DatabaseHelper.instance.db;
+
+    final rows = await db.rawQuery('''
+      SELECT s.id AS sale_id,
+             s.payment_method,
+             s.shipping_cost,
+             s.discount,
+             s.date,
+             si.quantity,
+             si.unit_price,
+             p.last_purchase_price
+      FROM sales s
+      JOIN sale_items si ON si.sale_id = s.id
+      JOIN products p    ON p.id = si.product_id
       WHERE s.date >= ? AND s.date < ?
-    ''', [fromIso, toIso]);
+    ''', [startIso, endIso]);
 
-    double subtotalVentas = 0; // Σ pv*qty
-    double costoTotal     = 0; // Σ cost*qty
-    for (final it in items) {
-      final q   = (it['quantity'] as num).toInt();
-      final pv  = (it['unit_price'] as num).toDouble();
-      final cst = (it['cost'] as num).toDouble();
-      subtotalVentas += pv * q;
-      costoTotal     += cst * q;
+    final Map<int, _SaleAcc> bySale = {};
+    for (final m in rows) {
+      final saleId = (m['sale_id'] as num).toInt();
+      final qty = (m['quantity'] as num).toInt();
+      final unitPrice = (m['unit_price'] as num).toDouble();
+      final unitCost = (m['last_purchase_price'] as num?)?.toDouble() ?? 0.0;
+      final shipping = (m['shipping_cost'] as num?)?.toDouble() ?? 0.0;
+      final discount = (m['discount'] as num?)?.toDouble() ?? 0.0;
+      final pay = (m['payment_method'] ?? '').toString();
+
+      bySale.putIfAbsent(
+        saleId,
+        () => _SaleAcc(shipping: shipping, discount: discount, paymentMethod: pay),
+      );
+      bySale[saleId]!.items.add(_ItemAcc(
+        qty: qty,
+        unitPrice: unitPrice,
+        unitCost: unitCost,
+        subtotal: unitPrice * qty,
+      ));
     }
 
-    double descTotal = 0;
-    double envioTotal = 0;
-    for (final s in sales) {
-      descTotal  += (s['discount'] as num).toDouble();
-      envioTotal += (s['shipping_cost'] as num).toDouble();
+    double ventasNetasSinEnvio = 0.0;
+    double totalEnvio = 0.0;
+    double totalDescuento = 0.0;
+    double utilidad = 0.0;
+    final Map<String, double> porMetodo = {};
+
+    for (final s in bySale.values) {
+      final subtotalVenta = s.items.fold<double>(0.0, (a, b) => a + b.subtotal);
+      final ventaNetaSinEnvio = max(0, subtotalVenta - s.discount);
+      ventasNetasSinEnvio += ventaNetaSinEnvio;
+      totalEnvio += s.shipping;
+      totalDescuento += s.discount;
+
+      for (final it in s.items) {
+        final propor = subtotalVenta > 0 ? (it.subtotal / subtotalVenta) : 0.0;
+        final descItem = s.discount * propor;
+        final ganancia = (it.unitPrice - it.unitCost) * it.qty - descItem;
+        utilidad += ganancia;
+      }
+
+      porMetodo[s.paymentMethod] =
+          (porMetodo[s.paymentMethod] ?? 0) + ventaNetaSinEnvio;
     }
-
-    final utilidad = subtotalVentas - descTotal - costoTotal; // envío excluido
-
-    // ---- Desglose por método de pago (sin duplicaciones) ----
-    // 1) Subtotal por venta (Σ pv*qty por sale_id)
-    final subtotalesPorVenta = await db.rawQuery('''
-      SELECT si.sale_id, SUM(CAST(si.quantity AS REAL) * CAST(si.unit_price AS REAL)) AS sub
-      FROM sale_items si
-      JOIN sales s ON s.id = si.sale_id
-      WHERE s.date >= ? AND s.date < ?
-      GROUP BY si.sale_id
-    ''', [fromIso, toIso]);
-
-    // Map rápido sale_id -> subtotal items
-    final Map<int,double> subPorVenta = {
-      for (final r in subtotalesPorVenta)
-        (r['sale_id'] as int): ((r['sub'] as num?)?.toDouble() ?? 0.0)
-    };
-
-    // 2) Agrupar por método sumando: subtotal_items, descuentos, envío
-    final Map<String, Map<String,double>> byMethod = {};
-    for (final s in sales) {
-      final id = s['id'] as int;
-      final method = (s['payment_method'] ?? '—').toString();
-      byMethod.putIfAbsent(method, ()=> {'subtotal':0,'descuento':0,'envio':0,'total':0});
-      final m = byMethod[method]!;
-      final sub = subPorVenta[id] ?? 0.0;
-      final dsc = (s['discount'] as num).toDouble();
-      final env = (s['shipping_cost'] as num).toDouble();
-      m['subtotal']  = (m['subtotal'] ?? 0) + sub;
-      m['descuento'] = (m['descuento'] ?? 0) + dsc;
-      m['envio']     = (m['envio'] ?? 0) + env;
-      m['total']     = (m['total'] ?? 0) + (sub - dsc + env);
-    }
-
-    final metodoLista = byMethod.entries.map((e) => {
-      'payment_method': e.key,
-      'subtotal': e.value['subtotal'] ?? 0,
-      'descuento': e.value['descuento'] ?? 0,
-      'envio': e.value['envio'] ?? 0,
-      'total': e.value['total'] ?? 0,
-    }).toList();
 
     setState(() {
-      _totalVentas = subtotalVentas - descTotal + envioTotal; // solo informativo
-      _totalEnvio  = envioTotal;
-      _totalDesc   = descTotal;
-      _utilidad    = utilidad;
-      _porMetodo   = metodoLista;
+      _ventasNetasSinEnvio = ventasNetasSinEnvio;
+      _totalEnvio = totalEnvio;
+      _totalDescuento = totalDescuento;
+      _utilidad = utilidad;
+      _ventasPorMetodo
+        ..clear()
+        ..addAll(porMetodo);
+      _loading = false;
     });
-  }
-
-  Future<void> _pickCustomRange() async {
-    final now = DateTime.now();
-    final initial = DateTimeRange(
-      start: DateTime(now.year, now.month, now.day),
-      end: DateTime(now.year, now.month, now.day).add(const Duration(days: 1)),
-    );
-    final picked = await showDateRangePicker(
-      context: context,
-      firstDate: DateTime(now.year - 3),
-      lastDate: DateTime(now.year + 1),
-      initialDateRange: _custom ?? initial,
-    );
-    if (picked != null) {
-      setState(() {
-        _range = ProfitRange.personalizado;
-        _custom = picked;
-      });
-      _load();
-    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final (from, to) = _calcRange();
-    return ListView(
-      padding: const EdgeInsets.all(12),
-      children: [
-        Wrap(
-          spacing: 8, runSpacing: 8,
-          children: [
-            ChoiceChip(label: const Text('Hoy'), selected: _range==ProfitRange.hoy, onSelected: (_){ setState(()=>_range=ProfitRange.hoy); _load(); }),
-            ChoiceChip(label: const Text('Semana'), selected: _range==ProfitRange.semana, onSelected: (_){ setState(()=>_range=ProfitRange.semana); _load(); }),
-            ChoiceChip(label: const Text('Mes'), selected: _range==ProfitRange.mes, onSelected: (_){ setState(()=>_range=ProfitRange.mes); _load(); }),
-            ChoiceChip(label: const Text('Año'), selected: _range==ProfitRange.anio, onSelected: (_){ setState(()=>_range=ProfitRange.anio); _load(); }),
-            OutlinedButton.icon(onPressed: _pickCustomRange, icon: const Icon(Icons.date_range), label: const Text('Personalizado')),
-          ],
-        ),
-        const SizedBox(height: 8),
-        Text('Rango: ${from.toIso8601String()}  →  ${to.toIso8601String()}'),
+    final r = _rangeActual();
+    final pct = _ventasNetasSinEnvio > 0
+        ? (_utilidad / _ventasNetasSinEnvio) * 100.0
+        : 0.0;
 
-        const SizedBox(height: 12),
-        Card(
-          child: Column(
-            children: [
-              const ListTile(title: Text('Resumen')),
-              ListTile(title: const Text('Total ventas'), trailing: Text('\$${_totalVentas.toStringAsFixed(2)}')),
-              ListTile(title: const Text('Total envío cobrado'), trailing: Text('\$${_totalEnvio.toStringAsFixed(2)}')),
-              ListTile(title: const Text('Total descuento'), trailing: Text('- \$${_totalDesc.toStringAsFixed(2)}')),
-              const Divider(height: 1),
-              ListTile(
-                title: const Text('Utilidad'),
-                trailing: Text('\$${_utilidad.toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green)),
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Utilidad'),
+        actions: [
+          PopupMenuButton<Period>(
+            initialValue: _period,
+            onSelected: (p) async {
+              setState(() => _period = p);
+              if (p != Period.custom) {
+                await _load();
+              } else {
+                await _pickRange();
+              }
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: Period.today, child: Text('Hoy')),
+              PopupMenuItem(value: Period.week, child: Text('Semana')),
+              PopupMenuItem(value: Period.month, child: Text('Mes')),
+              PopupMenuItem(value: Period.year, child: Text('Año')),
+              PopupMenuItem(value: Period.custom, child: Text('Personalizado…')),
+            ],
+          ),
+          IconButton(onPressed: _pickRange, icon: const Icon(Icons.date_range)),
+        ],
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : RefreshIndicator(
+              onRefresh: _load,
+              child: ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  Text(
+                    'Rango: ${DateFormat.yMMMd('es_MX').format(r.start)} — ${DateFormat.yMMMd('es_MX').format(r.end.subtract(const Duration(milliseconds: 1)))}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 12),
+                  _kv('Ventas netas (sin envío)', _money.format(_ventasNetasSinEnvio),
+                      bold: true),
+                  _kv('Descuento total', '- ${_money.format(_totalDescuento)}'),
+                  _kv('Envío cobrado', _money.format(_totalEnvio)),
+                  const Divider(height: 24),
+                  _kv('Utilidad', _money.format(_utilidad),
+                      big: true, bold: true),
+                  _kv('% utilidad sobre ventas netas',
+                      '${pct.toStringAsFixed(2)}%', big: true, bold: true),
+                  const SizedBox(height: 16),
+                  Text('Ventas por método de pago',
+                      style: Theme.of(context).textTheme.titleMedium),
+                  const SizedBox(height: 6),
+                  ..._ventasPorMetodo.entries.map(
+                    (e) => _kv(
+                        '• ${e.key.isEmpty ? "(sin método)" : e.key}',
+                        _money.format(e.value)),
+                  ),
+                  const SizedBox(height: 24),
+                  FilledButton.icon(
+                    onPressed: _load,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Recalcular'),
+                  ),
+                ],
               ),
-            ],
-          ),
-        ),
-
-        const SizedBox(height: 12),
-        Card(
-          child: Column(
-            children: [
-              const ListTile(title: Text('Ventas por método de pago')),
-              ..._porMetodo.map((m) => ListTile(
-                title: Text(m['payment_method'].toString()),
-                subtitle: Text('Subtotal: \$${(m['subtotal'] as num).toStringAsFixed(2)}  •  Desc: \$${(m['descuento'] as num).toStringAsFixed(2)}  •  Env: \$${(m['envio'] as num).toStringAsFixed(2)}'),
-                trailing: Text('\$${(m['total'] as num).toStringAsFixed(2)}', style: const TextStyle(fontWeight: FontWeight.w600)),
-              )),
-              if (_porMetodo.isEmpty)
-                const Padding(padding: EdgeInsets.all(12), child: Text('Sin ventas en el rango seleccionado')),
-            ],
-          ),
-        ),
-      ],
+            ),
     );
   }
+
+  Widget _kv(String k, String v, {bool bold = false, bool big = false}) {
+    final base = big
+        ? Theme.of(context).textTheme.titleLarge
+        : Theme.of(context).textTheme.bodyLarge;
+    final style =
+        (bold ? base?.copyWith(fontWeight: FontWeight.w700) : base) ??
+            const TextStyle();
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          Expanded(child: Text(k, style: style)),
+          Text(v, style: style),
+        ],
+      ),
+    );
+  }
+}
+
+class _ItemAcc {
+  final int qty;
+  final double unitPrice;
+  final double unitCost;
+  final double subtotal;
+  _ItemAcc({
+    required this.qty,
+    required this.unitPrice,
+    required this.unitCost,
+    required this.subtotal,
+  });
+}
+
+class _SaleAcc {
+  final double shipping;
+  final double discount;
+  final String paymentMethod;
+  final List<_ItemAcc> items = [];
+  _SaleAcc({
+    required this.shipping,
+    required this.discount,
+    required this.paymentMethod,
+  });
 }
