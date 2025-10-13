@@ -7,7 +7,6 @@ import 'package:excel/excel.dart' as ex;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
-// Importa todo lo necesario de sqflite (incluye DatabaseExecutor y getDatabasesPath si lo usas aquí)
 import 'package:sqflite/sqflite.dart'
     show
         Database,
@@ -64,8 +63,8 @@ String _asString(ex.Data? d) {
     return iv.value.toString();
   }
   if (d is ex.DateCellValue) {
-    final dt = d as ex.DateCellValue;
-    return dt.value.toIso8601String();
+    // En excel 4.0.6 no hay .value; usamos toString()
+    return d.toString();
   }
   return d?.toString() ?? '';
 }
@@ -105,8 +104,8 @@ int _asInt(ex.Data? d) {
 
 DateTime? _asDateTime(ex.Data? d) {
   if (d is ex.DateCellValue) {
-    final dt = d as ex.DateCellValue;
-    return dt.value;
+    // No hay .value en 4.0.6 → intentamos parsear el toString()
+    return DateTime.tryParse(d.toString());
   }
   if (d is ex.TextCellValue) {
     final tv = d as ex.TextCellValue;
