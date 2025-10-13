@@ -2,11 +2,18 @@
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:flutter/widgets.dart' show BuildContext; // solo por la firma de saveBytesToDownloads
+import 'package:flutter/widgets.dart' show BuildContext;
 import 'package:excel/excel.dart' as ex;
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-import 'package:sqflite/sqflite.dart' show ConflictAlgorithm, Sqflite;
+
+// Importa todo lo necesario de sqflite (incluye DatabaseExecutor y getDatabasesPath si lo usas aquí)
+import 'package:sqflite/sqflite.dart'
+    show
+        Database,
+        DatabaseExecutor,
+        ConflictAlgorithm,
+        Sqflite;
 
 import '../data/database.dart' as appdb;
 
@@ -16,14 +23,12 @@ Future<Directory> _downloadsDir() async {
   if (Platform.isAndroid) {
     final d = Directory('/storage/emulated/0/Download');
     if (await d.exists()) return d;
-    // Fallback
     return await getApplicationDocumentsDirectory();
   }
   return await getDownloadsDirectory() ?? await getApplicationDocumentsDirectory();
 }
 
 /// Guarda bytes en Descargas con un nombre dado. Devuelve la ruta final.
-/// (El BuildContext no se usa aquí, se mantiene solo para compatibilidad con el UI)
 Future<String> saveBytesToDownloads(
   BuildContext? _,
   {
@@ -40,43 +45,73 @@ Future<String> saveBytesToDownloads(
 
 /// ------ Helpers de Excel ------
 
-ex.Sheet _sheet(ex.Excel book, String name) {
-  // Excel 4.x permite acceder por book[name]; si no existe se crea.
-  // Si existe "Sheet1" vacío y pedimos otro, devuelve/cobra una nueva entrada sin problemas.
-  return book[name];
-}
+ex.Sheet _sheet(ex.Excel book, String name) => book[name];
 
 List<List<ex.Data?>> _rows(ex.Sheet sh) => sh.rows;
 
 /// Lectura segura de celdas (ex.Data? -> tipos base)
 String _asString(ex.Data? d) {
-  if (d is ex.TextCellValue) return d.value.text ?? '';
-  if (d is ex.DoubleCellValue) return d.value.toString();
-  if (d is ex.IntCellValue) return d.value.toString();
-  if (d is ex.DateCellValue) return d.value.toIso8601String();
+  if (d is ex.TextCellValue) {
+    final tv = d as ex.TextCellValue;
+    return tv.value.text ?? '';
+  }
+  if (d is ex.DoubleCellValue) {
+    final dv = d as ex.DoubleCellValue;
+    return dv.value.toString();
+  }
+  if (d is ex.IntCellValue) {
+    final iv = d as ex.IntCellValue;
+    return iv.value.toString();
+  }
+  if (d is ex.DateCellValue) {
+    final dt = d as ex.DateCellValue;
+    return dt.value.toIso8601String();
+  }
   return d?.toString() ?? '';
 }
 
 double _asDouble(ex.Data? d) {
-  if (d is ex.DoubleCellValue) return d.value;
-  if (d is ex.IntCellValue) return d.value.toDouble();
+  if (d is ex.DoubleCellValue) {
+    final dv = d as ex.DoubleCellValue;
+    return dv.value;
+  }
+  if (d is ex.IntCellValue) {
+    final iv = d as ex.IntCellValue;
+    return iv.value.toDouble();
+  }
   if (d is ex.TextCellValue) {
-    final s = (d.value.text ?? '').replaceAll(',', '.');
+    final tv = d as ex.TextCellValue;
+    final s = (tv.value.text ?? '').replaceAll(',', '.');
     return double.tryParse(s) ?? 0.0;
   }
   return 0.0;
 }
 
 int _asInt(ex.Data? d) {
-  if (d is ex.IntCellValue) return d.value;
-  if (d is ex.DoubleCellValue) return d.value.round();
-  if (d is ex.TextCellValue) return int.tryParse(d.value.text ?? '') ?? 0;
+  if (d is ex.IntCellValue) {
+    final iv = d as ex.IntCellValue;
+    return iv.value;
+  }
+  if (d is ex.DoubleCellValue) {
+    final dv = d as ex.DoubleCellValue;
+    return dv.value.round();
+  }
+  if (d is ex.TextCellValue) {
+    final tv = d as ex.TextCellValue;
+    return int.tryParse(tv.value.text ?? '') ?? 0;
+  }
   return 0;
 }
 
 DateTime? _asDateTime(ex.Data? d) {
-  if (d is ex.DateCellValue) return d.value;
-  if (d is ex.TextCellValue) return DateTime.tryParse(d.value.text ?? '');
+  if (d is ex.DateCellValue) {
+    final dt = d as ex.DateCellValue;
+    return dt.value;
+  }
+  if (d is ex.TextCellValue) {
+    final tv = d as ex.TextCellValue;
+    return DateTime.tryParse(tv.value.text ?? '');
+  }
   return null;
 }
 
@@ -103,7 +138,6 @@ Future<List<int>> buildProductsXlsxBytes() async {
 
   final book = ex.Excel.createExcel();
   final sh = _sheet(book, 'products');
-  // Encabezados
   sh.appendRow(<ex.CellValue?>[
     _tx('sku'),
     _tx('name'),
@@ -277,7 +311,6 @@ Future<List<int>> buildPurchasesXlsxBytes() async {
 }
 
 /// ------ IMPORTS ------
-/// Todas las importaciones esperan encabezado en la primera fila.
 
 Future<void> importProductsXlsx(Uint8List bytes) async {
   final db = await appdb.getDb();
@@ -286,12 +319,11 @@ Future<void> importProductsXlsx(Uint8List bytes) async {
   final rows = _rows(sh);
   if (rows.isEmpty) return;
 
-  // Mapa por sku para upsert.
   await db.transaction((txn) async {
     for (var i = 1; i < rows.length; i++) {
       final r = rows[i];
       final sku = _asString(r.elementAtOrNull(0)).trim();
-      if (sku.isEmpty) continue; // sku requerido
+      if (sku.isEmpty) continue;
 
       final name = _asString(r.elementAtOrNull(1)).trim();
       final category = _asString(r.elementAtOrNull(2)).trim();
@@ -299,7 +331,6 @@ Future<void> importProductsXlsx(Uint8List bytes) async {
       final lpp = _asDouble(r.elementAtOrNull(4));
       final stock = _asInt(r.elementAtOrNull(5));
 
-      // Inserta si no existe; actualiza si existe (por sku).
       final exist = Sqflite.firstIntValue(await txn.rawQuery(
         'SELECT COUNT(*) FROM products WHERE sku=?',
         [sku],
@@ -434,13 +465,12 @@ Future<void> importSalesXlsx(Uint8List bytes) async {
   final book = ex.Excel.decodeBytes(bytes);
 
   final shSales = book['sales'];
-  final shItems = book.sheets['sales_items']; // puede no existir
+  final shItems = book.sheets['sales_items'];
 
   final rowsSales = _rows(shSales);
   final rowsItems = shItems != null ? _rows(shItems) : const <List<ex.Data?>>[];
   if (rowsSales.isEmpty) return;
 
-  // Mapear items por sale_id
   final Map<int, List<Map<String, dynamic>>> itemsBySale = {};
   if (rowsItems.isNotEmpty) {
     for (var i = 1; i < rowsItems.length; i++) {
@@ -457,7 +487,7 @@ Future<void> importSalesXlsx(Uint8List bytes) async {
   await db.transaction((txn) async {
     for (var i = 1; i < rowsSales.length; i++) {
       final r = rowsSales[i];
-      final extId = _asInt(r.elementAtOrNull(0)); // id externo (si lo traen)
+      final extId = _asInt(r.elementAtOrNull(0));
       final phone = _asString(r.elementAtOrNull(1)).trim();
       final pay = _asString(r.elementAtOrNull(2)).trim();
       final place = _asString(r.elementAtOrNull(3)).trim();
@@ -465,7 +495,6 @@ Future<void> importSalesXlsx(Uint8List bytes) async {
       final disc = _asDouble(r.elementAtOrNull(5));
       final date = _asString(r.elementAtOrNull(6)).trim();
 
-      // Inserta venta
       int saleId;
       if (extId > 0) {
         final exist = Sqflite.firstIntValue(await txn.rawQuery('SELECT COUNT(*) FROM sales WHERE id=?', [extId])) ?? 0;
@@ -502,7 +531,6 @@ Future<void> importSalesXlsx(Uint8List bytes) async {
         }, conflictAlgorithm: ConflictAlgorithm.abort);
       }
 
-      // Inserta items (si hay hoja items)
       final items = itemsBySale[saleId] ?? itemsBySale[extId] ?? <Map<String, dynamic>>[];
       for (final it in items) {
         final pid = await _ensureProductBySku(txn, it['sku'] as String);
@@ -528,7 +556,6 @@ Future<void> importPurchasesXlsx(Uint8List bytes) async {
   final rowsItems = shItems != null ? _rows(shItems) : const <List<ex.Data?>>[];
   if (rowsPur.isEmpty) return;
 
-  // Indexa items por purchase_id
   final Map<int, List<Map<String, dynamic>>> itemsByPurchase = {};
   if (rowsItems.isNotEmpty) {
     for (var i = 1; i < rowsItems.length; i++) {
@@ -545,7 +572,7 @@ Future<void> importPurchasesXlsx(Uint8List bytes) async {
   await db.transaction((txn) async {
     for (var i = 1; i < rowsPur.length; i++) {
       final r = rowsPur[i];
-      final id = _asInt(r.elementAtOrNull(0)); // id externo
+      final id = _asInt(r.elementAtOrNull(0));
       final folio = _asString(r.elementAtOrNull(1)).trim();
       final supplierPhone = _asString(r.elementAtOrNull(2)).trim();
       final date = _asString(r.elementAtOrNull(3)).trim();
