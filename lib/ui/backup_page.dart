@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:sqflite/sqflite.dart' show getDatabasesPath;
 
 import '../data/database.dart' as appdb;
 import '../utils/xlsx_io.dart' as xio;
