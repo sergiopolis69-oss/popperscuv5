@@ -14,7 +14,7 @@ class DatabaseHelper {
   /// Acceso principal a la base de datos
   Future<Database> get db async => _db ??= await _open();
 
-  /// Alias por compatibilidad
+  /// Alias por compatibilidad con código existente que llama appdb.getDb()
   Future<Database> getDb() async => db;
 
   /// Ruta completa del archivo .db
@@ -175,8 +175,6 @@ class DatabaseHelper {
 
 /// ------------------------------------------------------
 /// Compatibilidad con código existente tipo `appdb.getDb()`
+/// (asegúrate de importar este archivo con un alias `as appdb`)
 /// ------------------------------------------------------
-
-import 'package:sqflite/sqflite.dart';
-
 Future<Database> getDb() => DatabaseHelper.instance.db;
