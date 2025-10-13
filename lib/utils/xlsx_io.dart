@@ -27,18 +27,15 @@ Future<String> saveBytesWithSystemPicker({
 
 // ======================= Helpers Excel =======================
 
-ex.Sheet _sheet(ex.Excel book, String name) {
-  final s = book.sheets[name];
-  if (s != null) return s;
-  book.appendSheet(name: name);
-  return book.sheets[name]!;
-}
+/// En excel 4.x se crea/obtiene la hoja usando el operador [].
+ex.Sheet _sheet(ex.Excel book, String name) => book[name];
 
 ex.CellValue _tx(String s) => ex.TextCellValue(s);
 ex.CellValue _dbl(num n) => ex.DoubleCellValue(n.toDouble());
 ex.CellValue _int(int n) => ex.IntCellValue(n);
-ex.CellValue _dt(DateTime d) =>
-    ex.DateCellValue(year: d.year, month: d.month, day: d.day, hour: d.hour, minute: d.minute, second: d.second);
+
+/// Para máxima compatibilidad, exportamos fechas como TEXTO ISO8601.
+ex.CellValue _dtAsText(DateTime d) => _tx(d.toIso8601String());
 
 String _cellAsString(ex.Data? d) {
   if (d == null || d.value == null) return '';
@@ -47,7 +44,8 @@ String _cellAsString(ex.Data? d) {
   if (v is ex.DoubleCellValue) return v.value.toString();
   if (v is ex.IntCellValue) return v.value.toString();
   if (v is ex.DateCellValue) {
-    final dt = DateTime(v.year, v.month, v.day, v.hour ?? 0, v.minute ?? 0, v.second ?? 0);
+    // Algunas versiones no exponen hora/min/seg; usamos sólo Y-M-D
+    final dt = DateTime(v.year, v.month, v.day);
     return dt.toIso8601String();
   }
   return v.toString();
@@ -78,7 +76,7 @@ DateTime? _cellAsDate(ex.Data? d) {
   if (d == null || d.value == null) return null;
   final v = d.value!;
   if (v is ex.DateCellValue) {
-    return DateTime(v.year, v.month, v.day, v.hour ?? 0, v.minute ?? 0, v.second ?? 0);
+    return DateTime(v.year, v.month, v.day);
   }
   if (v is ex.TextCellValue) return DateTime.tryParse(v.value.text ?? '');
   return null;
@@ -118,7 +116,9 @@ ex.Sheet? _findSheetWithHeaders(ex.Excel book, List<String> requiredKeys) {
 Future<List<int>> buildProductsXlsxBytes() async {
   final db = await appdb.getDb();
   final rows = await db.rawQuery(
-      'SELECT sku,name,category,default_sale_price,last_purchase_price,stock FROM products ORDER BY name');
+    'SELECT sku,name,category,default_sale_price,last_purchase_price,stock '
+    'FROM products ORDER BY name',
+  );
 
   final book = ex.Excel.createExcel();
   final sh = _sheet(book, 'productos');
@@ -145,7 +145,8 @@ Future<List<int>> buildProductsXlsxBytes() async {
 
 Future<List<int>> buildClientsXlsxBytes() async {
   final db = await appdb.getDb();
-  final rows = await db.rawQuery('SELECT phone,name,address FROM customers ORDER BY name');
+  final rows =
+      await db.rawQuery('SELECT phone,name,address FROM customers ORDER BY name');
 
   final book = ex.Excel.createExcel();
   final sh = _sheet(book, 'clientes');
@@ -162,7 +163,8 @@ Future<List<int>> buildClientsXlsxBytes() async {
 
 Future<List<int>> buildSuppliersXlsxBytes() async {
   final db = await appdb.getDb();
-  final rows = await db.rawQuery('SELECT phone,name,address FROM suppliers ORDER BY name');
+  final rows =
+      await db.rawQuery('SELECT phone,name,address FROM suppliers ORDER BY name');
 
   final book = ex.Excel.createExcel();
   final sh = _sheet(book, 'proveedores');
@@ -180,9 +182,13 @@ Future<List<int>> buildSuppliersXlsxBytes() async {
 Future<List<int>> buildSalesXlsxBytes() async {
   final db = await appdb.getDb();
   final sales = await db.rawQuery(
-      'SELECT id, customer_phone, payment_method, place, shipping_cost, discount, date FROM sales ORDER BY id');
+    'SELECT id, customer_phone, payment_method, place, shipping_cost, discount, date '
+    'FROM sales ORDER BY id',
+  );
   final items = await db.rawQuery(
-      'SELECT sale_id, p.sku AS product_sku, quantity, unit_price FROM sale_items si JOIN products p ON p.id=si.product_id ORDER BY sale_id');
+    'SELECT sale_id, p.sku AS product_sku, quantity, unit_price '
+    'FROM sale_items si JOIN products p ON p.id=si.product_id ORDER BY sale_id',
+  );
 
   final book = ex.Excel.createExcel();
   final sh = _sheet(book, 'ventas');
@@ -222,10 +228,14 @@ Future<List<int>> buildSalesXlsxBytes() async {
 
 Future<List<int>> buildPurchasesXlsxBytes() async {
   final db = await appdb.getDb();
-  final purchases =
-      await db.rawQuery('SELECT id, folio, s.phone AS supplier_phone, date FROM purchases pu LEFT JOIN suppliers s ON s.id=pu.supplier_id ORDER BY id');
+  final purchases = await db.rawQuery(
+    'SELECT id, folio, s.phone AS supplier_phone, date '
+    'FROM purchases pu LEFT JOIN suppliers s ON s.id=pu.supplier_id ORDER BY id',
+  );
   final items = await db.rawQuery(
-      'SELECT purchase_id, p.sku AS product_sku, quantity, unit_cost FROM purchase_items pi JOIN products p ON p.id=pi.product_id ORDER BY purchase_id');
+    'SELECT purchase_id, p.sku AS product_sku, quantity, unit_cost '
+    'FROM purchase_items pi JOIN products p ON p.id=pi.product_id ORDER BY purchase_id',
+  );
 
   final book = ex.Excel.createExcel();
   final sh = _sheet(book, 'compras');
@@ -265,7 +275,8 @@ Future<int?> _ensureSupplierByPhone(DatabaseExecutor txn, String phone) async {
 
 Future<int> _ensureProductBySku(DatabaseExecutor txn, String sku) async {
   final exist = Sqflite.firstIntValue(
-      await txn.rawQuery('SELECT id FROM products WHERE sku=? LIMIT 1', [sku]));
+    await txn.rawQuery('SELECT id FROM products WHERE sku=? LIMIT 1', [sku]),
+  );
   if (exist != null) return exist;
   return await txn.insert('products', {
     'sku': sku,
@@ -280,7 +291,14 @@ Future<int> _ensureProductBySku(DatabaseExecutor txn, String sku) async {
 Future<void> importProductsXlsx(Uint8List bytes) async {
   final book = ex.Excel.decodeBytes(bytes);
 
-  final required = ['sku', 'name', 'category', 'default_sale_price', 'last_purchase_price', 'stock'];
+  final required = [
+    'sku',
+    'name',
+    'category',
+    'default_sale_price',
+    'last_purchase_price',
+    'stock'
+  ];
   final sh = book.sheets['productos'] ?? _findSheetWithHeaders(book, required);
   if (sh == null || sh.rows.isEmpty) {
     throw 'Hoja de productos inválida';
@@ -299,18 +317,18 @@ Future<void> importProductsXlsx(Uint8List bytes) async {
       final row = sh.rows[r];
       final sku = _cellAsString(row.elementAtOrNull(iSku)).trim();
       if (sku.isEmpty) continue;
+      final name = _cellAsString(row.elementAtOrNull(iName)).trim();
       final data = {
         'sku': sku,
-        'name': _cellAsString(row.elementAtOrNull(iName)).trim().isEmpty
-            ? sku
-            : _cellAsString(row.elementAtOrNull(iName)).trim(),
+        'name': name.isEmpty ? sku : name,
         'category': _cellAsString(row.elementAtOrNull(iCat)).trim(),
         'default_sale_price': _cellAsDouble(row.elementAtOrNull(iDsp)),
         'last_purchase_price': _cellAsDouble(row.elementAtOrNull(iLpp)),
         'stock': _cellAsInt(row.elementAtOrNull(iStock)),
       };
       final exists = Sqflite.firstIntValue(
-          await txn.rawQuery('SELECT id FROM products WHERE sku=?', [sku]));
+        await txn.rawQuery('SELECT id FROM products WHERE sku=?', [sku]),
+      );
       if (exists == null) {
         await txn.insert('products', data, conflictAlgorithm: ConflictAlgorithm.replace);
       } else {
@@ -342,7 +360,8 @@ Future<void> importClientsXlsx(Uint8List bytes) async {
         'address': _cellAsString(r.elementAtOrNull(iAddr)).trim(),
       };
       final exists = Sqflite.firstIntValue(
-          await txn.rawQuery('SELECT COUNT(*) FROM customers WHERE phone=?', [phone]));
+        await txn.rawQuery('SELECT COUNT(*) FROM customers WHERE phone=?', [phone]),
+      );
       if ((exists ?? 0) > 0) {
         await txn.update('customers', data, where: 'phone=?', whereArgs: [phone]);
       } else {
@@ -374,7 +393,8 @@ Future<void> importSuppliersXlsx(Uint8List bytes) async {
         'address': _cellAsString(r.elementAtOrNull(iAddr)).trim(),
       };
       final existId = Sqflite.firstIntValue(
-          await txn.rawQuery('SELECT id FROM suppliers WHERE phone=?', [phone]));
+        await txn.rawQuery('SELECT id FROM suppliers WHERE phone=?', [phone]),
+      );
       if (existId == null) {
         await txn.insert('suppliers', data, conflictAlgorithm: ConflictAlgorithm.replace);
       } else {
@@ -388,7 +408,15 @@ Future<void> importSalesXlsx(Uint8List bytes) async {
   final book = ex.Excel.decodeBytes(bytes);
 
   final shSales = book.sheets['ventas'] ??
-      _findSheetWithHeaders(book, ['id', 'customer_phone', 'payment_method', 'place', 'shipping_cost', 'discount', 'date']);
+      _findSheetWithHeaders(book, [
+        'id',
+        'customer_phone',
+        'payment_method',
+        'place',
+        'shipping_cost',
+        'discount',
+        'date'
+      ]);
   final shItems = book.sheets['venta_items'] ??
       _findSheetWithHeaders(book, ['sale_id', 'product_sku', 'quantity', 'unit_price']);
   if (shSales == null || shItems == null) throw 'Hojas de ventas inválidas';
@@ -415,7 +443,6 @@ Future<void> importSalesXlsx(Uint8List bytes) async {
       final row = shSales.rows[r];
       final extId = _cellAsInt(row.elementAtOrNull(sId));
       final phone = _cellAsString(row.elementAtOrNull(sPhone)).trim();
-      final supId = await _ensureSupplierByPhone(txn, ''); // no aplica, pero conservamos firma
       final data = {
         'id': extId,
         'customer_phone': phone.isEmpty ? null : phone,
@@ -488,9 +515,10 @@ Future<void> importPurchasesXlsx(Uint8List bytes) async {
         'supplier_id': supId,
         'date': _cellAsString(row.elementAtOrNull(pDate)),
       };
-      final exists =
-          Sqflite.firstIntValue(await txn.rawQuery('SELECT COUNT(*) FROM purchases WHERE id=?', [id])) ??
-              0;
+      final exists = Sqflite.firstIntValue(
+            await txn.rawQuery('SELECT COUNT(*) FROM purchases WHERE id=?', [id]),
+          ) ??
+          0;
       if (exists > 0) {
         await txn.update('purchases', data, where: 'id=?', whereArgs: [id]);
       } else {
@@ -517,7 +545,8 @@ Future<void> importPurchasesXlsx(Uint8List bytes) async {
         'last_purchase_price': data['unit_cost'],
       }, where: 'id=?', whereArgs: [prodId]);
 
-      await txn.rawUpdate('UPDATE products SET stock = IFNULL(stock,0) + ? WHERE id=?',
+      await txn.rawUpdate(
+          'UPDATE products SET stock = IFNULL(stock,0) + ? WHERE id=?',
           [data['quantity'], prodId]);
     }
   });
