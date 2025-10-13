@@ -10,13 +10,23 @@ class ProfitPage extends StatefulWidget {
   State<ProfitPage> createState() => _ProfitPageState();
 }
 
+enum DetailMode { product, category }
+
 class _ProfitPageState extends State<ProfitPage> {
   DateTimeRange? _range;
   bool _loading = false;
-  double _salesTotal = 0.0;
+
+  // Totales
+  double _salesTotal = 0.0;   // ventas sin envío (ya con descuento)
   double _profitTotal = 0.0;
   double _profitPercent = 0.0;
-  final _money = NumberFormat.currency(locale: 'es_MX', symbol: '\$');
+
+  // Detalle
+  DetailMode _detailMode = DetailMode.product;
+  late final NumberFormat _money = NumberFormat.currency(locale: 'es_MX', symbol: '\$');
+
+  List<_DetailRow> _byProduct = [];
+  List<_DetailRow> _byCategory = [];
 
   @override
   void initState() {
@@ -44,11 +54,12 @@ class _ProfitPageState extends State<ProfitPage> {
 
   Future<void> _load() async {
     setState(() => _loading = true);
-    final db = await appdb.DatabaseHelper.instance.db;
+    final Database db = await appdb.DatabaseHelper.instance.db;
+
     final start = _range?.start ?? DateTime.now().subtract(const Duration(days: 30));
     final end = _range?.end ?? DateTime.now();
 
-    // Ventas dentro del rango
+    // Traemos ventas del rango
     final sales = await db.rawQuery('''
       SELECT s.id, s.shipping_cost, s.discount
       FROM sales s
@@ -58,14 +69,23 @@ class _ProfitPageState extends State<ProfitPage> {
     double totalVentas = 0.0;
     double totalUtilidad = 0.0;
 
-    for (final sale in sales) {
-      final saleId = sale['id'] as int;
-      final shipping = (sale['shipping_cost'] as num?)?.toDouble() ?? 0.0;
-      final discount = (sale['discount'] as num?)?.toDouble() ?? 0.0;
+    // Acumuladores detalle
+    final Map<String, _Agg> aggByProduct = {};
+    final Map<String, _Agg> aggByCategory = {};
 
-      // Productos de la venta
+    for (final sale in sales) {
+      final int saleId = (sale['id'] as num).toInt();
+      final double discount = (sale['discount'] as num?)?.toDouble() ?? 0.0;
+
+      // Items de la venta con info de producto
       final items = await db.rawQuery('''
-        SELECT si.quantity, si.unit_price, p.last_purchase_price
+        SELECT
+          si.quantity AS qty,
+          si.unit_price AS price,
+          p.last_purchase_price AS cost,
+          p.sku AS sku,
+          p.name AS name,
+          IFNULL(p.category, '') AS category
         FROM sale_items si
         JOIN products p ON p.id = si.product_id
         WHERE si.sale_id = ?
@@ -73,20 +93,44 @@ class _ProfitPageState extends State<ProfitPage> {
 
       if (items.isEmpty) continue;
 
-      final subtotal = items.fold<double>(
-          0.0, (a, it) => a + ((it['unit_price'] as num) * (it['quantity'] as num)));
+      final double subtotal = items.fold<double>(
+        0.0,
+        (a, it) => a + ((it['price'] as num).toDouble() * (it['qty'] as num).toDouble()),
+      );
 
-      // Descuento proporcional
+      // Descuento proporcional por línea y cálculo de utilidad línea
       double utilidadVenta = 0.0;
       for (final it in items) {
-        final precio = (it['unit_price'] as num).toDouble();
-        final qty = (it['quantity'] as num).toInt();
-        final costo = (it['last_purchase_price'] as num?)?.toDouble() ?? 0.0;
-        final bruto = precio * qty;
-        final share = subtotal > 0 ? bruto / subtotal : 0.0;
-        final descuentoLinea = discount * share;
-        final neto = bruto - descuentoLinea;
-        utilidadVenta += (neto - costo * qty);
+        final int qty = (it['qty'] as num).toInt();
+        final double precio = (it['price'] as num).toDouble();
+        final double costo = (it['cost'] as num?)?.toDouble() ?? 0.0;
+        final String sku = (it['sku'] ?? '').toString();
+        final String name = (it['name'] ?? '').toString();
+        final String category = (it['category'] ?? '').toString();
+
+        final double bruto = precio * qty;
+        final double share = subtotal > 0 ? bruto / subtotal : 0.0;
+        final double descLinea = discount * share;
+        final double netoLinea = bruto - descLinea;
+        final double utilidadLinea = netoLinea - (costo * qty);
+
+        utilidadVenta += utilidadLinea;
+
+        // Acumular por producto (clave: "SKU · Nombre" para hacerlo claro)
+        final prodKey = sku.isEmpty ? name : '$sku · $name';
+        final ap = aggByProduct.putIfAbsent(prodKey, () => _Agg(label: prodKey));
+        ap.qty += qty;
+        ap.revenue += netoLinea; // venta neta (tras descuento proporcional)
+        ap.cost += costo * qty;
+        ap.profit += utilidadLinea;
+
+        // Acumular por categoría (vacía se muestra como "Sin categoría")
+        final catKey = category.isEmpty ? 'Sin categoría' : category;
+        final ac = aggByCategory.putIfAbsent(catKey, () => _Agg(label: catKey));
+        ac.qty += qty;
+        ac.revenue += netoLinea;
+        ac.cost += costo * qty;
+        ac.profit += utilidadLinea;
       }
 
       totalVentas += subtotal - discount; // sin envío
@@ -95,10 +139,28 @@ class _ProfitPageState extends State<ProfitPage> {
 
     final percent = totalVentas > 0 ? (totalUtilidad / totalVentas) * 100.0 : 0.0;
 
+    // Empaquetar filas detalle (ordenado por utilidad desc)
+    List<_DetailRow> toRows(Map<String, _Agg> src) {
+      final rows = src.values
+          .map((a) => _DetailRow(
+                label: a.label,
+                qty: a.qty,
+                revenue: a.revenue,
+                cost: a.cost,
+                profit: a.profit,
+                margin: a.revenue > 0 ? (a.profit / a.revenue) * 100.0 : 0.0,
+              ))
+          .toList();
+      rows.sort((b, a) => a.profit.compareTo(b.profit));
+      return rows;
+    }
+
     setState(() {
       _salesTotal = totalVentas;
       _profitTotal = totalUtilidad;
       _profitPercent = percent;
+      _byProduct = toRows(aggByProduct);
+      _byCategory = toRows(aggByCategory);
       _loading = false;
     });
   }
@@ -143,7 +205,7 @@ class _ProfitPageState extends State<ProfitPage> {
                           _row('Utilidad neta', _money.format(_profitTotal),
                               color: Colors.green.shade700, bold: true),
                           const Divider(height: 20),
-                          _row('Margen de utilidad', 
+                          _row('Margen de utilidad',
                               '${_profitPercent.toStringAsFixed(2)} %',
                               color: Colors.indigo, bold: true, big: true),
                         ],
@@ -151,15 +213,107 @@ class _ProfitPageState extends State<ProfitPage> {
                     ),
                   ),
                   const SizedBox(height: 16),
+
+                  // Selector de detalle
+                  Row(
+                    children: [
+                      ChoiceChip(
+                        label: const Text('Por producto'),
+                        selected: _detailMode == DetailMode.product,
+                        onSelected: (v) {
+                          if (v) setState(() => _detailMode = DetailMode.product);
+                        },
+                      ),
+                      const SizedBox(width: 8),
+                      ChoiceChip(
+                        label: const Text('Por categoría'),
+                        selected: _detailMode == DetailMode.category,
+                        onSelected: (v) {
+                          if (v) setState(() => _detailMode = DetailMode.category);
+                        },
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        tooltip: 'Ordenar por utilidad desc/asc',
+                        icon: const Icon(Icons.swap_vert),
+                        onPressed: _toggleSort,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+
+                  _detailTable(
+                    _detailMode == DetailMode.product ? _byProduct : _byCategory,
+                  ),
+
+                  const SizedBox(height: 16),
                   Text(
-                    'La utilidad se calcula por cada producto como: '
-                    'precio de venta – costo último de compra – descuento proporcional. '
+                    'La utilidad se calcula por cada producto como:\n'
+                    'precio de venta – costo último de compra – descuento proporcional.\n'
                     'El costo de envío no se incluye en este cálculo.',
                     style: const TextStyle(color: Colors.black54),
                   ),
                 ],
               ),
             ),
+    );
+  }
+
+  // Cambia el orden de utilidad
+  void _toggleSort() {
+    setState(() {
+      List<_DetailRow> list =
+          _detailMode == DetailMode.product ? _byProduct : _byCategory;
+      final bool isDesc = list.length < 2 ||
+          (list.length >= 2 && list.first.profit >= list.last.profit);
+      list.sort((a, b) => isDesc
+          ? a.profit.compareTo(b.profit)
+          : b.profit.compareTo(a.profit));
+      if (_detailMode == DetailMode.product) {
+        _byProduct = List.of(list);
+      } else {
+        _byCategory = List.of(list);
+      }
+    });
+  }
+
+  Widget _detailTable(List<_DetailRow> rows) {
+    if (rows.isEmpty) {
+      return const Card(
+        elevation: 0,
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: Text('No hay ventas en el periodo seleccionado.'),
+        ),
+      );
+    }
+
+    return Card(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      elevation: 1,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: DataTable(
+          columns: const [
+            DataColumn(label: Text('Ítem')),
+            DataColumn(label: Text('Cant.')),
+            DataColumn(label: Text('Venta neta')),
+            DataColumn(label: Text('Costo')),
+            DataColumn(label: Text('Utilidad')),
+            DataColumn(label: Text('Margen %')),
+          ],
+          rows: rows.map((r) {
+            return DataRow(cells: [
+              DataCell(Text(r.label)),
+              DataCell(Text(r.qty.toString())),
+              DataCell(Text(_money.format(r.revenue))),
+              DataCell(Text(_money.format(r.cost))),
+              DataCell(Text(_money.format(r.profit))),
+              DataCell(Text('${r.margin.toStringAsFixed(2)} %')),
+            ]);
+          }).toList(),
+        ),
+      ),
     );
   }
 
@@ -178,4 +332,33 @@ class _ProfitPageState extends State<ProfitPage> {
       ),
     );
   }
+}
+
+// Accumulador interno
+class _Agg {
+  _Agg({required this.label});
+  final String label;
+  int qty = 0;
+  double revenue = 0.0; // venta neta (con descuento proporcional)
+  double cost = 0.0;
+  double profit = 0.0;
+}
+
+// Fila para la DataTable
+class _DetailRow {
+  _DetailRow({
+    required this.label,
+    required this.qty,
+    required this.revenue,
+    required this.cost,
+    required this.profit,
+    required this.margin,
+  });
+
+  final String label;
+  final int qty;
+  final double revenue;
+  final double cost;
+  final double profit;
+  final double margin;
 }
