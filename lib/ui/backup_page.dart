@@ -12,21 +12,18 @@ import '../data/database.dart' as appdb;
 
 class BackupPage extends StatefulWidget {
   const BackupPage({super.key});
-
   @override
   State<BackupPage> createState() => _BackupPageState();
 }
 
 class _BackupPageState extends State<BackupPage> {
   String? _lastMsg;
-
-  void _snack(String msg) {
-    setState(() => _lastMsg = msg);
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  void _snack(String m) {
+    setState(() => _lastMsg = m);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
   }
 
-  // === Helpers de importación ===
-
+  // --------- helpers comunes ----------
   Future<Uint8List?> _pickXlsxBytes() async {
     final res = await FilePicker.platform.pickFiles(
       type: FileType.custom,
@@ -35,41 +32,23 @@ class _BackupPageState extends State<BackupPage> {
     );
     if (res == null || res.files.isEmpty) return null;
     final f = res.files.first;
-    return f.bytes ??
-        await File(f.path!).readAsBytes(); // por si no trajo bytes en memoria
+    if (f.bytes != null) return f.bytes!;
+    if (f.path != null) return await File(f.path!).readAsBytes();
+    return null;
   }
 
   Future<bool> _ensureStorageReadPermissionIfNeeded() async {
-    // Para lectura directa en /Download en Android <= 12
     if (!Platform.isAndroid) return true;
-
-    // En Android 13+ no hay READ_EXTERNAL_STORAGE para documentos;
-    // mejor usar file picker. Esto solo intentará en <= 12.
-    final sdk = await _androidSdkInt();
-    if (sdk >= 33) return false; // no intentes permiso de lectura clásico
-
+    // En Android 13+ el permiso de lectura “clásico” ya no aplica a Descargas -> usa selector.
     final status = await Permission.storage.status;
     if (status.isGranted) return true;
     final req = await Permission.storage.request();
     return req.isGranted;
   }
 
-  Future<int> _androidSdkInt() async {
-    try {
-      final dir = await getApplicationDocumentsDirectory();
-      final path = dir.path;
-      // heurística sencilla: no necesitamos el sdk exacto si ya usamos file picker
-      // devolvemos 30 como valor seguro; no afecta la lógica principal.
-      return 30;
-    } catch (_) {
-      return 30;
-    }
-  }
-
   Future<Uint8List?> _readFromDownloadsByName(String fileName) async {
-    // Ruta "clásica" de Descargas en Android
-    final downloads = Directory('/storage/emulated/0/Download');
-    final f = File(p.join(downloads.path, fileName));
+    final dir = Directory('/storage/emulated/0/Download');
+    final f = File(p.join(dir.path, fileName));
     if (!await f.exists()) return null;
     return await f.readAsBytes();
   }
@@ -78,35 +57,36 @@ class _BackupPageState extends State<BackupPage> {
     required String fixedFileName,
     required Future<void> Function(Uint8List) importer,
   }) async {
-    // 1) Intentamos picker (más seguro y moderno)
+    // 1) Selector (recomendado y sin permisos)
     final picked = await _pickXlsxBytes();
     if (picked != null) {
-      await importer(picked);
-      _snack('Importado correctamente desde selector.');
+      try {
+        await importer(picked);
+        _snack('Importado correctamente (selector).');
+      } catch (e) {
+        _snack('Error al importar: $e');
+      }
       return;
     }
 
-    // 2) Si el usuario canceló o no hubo archivo, intentamos lectura directa de Descargas
-    final okPerm = await _ensureStorageReadPermissionIfNeeded();
-    if (!okPerm) {
-      _snack('No hay permiso para leer Descargas. Usa el botón y elige el archivo.');
+    // 2) Fallback: Descargas con nombre fijo
+    final ok = await _ensureStorageReadPermissionIfNeeded();
+    if (!ok) {
+      _snack('No hay permiso para leer Descargas. Usa el selector de archivos.');
       return;
     }
-
     try {
       final bytes = await _readFromDownloadsByName(fixedFileName);
       if (bytes == null) {
-        _snack('No se encontró $fixedFileName en Descargas. Usa el selector.');
+        _snack('No se encontró $fixedFileName en Descargas.');
         return;
       }
       await importer(bytes);
-      _snack('Importado correctamente desde Descargas.');
+      _snack('Importado correctamente (Descargas).');
     } catch (e) {
       _snack('Error leyendo $fixedFileName: $e');
     }
   }
-
-  // === Exportación ===
 
   Future<void> _export({
     required String fileName,
@@ -114,28 +94,28 @@ class _BackupPageState extends State<BackupPage> {
   }) async {
     try {
       final bytes = await builder();
-      final savedPath = await saveBytesToDownloads(
-        context,
+      final savedPath = await saveBytesWithSystemPicker(
         fileName: fileName,
         bytes: bytes,
       );
-      _snack('Exportado en: $savedPath');
+      _snack('Exportado: $savedPath');
     } catch (e) {
       _snack('Error al exportar: $e');
     }
   }
 
-  // === Respaldo de BD (.db) ===
+  // ---------- Respaldo / Restauración de BD ----------
+  Future<String> _dbFilePath() async {
+    final db = await appdb.getDb();
+    return p.normalize(db.path);
+  }
+
   Future<void> _backupDbToDownloads() async {
     try {
-      final db = await appdb.getDb();
-      final path = p.normalize(db.path);
-      final fileName = p.basename(path);
-
+      final path = await _dbFilePath();
       final bytes = await File(path).readAsBytes();
-      final saved = await saveBytesToDownloads(
-        context,
-        fileName: fileName,
+      final saved = await saveBytesWithSystemPicker(
+        fileName: p.basename(path),
         bytes: bytes,
       );
       _snack('BD respaldada en: $saved');
@@ -144,46 +124,60 @@ class _BackupPageState extends State<BackupPage> {
     }
   }
 
-  // === UI ===
+  Future<void> _restoreDbFromPicker() async {
+    try {
+      final res = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['db'],
+        withData: true,
+      );
+      if (res == null || res.files.isEmpty) return;
+      final file = res.files.first;
+      final bytes =
+          file.bytes ?? (file.path != null ? await File(file.path!).readAsBytes() : null);
+      if (bytes == null) {
+        _snack('No se pudo leer el archivo .db.');
+        return;
+      }
 
+      // Cierra BD actual, reemplaza archivo y vuelve a abrir.
+      final db = await appdb.getDb();
+      await db.close();
+      final dst = await _dbFilePath();
+      await File(dst).writeAsBytes(bytes, flush: true);
+      // Fuerza reapertura inmediata
+      await appdb.getDb();
+
+      _snack('Base de datos restaurada. (Si algo no se refleja, reinicia la app)');
+    } catch (e) {
+      _snack('Error al restaurar BD: $e');
+    }
+  }
+
+  // ---------- UI ----------
   Widget _exportButtons() {
     return Wrap(
       spacing: 12,
       runSpacing: 12,
       children: [
         FilledButton(
-          onPressed: () => _export(
-            fileName: 'products.xlsx',
-            builder: buildProductsXlsxBytes,
-          ),
+          onPressed: () => _export(fileName: 'products.xlsx', builder: buildProductsXlsxBytes),
           child: const Text('Productos'),
         ),
         FilledButton(
-          onPressed: () => _export(
-            fileName: 'clients.xlsx',
-            builder: buildClientsXlsxBytes,
-          ),
+          onPressed: () => _export(fileName: 'clients.xlsx', builder: buildClientsXlsxBytes),
           child: const Text('Clientes'),
         ),
         FilledButton(
-          onPressed: () => _export(
-            fileName: 'suppliers.xlsx',
-            builder: buildSuppliersXlsxBytes,
-          ),
+          onPressed: () => _export(fileName: 'suppliers.xlsx', builder: buildSuppliersXlsxBytes),
           child: const Text('Proveedores'),
         ),
         FilledButton(
-          onPressed: () => _export(
-            fileName: 'sales.xlsx',
-            builder: buildSalesXlsxBytes,
-          ),
+          onPressed: () => _export(fileName: 'sales.xlsx', builder: buildSalesXlsxBytes),
           child: const Text('Ventas'),
         ),
         FilledButton(
-          onPressed: () => _export(
-            fileName: 'purchases.xlsx',
-            builder: buildPurchasesXlsxBytes,
-          ),
+          onPressed: () => _export(fileName: 'purchases.xlsx', builder: buildPurchasesXlsxBytes),
           child: const Text('Compras'),
         ),
       ],
@@ -242,19 +236,32 @@ class _BackupPageState extends State<BackupPage> {
         padding: const EdgeInsets.all(16),
         children: [
           const Text('Exportar a XLSX', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
           _exportButtons(),
           const SizedBox(height: 24),
-          const Text('Importar desde XLSX (elige archivo o intenta Descargas con nombre esperado)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
-          const SizedBox(height: 12),
+          const Text(
+            'Importar desde XLSX (elige archivo o intenta Descargas con nombre esperado)',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 10),
           _importButtons(),
           const SizedBox(height: 24),
           const Divider(),
           const Text('Respaldo de Base de Datos (.db)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
-          const SizedBox(height: 12),
-          FilledButton(
-            onPressed: _backupDbToDownloads,
-            child: const Text('Respaldar BD a Descargas'),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              FilledButton(
+                onPressed: _backupDbToDownloads,
+                child: const Text('Respaldar BD a Descargas'),
+              ),
+              OutlinedButton(
+                onPressed: _restoreDbFromPicker,
+                child: const Text('Restaurar BD desde archivo'),
+              ),
+            ],
           ),
           if (_lastMsg != null) ...[
             const SizedBox(height: 16),
