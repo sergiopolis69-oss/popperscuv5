@@ -20,8 +20,10 @@ String _asString(ex.Data? d) {
     return v.toString();
   }
   if (d is ex.DateCellValue) {
-    final v = (d as ex.DateCellValue).value;
-    return v.toIso8601String();
+    final v = (d as ex.DateCellValue);
+    // excel 4.0.6: sólo year/month/day
+    final dt = DateTime(v.year, v.month, v.day);
+    return dt.toIso8601String();
   }
   return (d?.value ?? '').toString();
 }
@@ -61,8 +63,9 @@ int _asInt(ex.Data? d) {
 
 DateTime? _asDate(ex.Data? d) {
   if (d is ex.DateCellValue) {
-    final v = (d as ex.DateCellValue).value;
-    return v;
+    final v = (d as ex.DateCellValue);
+    // excel 4.0.6: sólo year/month/day
+    return DateTime(v.year, v.month, v.day);
   }
   if (d is ex.TextCellValue) {
     final v = (d as ex.TextCellValue).value;
