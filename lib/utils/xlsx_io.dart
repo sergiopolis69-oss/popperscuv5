@@ -1,553 +1,374 @@
-import 'dart:typed_data';
 import 'dart:io';
-
+import 'dart:typed_data';
 import 'package:excel/excel.dart' as ex;
+import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
-import 'package:file_picker/file_picker.dart';
+import 'package:popperscuv5/data/database.dart' as appdb;
 
-import '../data/database.dart' as appdb;
-
-/// Guarda bytes usando el diálogo del sistema (evita permisos de almacenamiento).
-Future<String> saveBytesWithSystemPicker({
-  required String fileName,
-  required List<int> bytes,
-}) async {
-  final path = await FilePicker.platform.saveFile(
-    dialogTitle: 'Guardar $fileName',
-    fileName: fileName,
-    bytes: Uint8List.fromList(bytes),
-    type: FileType.custom,
-    allowedExtensions: const ['xlsx', 'db'],
-  );
-  if (path == null) {
-    throw 'Guardado cancelado';
-  }
-  return path;
+/// Helpers para leer celdas de excel 4.x
+String _asString(ex.Data? d) {
+  if (d is ex.TextCellValue) return d.value.text ?? '';
+  if (d is ex.DoubleCellValue) return d.value.toString();
+  if (d is ex.IntCellValue) return d.value.toString();
+  if (d is ex.DateCellValue) return d.value.toIso8601String();
+  return (d?.value ?? '').toString();
 }
 
-// ======================= Helpers Excel =======================
-
-/// En excel 4.x se crea/obtiene la hoja usando el operador [].
-ex.Sheet _sheet(ex.Excel book, String name) => book[name];
-
-ex.CellValue _tx(String s) => ex.TextCellValue(s);
-ex.CellValue _dbl(num n) => ex.DoubleCellValue(n.toDouble());
-ex.CellValue _int(int n) => ex.IntCellValue(n);
-
-/// Para máxima compatibilidad, exportamos fechas como TEXTO ISO8601.
-ex.CellValue _dtAsText(DateTime d) => _tx(d.toIso8601String());
-
-String _cellAsString(ex.Data? d) {
-  if (d == null || d.value == null) return '';
-  final v = d.value!;
-  if (v is ex.TextCellValue) return v.value.text ?? '';
-  if (v is ex.DoubleCellValue) return v.value.toString();
-  if (v is ex.IntCellValue) return v.value.toString();
-  if (v is ex.DateCellValue) {
-    // Algunas versiones no exponen hora/min/seg; usamos sólo Y-M-D
-    final dt = DateTime(v.year, v.month, v.day);
-    return dt.toIso8601String();
-  }
-  return v.toString();
-}
-
-double _cellAsDouble(ex.Data? d) {
-  if (d == null || d.value == null) return 0.0;
-  final v = d.value!;
-  if (v is ex.DoubleCellValue) return v.value;
-  if (v is ex.IntCellValue) return v.value.toDouble();
-  if (v is ex.TextCellValue) {
-    final s = (v.value.text ?? '').replaceAll(',', '.');
+double _asDouble(ex.Data? d) {
+  if (d is ex.DoubleCellValue) return d.value;
+  if (d is ex.IntCellValue) return d.value.toDouble();
+  if (d is ex.TextCellValue) {
+    final s = (d.value.text ?? '').replaceAll(',', '.');
     return double.tryParse(s) ?? 0.0;
   }
-  return 0.0;
+  return double.tryParse('${d?.value ?? ''}') ?? 0.0;
 }
 
-int _cellAsInt(ex.Data? d) {
-  if (d == null || d.value == null) return 0;
-  final v = d.value!;
-  if (v is ex.IntCellValue) return v.value;
-  if (v is ex.DoubleCellValue) return v.value.round();
-  if (v is ex.TextCellValue) return int.tryParse(v.value.text ?? '') ?? 0;
-  return 0;
+int _asInt(ex.Data? d) {
+  if (d is ex.IntCellValue) return d.value;
+  if (d is ex.DoubleCellValue) return d.value.round();
+  if (d is ex.TextCellValue) return int.tryParse(d.value.text ?? '') ?? 0;
+  return int.tryParse('${d?.value ?? ''}') ?? 0;
 }
 
-DateTime? _cellAsDate(ex.Data? d) {
-  if (d == null || d.value == null) return null;
-  final v = d.value!;
-  if (v is ex.DateCellValue) {
-    return DateTime(v.year, v.month, v.day);
-  }
-  if (v is ex.TextCellValue) return DateTime.tryParse(v.value.text ?? '');
+DateTime? _asDate(ex.Data? d) {
+  if (d is ex.DateCellValue) return d.value;
+  if (d is ex.TextCellValue) return DateTime.tryParse(d.value.text ?? '');
   return null;
 }
 
-Map<String, int> _headerIndex(List<ex.Data?> header) {
-  final m = <String, int>{};
-  for (var i = 0; i < header.length; i++) {
-    final key = _cellAsString(header[i]).trim().toLowerCase();
-    if (key.isEmpty) continue;
-    m[key] = i;
-  }
-  return m;
+ex.Sheet _sheet(ex.Excel book, String name) {
+  return book.sheets[name] ?? book['$name'];
 }
 
-int _idx(Map<String, int> m, List<String> keys) {
-  for (final k in keys) {
-    final idx = m[k];
-    if (idx != null) return idx;
-  }
-  return -1;
+/// ======================= EXPORT (a Descargas) =======================
+
+Future<File> _writeToDownloads(String filename, List<int> bytes) async {
+  final dir = Directory('/storage/emulated/0/Download');
+  final file = File(p.join(dir.path, filename));
+  await file.writeAsBytes(bytes, flush: true);
+  return file;
 }
 
-ex.Sheet? _findSheetWithHeaders(ex.Excel book, List<String> requiredKeys) {
-  for (final entry in book.sheets.entries) {
-    final rows = entry.value.rows;
-    if (rows.isEmpty) continue;
-    final h = _headerIndex(rows.first);
-    final ok = requiredKeys.every((k) => h.containsKey(k));
-    if (ok) return entry.value;
-  }
-  return null;
-}
-
-// ======================= EXPORT =======================
-
-Future<List<int>> buildProductsXlsxBytes() async {
-  final db = await appdb.getDb();
-  final rows = await db.rawQuery(
-    'SELECT sku,name,category,default_sale_price,last_purchase_price,stock '
-    'FROM products ORDER BY name',
-  );
+Future<void> exportProductsXlsx() async {
+  final db = await appdb.DatabaseHelper.instance.db;
+  final rows = await db.query('products', orderBy: 'name COLLATE NOCASE');
 
   final book = ex.Excel.createExcel();
   final sh = _sheet(book, 'productos');
-  sh.appendRow([
-    _tx('sku'),
-    _tx('name'),
-    _tx('category'),
-    _tx('default_sale_price'),
-    _tx('last_purchase_price'),
-    _tx('stock'),
-  ]);
+  sh.appendRow(['sku','name','category','default_sale_price','last_purchase_price','stock'].map((e) => ex.TextCellValue(e)).toList());
   for (final r in rows) {
     sh.appendRow([
-      _tx((r['sku'] ?? '').toString()),
-      _tx((r['name'] ?? '').toString()),
-      _tx((r['category'] ?? '').toString()),
-      _dbl((r['default_sale_price'] as num?)?.toDouble() ?? 0),
-      _dbl((r['last_purchase_price'] as num?)?.toDouble() ?? 0),
-      _int((r['stock'] as num?)?.toInt() ?? 0),
+      ex.TextCellValue((r['sku'] ?? '').toString()),
+      ex.TextCellValue((r['name'] ?? '').toString()),
+      ex.TextCellValue((r['category'] ?? '').toString()),
+      ex.DoubleCellValue((r['default_sale_price'] as num?)?.toDouble() ?? 0),
+      ex.DoubleCellValue((r['last_purchase_price'] as num?)?.toDouble() ?? 0),
+      ex.IntCellValue((r['stock'] as num?)?.toInt() ?? 0),
     ]);
   }
-  return book.encode()!;
+  final bytes = book.save()!;
+  await _writeToDownloads('products.xlsx', bytes);
 }
 
-Future<List<int>> buildClientsXlsxBytes() async {
-  final db = await appdb.getDb();
-  final rows =
-      await db.rawQuery('SELECT phone,name,address FROM customers ORDER BY name');
+Future<void> exportClientsXlsx() async {
+  final db = await appdb.DatabaseHelper.instance.db;
+  final rows = await db.query('customers', orderBy: 'name COLLATE NOCASE');
 
   final book = ex.Excel.createExcel();
   final sh = _sheet(book, 'clientes');
-  sh.appendRow([_tx('phone'), _tx('name'), _tx('address')]);
+  sh.appendRow(['phone','name','address'].map((e) => ex.TextCellValue(e)).toList());
   for (final r in rows) {
     sh.appendRow([
-      _tx((r['phone'] ?? '').toString()),
-      _tx((r['name'] ?? '').toString()),
-      _tx((r['address'] ?? '').toString()),
+      ex.TextCellValue((r['phone'] ?? '').toString()),
+      ex.TextCellValue((r['name'] ?? '').toString()),
+      ex.TextCellValue((r['address'] ?? '').toString()),
     ]);
   }
-  return book.encode()!;
+  final bytes = book.save()!;
+  await _writeToDownloads('clients.xlsx', bytes);
 }
 
-Future<List<int>> buildSuppliersXlsxBytes() async {
-  final db = await appdb.getDb();
-  final rows =
-      await db.rawQuery('SELECT phone,name,address FROM suppliers ORDER BY name');
+Future<void> exportSuppliersXlsx() async {
+  final db = await appdb.DatabaseHelper.instance.db;
+  final rows = await db.query('suppliers', orderBy: 'name COLLATE NOCASE');
 
   final book = ex.Excel.createExcel();
   final sh = _sheet(book, 'proveedores');
-  sh.appendRow([_tx('phone'), _tx('name'), _tx('address')]);
+  sh.appendRow(['phone','name','address'].map((e) => ex.TextCellValue(e)).toList());
   for (final r in rows) {
     sh.appendRow([
-      _tx((r['phone'] ?? '').toString()),
-      _tx((r['name'] ?? '').toString()),
-      _tx((r['address'] ?? '').toString()),
+      ex.TextCellValue((r['phone'] ?? '').toString()),
+      ex.TextCellValue((r['name'] ?? '').toString()),
+      ex.TextCellValue((r['address'] ?? '').toString()),
     ]);
   }
-  return book.encode()!;
+  final bytes = book.save()!;
+  await _writeToDownloads('suppliers.xlsx', bytes);
 }
 
-Future<List<int>> buildSalesXlsxBytes() async {
-  final db = await appdb.getDb();
-  final sales = await db.rawQuery(
-    'SELECT id, customer_phone, payment_method, place, shipping_cost, discount, date '
-    'FROM sales ORDER BY id',
-  );
-  final items = await db.rawQuery(
-    'SELECT sale_id, p.sku AS product_sku, quantity, unit_price '
-    'FROM sale_items si JOIN products p ON p.id=si.product_id ORDER BY sale_id',
-  );
+Future<void> exportSalesXlsx() async {
+  final db = await appdb.DatabaseHelper.instance.db;
+
+  final hdrSales = ['id','customer_phone','payment_method','place','shipping_cost','discount','date'];
+  final hdrItems = ['sale_id','product_sku','quantity','unit_price'];
 
   final book = ex.Excel.createExcel();
-  final sh = _sheet(book, 'ventas');
-  sh.appendRow([
-    _tx('id'),
-    _tx('customer_phone'),
-    _tx('payment_method'),
-    _tx('place'),
-    _tx('shipping_cost'),
-    _tx('discount'),
-    _tx('date'),
-  ]);
-  for (final r in sales) {
-    sh.appendRow([
-      _int((r['id'] as num?)?.toInt() ?? 0),
-      _tx((r['customer_phone'] ?? '').toString()),
-      _tx((r['payment_method'] ?? '').toString()),
-      _tx((r['place'] ?? '').toString()),
-      _dbl((r['shipping_cost'] as num?)?.toDouble() ?? 0),
-      _dbl((r['discount'] as num?)?.toDouble() ?? 0),
-      _tx((r['date'] ?? '').toString()),
-    ]);
-  }
+  final s = _sheet(book, 'ventas');
+  s.appendRow(hdrSales.map((e) => ex.TextCellValue(e)).toList());
 
   final si = _sheet(book, 'venta_items');
-  si.appendRow([_tx('sale_id'), _tx('product_sku'), _tx('quantity'), _tx('unit_price')]);
-  for (final r in items) {
-    si.appendRow([
-      _int((r['sale_id'] as num?)?.toInt() ?? 0),
-      _tx((r['product_sku'] ?? '').toString()),
-      _int((r['quantity'] as num?)?.toInt() ?? 0),
-      _dbl((r['unit_price'] as num?)?.toDouble() ?? 0),
+  si.appendRow(hdrItems.map((e) => ex.TextCellValue(e)).toList());
+
+  final sales = await db.query('sales', orderBy: 'id');
+  for (final r in sales) {
+    s.appendRow([
+      ex.IntCellValue((r['id'] as num?)?.toInt() ?? 0),
+      ex.TextCellValue((r['customer_phone'] ?? '').toString()),
+      ex.TextCellValue((r['payment_method'] ?? '').toString()),
+      ex.TextCellValue((r['place'] ?? '').toString()),
+      ex.DoubleCellValue((r['shipping_cost'] as num?)?.toDouble() ?? 0),
+      ex.DoubleCellValue((r['discount'] as num?)?.toDouble() ?? 0),
+      ex.TextCellValue((r['date'] ?? '').toString()),
     ]);
+
+    final items = await db.rawQuery('''
+      SELECT si.sale_id, p.sku AS product_sku, si.quantity, si.unit_price
+      FROM sale_items si
+      JOIN products p ON p.id=si.product_id
+      WHERE si.sale_id=?
+      ORDER BY si.id
+    ''', [r['id']]);
+    for (final it in items) {
+      si.appendRow([
+        ex.IntCellValue((it['sale_id'] as num?)?.toInt() ?? 0),
+        ex.TextCellValue((it['product_sku'] ?? '').toString()),
+        ex.IntCellValue((it['quantity'] as num?)?.toInt() ?? 0),
+        ex.DoubleCellValue((it['unit_price'] as num?)?.toDouble() ?? 0),
+      ]);
+    }
   }
-  return book.encode()!;
+
+  final bytes = book.save()!;
+  await _writeToDownloads('sales.xlsx', bytes);
 }
 
-Future<List<int>> buildPurchasesXlsxBytes() async {
-  final db = await appdb.getDb();
-  final purchases = await db.rawQuery(
-    'SELECT id, folio, s.phone AS supplier_phone, date '
-    'FROM purchases pu LEFT JOIN suppliers s ON s.id=pu.supplier_id ORDER BY id',
-  );
-  final items = await db.rawQuery(
-    'SELECT purchase_id, p.sku AS product_sku, quantity, unit_cost '
-    'FROM purchase_items pi JOIN products p ON p.id=pi.product_id ORDER BY purchase_id',
-  );
+Future<void> exportPurchasesXlsx() async {
+  final db = await appdb.DatabaseHelper.instance.db;
+
+  final hdrPurchases = ['id','folio','supplier_phone','date'];
+  final hdrItems = ['purchase_id','product_sku','quantity','unit_cost'];
 
   final book = ex.Excel.createExcel();
-  final sh = _sheet(book, 'compras');
-  sh.appendRow([_tx('id'), _tx('folio'), _tx('supplier_phone'), _tx('date')]);
+  final s = _sheet(book, 'compras');
+  s.appendRow(hdrPurchases.map((e) => ex.TextCellValue(e)).toList());
+  final si = _sheet(book, 'compra_items');
+  si.appendRow(hdrItems.map((e) => ex.TextCellValue(e)).toList());
+
+  final purchases = await db.rawQuery('''
+    SELECT pu.id AS id, pu.folio, s.phone AS supplier_phone, pu.date
+    FROM purchases pu
+    LEFT JOIN suppliers s ON s.id = pu.supplier_id
+    ORDER BY pu.id
+  ''');
+
   for (final r in purchases) {
-    sh.appendRow([
-      _int((r['id'] as num?)?.toInt() ?? 0),
-      _tx((r['folio'] ?? '').toString()),
-      _tx((r['supplier_phone'] ?? '').toString()),
-      _tx((r['date'] ?? '').toString()),
+    s.appendRow([
+      ex.IntCellValue((r['id'] as num?)?.toInt() ?? 0),
+      ex.TextCellValue((r['folio'] ?? '').toString()),
+      ex.TextCellValue((r['supplier_phone'] ?? '').toString()),
+      ex.TextCellValue((r['date'] ?? '').toString()),
     ]);
+
+    final items = await db.rawQuery('''
+      SELECT pi.purchase_id, p.sku AS product_sku, pi.quantity, pi.unit_cost
+      FROM purchase_items pi
+      JOIN products p ON p.id=pi.product_id
+      WHERE pi.purchase_id=?
+      ORDER BY pi.id
+    ''', [r['id']]);
+    for (final it in items) {
+      si.appendRow([
+        ex.IntCellValue((it['purchase_id'] as num?)?.toInt() ?? 0),
+        ex.TextCellValue((it['product_sku'] ?? '').toString()),
+        ex.IntCellValue((it['quantity'] as num?)?.toInt() ?? 0),
+        ex.DoubleCellValue((it['unit_cost'] as num?)?.toDouble() ?? 0),
+      ]);
+    }
   }
 
-  final si = _sheet(book, 'compra_items');
-  si.appendRow([_tx('purchase_id'), _tx('product_sku'), _tx('quantity'), _tx('unit_cost')]);
-  for (final r in items) {
-    si.appendRow([
-      _int((r['purchase_id'] as num?)?.toInt() ?? 0),
-      _tx((r['product_sku'] ?? '').toString()),
-      _int((r['quantity'] as num?)?.toInt() ?? 0),
-      _dbl((r['unit_cost'] as num?)?.toDouble() ?? 0),
-    ]);
-  }
-  return book.encode()!;
+  final bytes = book.save()!;
+  await _writeToDownloads('purchases.xlsx', bytes);
 }
 
-// ======================= IMPORT =======================
+/// ======================= IMPORT (desde archivo xlsx) =======================
 
 Future<int?> _ensureSupplierByPhone(DatabaseExecutor txn, String phone) async {
   if (phone.isEmpty) return null;
-  final exist = Sqflite.firstIntValue(
-    await txn.rawQuery('SELECT id FROM suppliers WHERE phone=? LIMIT 1', [phone]),
-  );
-  if (exist != null) return exist;
-  return await txn.insert('suppliers', {'phone': phone, 'name': '', 'address': ''});
+  final existing = await txn.query('suppliers', where: 'phone=?', whereArgs: [phone], limit: 1);
+  if (existing.isNotEmpty) return existing.first['id'] as int;
+  final id = await txn.insert('suppliers', {'phone': phone});
+  return id;
 }
 
 Future<int> _ensureProductBySku(DatabaseExecutor txn, String sku) async {
-  final exist = Sqflite.firstIntValue(
-    await txn.rawQuery('SELECT id FROM products WHERE sku=? LIMIT 1', [sku]),
-  );
-  if (exist != null) return exist;
-  return await txn.insert('products', {
+  final p = await txn.query('products', where: 'sku=?', whereArgs: [sku], limit: 1);
+  if (p.isNotEmpty) return p.first['id'] as int;
+  final id = await txn.insert('products', {
     'sku': sku,
     'name': sku,
     'category': '',
-    'default_sale_price': 0,
-    'last_purchase_price': 0,
+    'default_sale_price': 0.0,
+    'last_purchase_price': 0.0,
     'stock': 0,
   });
+  return id;
 }
 
 Future<void> importProductsXlsx(Uint8List bytes) async {
   final book = ex.Excel.decodeBytes(bytes);
+  final sh = book['productos'];
+  if (sh == null) throw Exception('Hoja "productos" no encontrada');
 
-  final required = [
-    'sku',
-    'name',
-    'category',
-    'default_sale_price',
-    'last_purchase_price',
-    'stock'
-  ];
-  final sh = book.sheets['productos'] ?? _findSheetWithHeaders(book, required);
-  if (sh == null || sh.rows.isEmpty) {
-    throw 'Hoja de productos inválida';
-  }
-  final head = _headerIndex(sh.rows.first);
-  final iSku = _idx(head, ['sku']);
-  final iName = _idx(head, ['name', 'nombre']);
-  final iCat = _idx(head, ['category', 'categoria', 'categoría']);
-  final iDsp = _idx(head, ['default_sale_price', 'precio', 'precio_venta']);
-  final iLpp = _idx(head, ['last_purchase_price', 'costo', 'ultimo_costo', 'último_costo']);
-  final iStock = _idx(head, ['stock', 'existencias']);
-
-  final db = await appdb.getDb();
+  final db = await appdb.DatabaseHelper.instance.db;
   await db.transaction((txn) async {
-    for (var r = 1; r < sh.rows.length; r++) {
-      final row = sh.rows[r];
-      final sku = _cellAsString(row.elementAtOrNull(iSku)).trim();
+    for (int i = 1; i < sh.rows.length; i++) {
+      final r = sh.rows[i];
+      final sku = _asString(r.elementAtOrNull(0));
       if (sku.isEmpty) continue;
-      final name = _cellAsString(row.elementAtOrNull(iName)).trim();
-      final data = {
-        'sku': sku,
-        'name': name.isEmpty ? sku : name,
-        'category': _cellAsString(row.elementAtOrNull(iCat)).trim(),
-        'default_sale_price': _cellAsDouble(row.elementAtOrNull(iDsp)),
-        'last_purchase_price': _cellAsDouble(row.elementAtOrNull(iLpp)),
-        'stock': _cellAsInt(row.elementAtOrNull(iStock)),
-      };
-      final exists = Sqflite.firstIntValue(
-        await txn.rawQuery('SELECT id FROM products WHERE sku=?', [sku]),
-      );
-      if (exists == null) {
-        await txn.insert('products', data, conflictAlgorithm: ConflictAlgorithm.replace);
-      } else {
-        await txn.update('products', data, where: 'id=?', whereArgs: [exists]);
-      }
+      final name = _asString(r.elementAtOrNull(1));
+      final category = _asString(r.elementAtOrNull(2));
+      final dsp = _asDouble(r.elementAtOrNull(3));
+      final lpp = _asDouble(r.elementAtOrNull(4));
+      final stock = _asInt(r.elementAtOrNull(5));
+
+      final id = await _ensureProductBySku(txn, sku);
+      await txn.update('products', {
+        'name': name,
+        'category': category,
+        'default_sale_price': dsp,
+        'last_purchase_price': lpp,
+        'stock': stock,
+      }, where: 'id=?', whereArgs: [id]);
     }
   });
 }
 
 Future<void> importClientsXlsx(Uint8List bytes) async {
   final book = ex.Excel.decodeBytes(bytes);
-  final sh = book.sheets['clientes'] ??
-      _findSheetWithHeaders(book, ['phone', 'name', 'address']);
-  if (sh == null || sh.rows.isEmpty) throw 'Hoja de clientes inválida';
-  final head = _headerIndex(sh.rows.first);
-  final iPhone = _idx(head, ['phone', 'telefono', 'teléfono']);
-  final iName = _idx(head, ['name', 'nombre']);
-  final iAddr = _idx(head, ['address', 'direccion', 'dirección']);
+  final sh = book['clientes'];
+  if (sh == null) throw Exception('Hoja "clientes" no encontrada');
 
-  final db = await appdb.getDb();
+  final db = await appdb.DatabaseHelper.instance.db;
   await db.transaction((txn) async {
-    for (var i = 1; i < sh.rows.length; i++) {
+    for (int i = 1; i < sh.rows.length; i++) {
       final r = sh.rows[i];
-      final phone = _cellAsString(r.elementAtOrNull(iPhone)).trim();
+      final phone = _asString(r.elementAtOrNull(0));
       if (phone.isEmpty) continue;
-      final data = {
+      await txn.insert('customers', {
         'phone': phone,
-        'name': _cellAsString(r.elementAtOrNull(iName)).trim(),
-        'address': _cellAsString(r.elementAtOrNull(iAddr)).trim(),
-      };
-      final exists = Sqflite.firstIntValue(
-        await txn.rawQuery('SELECT COUNT(*) FROM customers WHERE phone=?', [phone]),
-      );
-      if ((exists ?? 0) > 0) {
-        await txn.update('customers', data, where: 'phone=?', whereArgs: [phone]);
-      } else {
-        await txn.insert('customers', data, conflictAlgorithm: ConflictAlgorithm.replace);
-      }
+        'name': _asString(r.elementAtOrNull(1)),
+        'address': _asString(r.elementAtOrNull(2)),
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
   });
 }
 
 Future<void> importSuppliersXlsx(Uint8List bytes) async {
   final book = ex.Excel.decodeBytes(bytes);
-  final sh = book.sheets['proveedores'] ??
-      _findSheetWithHeaders(book, ['phone', 'name', 'address']);
-  if (sh == null || sh.rows.isEmpty) throw 'Hoja de proveedores inválida';
-  final head = _headerIndex(sh.rows.first);
-  final iPhone = _idx(head, ['phone', 'telefono', 'teléfono']);
-  final iName = _idx(head, ['name', 'nombre']);
-  final iAddr = _idx(head, ['address', 'direccion', 'dirección']);
+  final sh = book['proveedores'];
+  if (sh == null) throw Exception('Hoja "proveedores" no encontrada');
 
-  final db = await appdb.getDb();
+  final db = await appdb.DatabaseHelper.instance.db;
   await db.transaction((txn) async {
-    for (var i = 1; i < sh.rows.length; i++) {
+    for (int i = 1; i < sh.rows.length; i++) {
       final r = sh.rows[i];
-      final phone = _cellAsString(r.elementAtOrNull(iPhone)).trim();
+      final phone = _asString(r.elementAtOrNull(0));
       if (phone.isEmpty) continue;
-      final data = {
+      await txn.insert('suppliers', {
         'phone': phone,
-        'name': _cellAsString(r.elementAtOrNull(iName)).trim(),
-        'address': _cellAsString(r.elementAtOrNull(iAddr)).trim(),
-      };
-      final existId = Sqflite.firstIntValue(
-        await txn.rawQuery('SELECT id FROM suppliers WHERE phone=?', [phone]),
-      );
-      if (existId == null) {
-        await txn.insert('suppliers', data, conflictAlgorithm: ConflictAlgorithm.replace);
-      } else {
-        await txn.update('suppliers', data, where: 'id=?', whereArgs: [existId]);
-      }
+        'name': _asString(r.elementAtOrNull(1)),
+        'address': _asString(r.elementAtOrNull(2)),
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
   });
 }
 
 Future<void> importSalesXlsx(Uint8List bytes) async {
   final book = ex.Excel.decodeBytes(bytes);
+  final sh = book['ventas'];
+  final shi = book['venta_items'];
+  if (sh == null || shi == null) throw Exception('Hojas "ventas" y/o "venta_items" no encontradas');
 
-  final shSales = book.sheets['ventas'] ??
-      _findSheetWithHeaders(book, [
-        'id',
-        'customer_phone',
-        'payment_method',
-        'place',
-        'shipping_cost',
-        'discount',
-        'date'
-      ]);
-  final shItems = book.sheets['venta_items'] ??
-      _findSheetWithHeaders(book, ['sale_id', 'product_sku', 'quantity', 'unit_price']);
-  if (shSales == null || shItems == null) throw 'Hojas de ventas inválidas';
-
-  final hS = _headerIndex(shSales.rows.first);
-  final sId = _idx(hS, ['id']);
-  final sPhone = _idx(hS, ['customer_phone', 'cliente', 'telefono', 'teléfono']);
-  final sPay = _idx(hS, ['payment_method', 'pago']);
-  final sPlace = _idx(hS, ['place', 'lugar']);
-  final sShip = _idx(hS, ['shipping_cost', 'envio', 'envío']);
-  final sDisc = _idx(hS, ['discount', 'descuento']);
-  final sDate = _idx(hS, ['date', 'fecha']);
-
-  final hI = _headerIndex(shItems.rows.first);
-  final iSale = _idx(hI, ['sale_id']);
-  final iSku = _idx(hI, ['product_sku', 'sku']);
-  final iQty = _idx(hI, ['quantity', 'cantidad']);
-  final iUnit = _idx(hI, ['unit_price', 'precio']);
-
-  final db = await appdb.getDb();
+  final db = await appdb.DatabaseHelper.instance.db;
   await db.transaction((txn) async {
     // ventas
-    for (var r = 1; r < shSales.rows.length; r++) {
-      final row = shSales.rows[r];
-      final extId = _cellAsInt(row.elementAtOrNull(sId));
-      final phone = _cellAsString(row.elementAtOrNull(sPhone)).trim();
-      final data = {
-        'id': extId,
-        'customer_phone': phone.isEmpty ? null : phone,
-        'payment_method': _cellAsString(row.elementAtOrNull(sPay)).trim(),
-        'place': _cellAsString(row.elementAtOrNull(sPlace)).trim(),
-        'shipping_cost': _cellAsDouble(row.elementAtOrNull(sShip)),
-        'discount': _cellAsDouble(row.elementAtOrNull(sDisc)),
-        'date': _cellAsString(row.elementAtOrNull(sDate)),
-      };
-      final exists = Sqflite.firstIntValue(
-            await txn.rawQuery('SELECT COUNT(*) FROM sales WHERE id=?', [extId]),
-          ) ??
-          0;
-      if (exists > 0) {
-        await txn.update('sales', data, where: 'id=?', whereArgs: [extId]);
-      } else {
-        await txn.insert('sales', data, conflictAlgorithm: ConflictAlgorithm.replace);
-      }
+    final insertedIds = <int>{};
+    for (int i = 1; i < sh.rows.length; i++) {
+      final r = sh.rows[i];
+      final id = _asInt(r.elementAtOrNull(0));
+      await txn.insert('sales', {
+        'id': id == 0 ? null : id,
+        'customer_phone': _asString(r.elementAtOrNull(1)),
+        'payment_method': _asString(r.elementAtOrNull(2)),
+        'place': _asString(r.elementAtOrNull(3)),
+        'shipping_cost': _asDouble(r.elementAtOrNull(4)),
+        'discount': _asDouble(r.elementAtOrNull(5)),
+        'date': _asString(r.elementAtOrNull(6)),
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
+      if (id != 0) insertedIds.add(id);
     }
-
     // items
-    for (var r = 1; r < shItems.rows.length; r++) {
-      final row = shItems.rows[r];
-      final saleId = _cellAsInt(row.elementAtOrNull(iSale));
-      final sku = _cellAsString(row.elementAtOrNull(iSku)).trim();
-      if (sku.isEmpty) continue;
-      final prodId = await _ensureProductBySku(txn, sku);
-      final data = {
-        'sale_id': saleId,
-        'product_id': prodId,
-        'quantity': _cellAsInt(row.elementAtOrNull(iQty)),
-        'unit_price': _cellAsDouble(row.elementAtOrNull(iUnit)),
-      };
-      await txn.insert('sale_items', data, conflictAlgorithm: ConflictAlgorithm.replace);
+    for (int i = 1; i < shi.rows.length; i++) {
+      final r = shi.rows[i];
+      final sid = _asInt(r.elementAtOrNull(0));
+      final sku = _asString(r.elementAtOrNull(1));
+      if (sid == 0 || sku.isEmpty) continue;
+      final pid = await _ensureProductBySku(txn, sku);
+      await txn.insert('sale_items', {
+        'sale_id': sid,
+        'product_id': pid,
+        'quantity': _asInt(r.elementAtOrNull(2)),
+        'unit_price': _asDouble(r.elementAtOrNull(3)),
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
   });
 }
 
 Future<void> importPurchasesXlsx(Uint8List bytes) async {
   final book = ex.Excel.decodeBytes(bytes);
+  final sh = book['compras'];
+  final shi = book['compra_items'];
+  if (sh == null || shi == null) throw Exception('Hojas "compras" y/o "compra_items" no encontradas');
 
-  final shPurch = book.sheets['compras'] ??
-      _findSheetWithHeaders(book, ['id', 'folio', 'supplier_phone', 'date']);
-  final shItems = book.sheets['compra_items'] ??
-      _findSheetWithHeaders(book, ['purchase_id', 'product_sku', 'quantity', 'unit_cost']);
-  if (shPurch == null || shItems == null) throw 'Hojas de compras inválidas';
-
-  final hP = _headerIndex(shPurch.rows.first);
-  final pId = _idx(hP, ['id']);
-  final pFolio = _idx(hP, ['folio']);
-  final pPhone = _idx(hP, ['supplier_phone', 'phone', 'telefono', 'teléfono']);
-  final pDate = _idx(hP, ['date', 'fecha']);
-
-  final hI = _headerIndex(shItems.rows.first);
-  final iPid = _idx(hI, ['purchase_id']);
-  final iSku = _idx(hI, ['product_sku', 'sku']);
-  final iQty = _idx(hI, ['quantity', 'cantidad']);
-  final iCost = _idx(hI, ['unit_cost', 'costo']);
-
-  final db = await appdb.getDb();
+  final db = await appdb.DatabaseHelper.instance.db;
   await db.transaction((txn) async {
-    for (var r = 1; r < shPurch.rows.length; r++) {
-      final row = shPurch.rows[r];
-      final id = _cellAsInt(row.elementAtOrNull(pId));
-      final phone = _cellAsString(row.elementAtOrNull(pPhone)).trim();
-      final supId = await _ensureSupplierByPhone(txn, phone);
-      final data = {
-        'id': id,
-        'folio': _cellAsString(row.elementAtOrNull(pFolio)).trim(),
+    // compras
+    for (int i = 1; i < sh.rows.length; i++) {
+      final r = sh.rows[i];
+      final id = _asInt(r.elementAtOrNull(0));
+      final phone = _asString(r.elementAtOrNull(2));
+      final supId = await _ensureSupplierByPhone(txn, phone ?? '');
+      await txn.insert('purchases', {
+        'id': id == 0 ? null : id,
+        'folio': _asString(r.elementAtOrNull(1)),
         'supplier_id': supId,
-        'date': _cellAsString(row.elementAtOrNull(pDate)),
-      };
-      final exists = Sqflite.firstIntValue(
-            await txn.rawQuery('SELECT COUNT(*) FROM purchases WHERE id=?', [id]),
-          ) ??
-          0;
-      if (exists > 0) {
-        await txn.update('purchases', data, where: 'id=?', whereArgs: [id]);
-      } else {
-        await txn.insert('purchases', data, conflictAlgorithm: ConflictAlgorithm.replace);
-      }
+        'date': _asString(r.elementAtOrNull(3)),
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
-
-    for (var r = 1; r < shItems.rows.length; r++) {
-      final row = shItems.rows[r];
-      final pid = _cellAsInt(row.elementAtOrNull(iPid));
-      final sku = _cellAsString(row.elementAtOrNull(iSku)).trim();
-      if (sku.isEmpty) continue;
+    // items
+    for (int i = 1; i < shi.rows.length; i++) {
+      final r = shi.rows[i];
+      final pid = _asInt(r.elementAtOrNull(0));
+      final sku = _asString(r.elementAtOrNull(1));
+      if (pid == 0 || sku.isEmpty) continue;
       final prodId = await _ensureProductBySku(txn, sku);
-      final data = {
+      await txn.insert('purchase_items', {
         'purchase_id': pid,
         'product_id': prodId,
-        'quantity': _cellAsInt(row.elementAtOrNull(iQty)),
-        'unit_cost': _cellAsDouble(row.elementAtOrNull(iCost)),
-      };
-      await txn.insert('purchase_items', data, conflictAlgorithm: ConflictAlgorithm.replace);
-
-      // actualiza costo y stock
-      await txn.update('products', {
-        'last_purchase_price': data['unit_cost'],
-      }, where: 'id=?', whereArgs: [prodId]);
-
-      await txn.rawUpdate(
-          'UPDATE products SET stock = IFNULL(stock,0) + ? WHERE id=?',
-          [data['quantity'], prodId]);
+        'quantity': _asInt(r.elementAtOrNull(2)),
+        'unit_cost': _asDouble(r.elementAtOrNull(3)),
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
   });
 }
