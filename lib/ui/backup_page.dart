@@ -1,14 +1,10 @@
 import 'dart:io';
 import 'dart:typed_data';
-
-import 'package:excel/excel.dart' as ex;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
-
 import 'package:popperscuv5/utils/xlsx_io.dart' as xio;
-import 'package:popperscuv5/data/database.dart' as appdb;
 
 class BackupPage extends StatefulWidget {
   const BackupPage({super.key});
@@ -17,218 +13,189 @@ class BackupPage extends StatefulWidget {
 }
 
 class _BackupPageState extends State<BackupPage> {
-  void _snack(String msg) =>
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  String? _status;
 
-  // ---------- helpers ----------
-  Future<Uint8List?> _pickXlsxBytes({String? suggestedName}) async {
+  Future<void> _pickAndImport({
+    required String label,
+    required Future<void> Function(Uint8List) importer,
+    List<String> allowed = const ['xlsx'],
+  }) async {
     try {
       final res = await FilePicker.platform.pickFiles(
         type: FileType.custom,
-        allowedExtensions: ['xlsx'],
-        dialogTitle: 'Selecciona un archivo XLSX',
+        allowedExtensions: allowed,
         withData: true,
       );
-      if (res != null && res.files.single.bytes != null) {
-        return res.files.single.bytes!;
-      }
-      // fallback: intenta /Download/<suggestedName>
-      if (suggestedName != null) {
-        final file =
-            File('/storage/emulated/0/Download/$suggestedName');
-        if (await file.exists()) {
-          return await file.readAsBytes();
-        }
-      }
-      return null;
-    } catch (e) {
-      _snack('No se pudo abrir el archivo: $e');
-      return null;
-    }
-  }
-
-  Future<void> _exportXlsx(Future<void> Function() fn,
-      {required String nameForToast}) async {
-    try {
-      await fn();
-      _snack('Exportado: $nameForToast → Descargas');
-    } catch (e) {
-      _snack('Error al exportar: $e');
-    }
-  }
-
-  // ---------- BD ----------
-  Future<void> _backupDbToDownloads() async {
-    try {
-      final dbPath = p.join(await getDatabasesPath(), 'pdv.db');
-      final bytes = await File(dbPath).readAsBytes();
-      final out = File('/storage/emulated/0/Download/pdv.db');
-      await out.writeAsBytes(bytes, flush: true);
-      _snack('BD respaldada en Descargas/pdv.db');
-    } catch (e) {
-      _snack('Error al respaldar BD: $e');
-    }
-  }
-
-  Future<void> _restoreDbFromPickerOrDownloads() async {
-    try {
-      Uint8List? bytes;
-
-      // 1) intentar con file picker
-      final picked = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['db'],
-        dialogTitle: 'Selecciona respaldo .db',
-        withData: true,
-      );
-      if (picked != null && picked.files.single.bytes != null) {
-        bytes = picked.files.single.bytes!;
-      }
-
-      // 2) fallback desde Descargas/pdv.db
-      bytes ??= await () async {
-        final f = File('/storage/emulated/0/Download/pdv.db');
-        if (await f.exists()) return await f.readAsBytes();
-        return null;
-      }();
-
+      final bytes = res?.files.single.bytes;
       if (bytes == null) {
-        _snack('No seleccionaste archivo y no existe Descargas/pdv.db');
+        setState(() => _status = 'Cancelado.');
         return;
       }
-
-      // cerrar y reemplazar
-      final path = p.join(await getDatabasesPath(), 'pdv.db');
-      try {
-        await (await appdb.DatabaseHelper.instance.db).close();
-      } catch (_) {}
-      await File(path).writeAsBytes(bytes, flush: true);
-
-      // “reabrir” perezosamente: el getter lo abrirá en el siguiente acceso
-      _snack('BD restaurada. Reinicia la app para asegurar apertura limpia.');
+      await importer(bytes);
+      setState(() => _status = 'Importado $label correctamente.');
     } catch (e) {
-      _snack('Error al restaurar BD: $e');
+      setState(() => _status = 'Error importando $label: $e');
     }
   }
 
-  // ---------- IMPORTACIONES ----------
-  Future<void> _importProducts() async {
-    final bytes = await _pickXlsxBytes(suggestedName: 'products.xlsx');
-    if (bytes == null) return;
+  Future<String?> _saveBytesWithPicker({
+    required String fileName,
+    required Uint8List bytes,
+    required List<String> allowed,
+  }) async {
+    final savePath = await FilePicker.platform.saveFile(
+      dialogTitle: 'Guardar como…',
+      fileName: fileName,
+      type: FileType.custom,
+      allowedExtensions: allowed,
+    );
+    if (savePath == null) return null;
+    final f = File(savePath);
+    await f.writeAsBytes(bytes, flush: true);
+    return savePath;
+  }
+
+  Future<void> _exportXlsx({
+    required String fileName,
+    required Future<Uint8List> Function() builder,
+  }) async {
     try {
-      await xio.importProductsXlsx(bytes);
-      _snack('Productos importados');
+      final bytes = await builder();
+      final saved = await _saveBytesWithPicker(
+        fileName: fileName,
+        bytes: bytes,
+        allowed: const ['xlsx'],
+      );
+      setState(() => _status = saved == null ? 'Cancelado.' : 'Guardado en: $saved');
     } catch (e) {
-      _snack('Error importando productos: $e');
+      setState(() => _status = 'Error al exportar: $e');
     }
   }
 
-  Future<void> _importClients() async {
-    final bytes = await _pickXlsxBytes(suggestedName: 'clients.xlsx');
-    if (bytes == null) return;
+  Future<void> _backupDbToPicker() async {
     try {
-      await xio.importClientsXlsx(bytes);
-      _snack('Clientes importados');
+      final dbPath = p.join(await getDatabasesPath(), 'pdv.db');
+      final src = File(dbPath);
+      if (!await src.exists()) {
+        setState(() => _status = 'No se encontró la BD.');
+        return;
+      }
+      final bytes = await src.readAsBytes();
+      final saved = await _saveBytesWithPicker(
+        fileName: 'pdv.db',
+        bytes: bytes,
+        allowed: const ['db'],
+      );
+      setState(() => _status = saved == null ? 'Cancelado.' : 'BD guardada en: $saved');
     } catch (e) {
-      _snack('Error importando clientes: $e');
+      setState(() => _status = 'Error al respaldar BD: $e');
     }
   }
 
-  Future<void> _importSuppliers() async {
-    final bytes = await _pickXlsxBytes(suggestedName: 'suppliers.xlsx');
-    if (bytes == null) return;
+  Future<void> _restoreDbFromPicker() async {
     try {
-      await xio.importSuppliersXlsx(bytes);
-      _snack('Proveedores importados');
+      final picked = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['db'], // sin punto
+        withData: true,
+      );
+      final bytes = picked?.files.single.bytes;
+      if (bytes == null) {
+        setState(() => _status = 'Cancelado.');
+        return;
+      }
+      final dbPath = p.join(await getDatabasesPath(), 'pdv.db');
+      // Cierra DB si está abierta (sqflite la cierra al reemplazar)
+      await File(dbPath).writeAsBytes(bytes, flush: true);
+      setState(() => _status = 'BD restaurada. Reinicia la app para aplicar.');
     } catch (e) {
-      _snack('Error importando proveedores: $e');
-    }
-  }
-
-  Future<void> _importSales() async {
-    final bytes = await _pickXlsxBytes(suggestedName: 'sales.xlsx');
-    if (bytes == null) return;
-    try {
-      await xio.importSalesXlsx(bytes);
-      _snack('Ventas importadas');
-    } catch (e) {
-      _snack('Error importando ventas: $e');
-    }
-  }
-
-  Future<void> _importPurchases() async {
-    final bytes = await _pickXlsxBytes(suggestedName: 'purchases.xlsx');
-    if (bytes == null) return;
-    try {
-      await xio.importPurchasesXlsx(bytes);
-      _snack('Compras importadas');
-    } catch (e) {
-      _snack('Error importando compras: $e');
+      setState(() => _status = 'Error al restaurar BD: $e');
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final pad = const EdgeInsets.symmetric(horizontal: 24, vertical: 8);
     return Scaffold(
       appBar: AppBar(title: const Text('Respaldo / XLSX / BD')),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.symmetric(vertical: 16),
         children: [
-          Text('Exportar a XLSX', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 8),
-          Wrap(spacing: 12, runSpacing: 12, children: [
-            FilledButton(
-              onPressed: () => _exportXlsx(xio.exportProductsXlsx, nameForToast: 'products.xlsx'),
-              child: const Text('Productos'),
-            ),
-            FilledButton(
-              onPressed: () => _exportXlsx(xio.exportClientsXlsx, nameForToast: 'clients.xlsx'),
-              child: const Text('Clientes'),
-            ),
-            FilledButton(
-              onPressed: () => _exportXlsx(xio.exportSuppliersXlsx, nameForToast: 'suppliers.xlsx'),
-              child: const Text('Proveedores'),
-            ),
-            FilledButton(
-              onPressed: () => _exportXlsx(xio.exportSalesXlsx, nameForToast: 'sales.xlsx'),
-              child: const Text('Ventas'),
-            ),
-            FilledButton(
-              onPressed: () => _exportXlsx(xio.exportPurchasesXlsx, nameForToast: 'purchases.xlsx'),
-              child: const Text('Compras'),
-            ),
-          ]),
-          const SizedBox(height: 20),
-          Text(
-            'Importar desde XLSX (elige archivo o intenta Descargas con nombre esperado)',
-            style: Theme.of(context).textTheme.titleLarge,
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 24, vertical: 6),
+            child: Text('Exportar a XLSX', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
           ),
-          const SizedBox(height: 8),
-          Wrap(spacing: 12, runSpacing: 12, children: [
-            OutlinedButton(onPressed: _importProducts, child: const Text('Productos')),
-            OutlinedButton(onPressed: _importClients, child: const Text('Clientes')),
-            OutlinedButton(onPressed: _importSuppliers, child: const Text('Proveedores')),
-            OutlinedButton(onPressed: _importSales, child: const Text('Ventas')),
-            OutlinedButton(onPressed: _importPurchases, child: const Text('Compras')),
-          ]),
-          const SizedBox(height: 20),
-          Text('Respaldo de Base de Datos (.db)', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 8),
-          Wrap(spacing: 12, runSpacing: 12, children: [
-            FilledButton(
-              onPressed: _backupDbToDownloads,
-              child: const Text('Respaldar BD a Descargas'),
-            ),
-            OutlinedButton(
-              onPressed: _restoreDbFromPickerOrDownloads,
-              child: const Text('Restaurar BD'),
-            ),
-          ]),
-          const SizedBox(height: 24),
-          Text(
-            'Nota: En Android 10+ puede requerir permitir “Acceso a todos los archivos” para escribir/leer en Descargas.',
-            style: Theme.of(context).textTheme.bodySmall,
+          Wrap(
+            spacing: 12, runSpacing: 12, alignment: WrapAlignment.start,
+            children: [
+              ElevatedButton(
+                onPressed: () => _exportXlsx(fileName: 'products.xlsx', builder: xio.buildProductsXlsxBytes),
+                child: const Text('Productos'),
+              ),
+              ElevatedButton(
+                onPressed: () => _exportXlsx(fileName: 'clients.xlsx', builder: xio.buildClientsXlsxBytes),
+                child: const Text('Clientes'),
+              ),
+              ElevatedButton(
+                onPressed: () => _exportXlsx(fileName: 'suppliers.xlsx', builder: xio.buildSuppliersXlsxBytes),
+                child: const Text('Proveedores'),
+              ),
+              ElevatedButton(
+                onPressed: () => _exportXlsx(fileName: 'sales.xlsx', builder: xio.buildSalesXlsxBytes),
+                child: const Text('Ventas'),
+              ),
+              ElevatedButton(
+                onPressed: () => _exportXlsx(fileName: 'purchases.xlsx', builder: xio.buildPurchasesXlsxBytes),
+                child: const Text('Compras'),
+              ),
+            ],
           ),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+            child: Text('Importar desde XLSX (elige archivo)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          ),
+          Padding(
+            padding: pad,
+            child: Wrap(spacing: 12, runSpacing: 12, children: [
+              OutlinedButton(
+                onPressed: () => _pickAndImport(label: 'Productos', importer: xio.importProductsXlsx),
+                child: const Text('Productos'),
+              ),
+              OutlinedButton(
+                onPressed: () => _pickAndImport(label: 'Clientes', importer: xio.importClientsXlsx),
+                child: const Text('Clientes'),
+              ),
+              OutlinedButton(
+                onPressed: () => _pickAndImport(label: 'Proveedores', importer: xio.importSuppliersXlsx),
+                child: const Text('Proveedores'),
+              ),
+              OutlinedButton(
+                onPressed: () => _pickAndImport(label: 'Ventas', importer: xio.importSalesXlsx),
+                child: const Text('Ventas'),
+              ),
+              OutlinedButton(
+                onPressed: () => _pickAndImport(label: 'Compras', importer: xio.importPurchasesXlsx),
+                child: const Text('Compras'),
+              ),
+            ]),
+          ),
+          const Divider(height: 32),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 24, vertical: 6),
+            child: Text('Respaldo de Base de Datos (.db)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          ),
+          Padding(
+            padding: pad,
+            child: Wrap(spacing: 12, runSpacing: 12, children: [
+              ElevatedButton(onPressed: _backupDbToPicker, child: const Text('Respaldar BD')),
+              OutlinedButton(onPressed: _restoreDbFromPicker, child: const Text('Restaurar BD')),
+            ]),
+          ),
+          if (_status != null)
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(_status!, style: const TextStyle(color: Colors.grey)),
+            ),
         ],
       ),
     );
