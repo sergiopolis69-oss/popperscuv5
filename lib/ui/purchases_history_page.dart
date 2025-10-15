@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:sqflite/sqflite.dart';
-import '../data/database.dart';
+import 'package:popperscuv5/data/database.dart' as appdb;
 
 class PurchasesHistoryPage extends StatefulWidget {
   const PurchasesHistoryPage({super.key});
@@ -20,11 +20,12 @@ class _PurchasesHistoryPageState extends State<PurchasesHistoryPage> {
   }
 
   Future<void> _load({String? q}) async {
-    final db = await DatabaseHelper.instance.db;
+    final db = await appdb.getDb();
+
     final where = (q == null || q.isEmpty)
         ? ''
-        : "WHERE folio LIKE ? OR date LIKE ? OR COALESCE(suppliers.name,'') LIKE ?";
-    final args = (q == null || q.isEmpty) ? [] : ['%$q%','%$q%','%$q%'];
+        : "WHERE p.folio LIKE ? OR p.date LIKE ? OR COALESCE(s.name,'') LIKE ?";
+    final args = (q == null || q.isEmpty) ? [] : ['%$q%', '%$q%', '%$q%'];
 
     final heads = await db.rawQuery('''
       SELECT p.id, p.folio, p.date,
@@ -36,22 +37,24 @@ class _PurchasesHistoryPageState extends State<PurchasesHistoryPage> {
     ''', args);
 
     final items = await db.rawQuery('''
-      SELECT pi.purchase_id, p.sku, p.name, pi.quantity, pi.unit_cost
+      SELECT pi.purchase_id, pr.sku, pr.name, pi.quantity, pi.unit_cost
       FROM purchase_items pi
-      JOIN products p ON p.id = pi.product_id
-      ORDER BY pi.purchase_id DESC, p.name
+      JOIN products pr ON pr.id = pi.product_id
+      ORDER BY pi.purchase_id DESC, pr.name COLLATE NOCASE
     ''');
 
     final byPurchase = <int, List<Map<String, dynamic>>>{};
     for (final it in items) {
-      byPurchase.putIfAbsent(it['purchase_id'] as int, () => []).add(it);
+      final pid = it['purchase_id'] as int;
+      byPurchase.putIfAbsent(pid, () => []).add(it);
     }
 
     final merged = heads.map((h) {
       final id = h['id'] as int;
       final its = byPurchase[id] ?? const [];
       final totalQty = its.fold<int>(0, (a, b) => a + (b['quantity'] as int));
-      final total = its.fold<double>(0, (a, b) => a + (b['quantity'] as int) * (b['unit_cost'] as num).toDouble());
+      final total = its.fold<double>(0, (a, b) =>
+          a + (b['quantity'] as int) * (b['unit_cost'] as num).toDouble());
       return {
         ...h,
         'items': its,
@@ -60,7 +63,7 @@ class _PurchasesHistoryPageState extends State<PurchasesHistoryPage> {
       };
     }).toList();
 
-    setState(() => _purchases = merged);
+    if (mounted) setState(() => _purchases = merged);
   }
 
   @override
@@ -86,19 +89,24 @@ class _PurchasesHistoryPageState extends State<PurchasesHistoryPage> {
             itemCount: _purchases.length,
             itemBuilder: (ctx, i) {
               final p = _purchases[i];
-              final items = (p['items'] as List).cast<Map<String, dynamic>>();
+              final items =
+                  (p['items'] as List).cast<Map<String, dynamic>>();
               return Card(
-                margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                margin:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 child: ExpansionTile(
-                  title: Text('Folio ${p['folio'] ?? '(sin folio)'} • ${p['date']}'),
-                  subtitle: Text('${p['supplier_name']} • ${p['total_qty']} pzas • \$${p['total_amount'].toStringAsFixed(2)}'),
-                  children: items.map((it) {
-                    return ListTile(
-                      dense: true,
-                      title: Text('${it['sku'] ?? ''}  ${it['name']}'),
-                      trailing: Text('${it['quantity']} × \$${(it['unit_cost'] as num).toStringAsFixed(2)}'),
-                    );
-                  }).toList(),
+                  title: Text(
+                      'Folio ${p['folio'] ?? '(sin folio)'} • ${p['date']}'),
+                  subtitle: Text(
+                      '${p['supplier_name']} • ${p['total_qty']} pzas • \$${(p['total_amount'] as num).toStringAsFixed(2)}'),
+                  children: items
+                      .map((it) => ListTile(
+                            dense: true,
+                            title: Text('${it['sku'] ?? ''}  ${it['name']}'),
+                            trailing: Text(
+                                '${it['quantity']} × \$${(it['unit_cost'] as num).toStringAsFixed(2)}'),
+                          ))
+                      .toList(),
                 ),
               );
             },
