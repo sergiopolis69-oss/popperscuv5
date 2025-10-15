@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:popperscuv5/data/database.dart' as appdb;
+import 'package:popperscuv5/ui/purchases_history_page.dart';
 
 class PurchasesPage extends StatefulWidget {
   const PurchasesPage({Key? key}) : super(key: key);
