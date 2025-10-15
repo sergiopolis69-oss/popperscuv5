@@ -5,43 +5,73 @@ import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 import 'package:popperscuv5/data/database.dart' as appdb;
 
-/// Helpers para leer celdas de excel 4.x
+/// ===== Helpers para leer celdas (Excel 4.x) =====
 String _asString(ex.Data? d) {
-  if (d is ex.TextCellValue) return d.value.text ?? '';
-  if (d is ex.DoubleCellValue) return d.value.toString();
-  if (d is ex.IntCellValue) return d.value.toString();
-  if (d is ex.DateCellValue) return d.value.toIso8601String();
+  if (d is ex.TextCellValue) {
+    final v = (d as ex.TextCellValue).value;
+    return v.text ?? '';
+  }
+  if (d is ex.DoubleCellValue) {
+    final v = (d as ex.DoubleCellValue).value;
+    return v.toString();
+  }
+  if (d is ex.IntCellValue) {
+    final v = (d as ex.IntCellValue).value;
+    return v.toString();
+  }
+  if (d is ex.DateCellValue) {
+    final v = (d as ex.DateCellValue).value;
+    return v.toIso8601String();
+  }
   return (d?.value ?? '').toString();
 }
 
 double _asDouble(ex.Data? d) {
-  if (d is ex.DoubleCellValue) return d.value;
-  if (d is ex.IntCellValue) return d.value.toDouble();
+  if (d is ex.DoubleCellValue) {
+    final v = (d as ex.DoubleCellValue).value;
+    return v;
+  }
+  if (d is ex.IntCellValue) {
+    final v = (d as ex.IntCellValue).value;
+    return v.toDouble();
+  }
   if (d is ex.TextCellValue) {
-    final s = (d.value.text ?? '').replaceAll(',', '.');
+    final v = (d as ex.TextCellValue).value;
+    final s = (v.text ?? '').replaceAll(',', '.');
     return double.tryParse(s) ?? 0.0;
   }
   return double.tryParse('${d?.value ?? ''}') ?? 0.0;
 }
 
 int _asInt(ex.Data? d) {
-  if (d is ex.IntCellValue) return d.value;
-  if (d is ex.DoubleCellValue) return d.value.round();
-  if (d is ex.TextCellValue) return int.tryParse(d.value.text ?? '') ?? 0;
+  if (d is ex.IntCellValue) {
+    final v = (d as ex.IntCellValue).value;
+    return v;
+  }
+  if (d is ex.DoubleCellValue) {
+    final v = (d as ex.DoubleCellValue).value;
+    return v.round();
+  }
+  if (d is ex.TextCellValue) {
+    final v = (d as ex.TextCellValue).value;
+    return int.tryParse(v.text ?? '') ?? 0;
+  }
   return int.tryParse('${d?.value ?? ''}') ?? 0;
 }
 
 DateTime? _asDate(ex.Data? d) {
-  if (d is ex.DateCellValue) return d.value;
-  if (d is ex.TextCellValue) return DateTime.tryParse(d.value.text ?? '');
+  if (d is ex.DateCellValue) {
+    final v = (d as ex.DateCellValue).value;
+    return v;
+  }
+  if (d is ex.TextCellValue) {
+    final v = (d as ex.TextCellValue).value;
+    return DateTime.tryParse(v.text ?? '');
+  }
   return null;
 }
 
-ex.Sheet _sheet(ex.Excel book, String name) {
-  return book.sheets[name] ?? book['$name'];
-}
-
-/// ======================= EXPORT (a Descargas) =======================
+ex.Sheet _sheet(ex.Excel book, String name) => book.sheets[name] ?? book[name];
 
 Future<File> _writeToDownloads(String filename, List<int> bytes) async {
   final dir = Directory('/storage/emulated/0/Download');
@@ -50,13 +80,16 @@ Future<File> _writeToDownloads(String filename, List<int> bytes) async {
   return file;
 }
 
+/// ======================= EXPORT =======================
+
 Future<void> exportProductsXlsx() async {
   final db = await appdb.DatabaseHelper.instance.db;
   final rows = await db.query('products', orderBy: 'name COLLATE NOCASE');
 
   final book = ex.Excel.createExcel();
   final sh = _sheet(book, 'productos');
-  sh.appendRow(['sku','name','category','default_sale_price','last_purchase_price','stock'].map((e) => ex.TextCellValue(e)).toList());
+  sh.appendRow(['sku','name','category','default_sale_price','last_purchase_price','stock']
+      .map((e) => ex.TextCellValue(e)).toList());
   for (final r in rows) {
     sh.appendRow([
       ex.TextCellValue((r['sku'] ?? '').toString()),
@@ -201,11 +234,12 @@ Future<void> exportPurchasesXlsx() async {
   await _writeToDownloads('purchases.xlsx', bytes);
 }
 
-/// ======================= IMPORT (desde archivo xlsx) =======================
+/// ======================= IMPORT =======================
 
 Future<int?> _ensureSupplierByPhone(DatabaseExecutor txn, String phone) async {
   if (phone.isEmpty) return null;
-  final existing = await txn.query('suppliers', where: 'phone=?', whereArgs: [phone], limit: 1);
+  final existing =
+      await txn.query('suppliers', where: 'phone=?', whereArgs: [phone], limit: 1);
   if (existing.isNotEmpty) return existing.first['id'] as int;
   final id = await txn.insert('suppliers', {'phone': phone});
   return id;
@@ -298,12 +332,12 @@ Future<void> importSalesXlsx(Uint8List bytes) async {
   final book = ex.Excel.decodeBytes(bytes);
   final sh = book['ventas'];
   final shi = book['venta_items'];
-  if (sh == null || shi == null) throw Exception('Hojas "ventas" y/o "venta_items" no encontradas');
+  if (sh == null || shi == null) {
+    throw Exception('Hojas "ventas" y/o "venta_items" no encontradas');
+  }
 
   final db = await appdb.DatabaseHelper.instance.db;
   await db.transaction((txn) async {
-    // ventas
-    final insertedIds = <int>{};
     for (int i = 1; i < sh.rows.length; i++) {
       final r = sh.rows[i];
       final id = _asInt(r.elementAtOrNull(0));
@@ -316,9 +350,8 @@ Future<void> importSalesXlsx(Uint8List bytes) async {
         'discount': _asDouble(r.elementAtOrNull(5)),
         'date': _asString(r.elementAtOrNull(6)),
       }, conflictAlgorithm: ConflictAlgorithm.replace);
-      if (id != 0) insertedIds.add(id);
     }
-    // items
+
     for (int i = 1; i < shi.rows.length; i++) {
       final r = shi.rows[i];
       final sid = _asInt(r.elementAtOrNull(0));
@@ -339,16 +372,17 @@ Future<void> importPurchasesXlsx(Uint8List bytes) async {
   final book = ex.Excel.decodeBytes(bytes);
   final sh = book['compras'];
   final shi = book['compra_items'];
-  if (sh == null || shi == null) throw Exception('Hojas "compras" y/o "compra_items" no encontradas');
+  if (sh == null || shi == null) {
+    throw Exception('Hojas "compras" y/o "compra_items" no encontradas');
+  }
 
   final db = await appdb.DatabaseHelper.instance.db;
   await db.transaction((txn) async {
-    // compras
     for (int i = 1; i < sh.rows.length; i++) {
       final r = sh.rows[i];
       final id = _asInt(r.elementAtOrNull(0));
       final phone = _asString(r.elementAtOrNull(2));
-      final supId = await _ensureSupplierByPhone(txn, phone ?? '');
+      final supId = await _ensureSupplierByPhone(txn, phone);
       await txn.insert('purchases', {
         'id': id == 0 ? null : id,
         'folio': _asString(r.elementAtOrNull(1)),
@@ -356,7 +390,7 @@ Future<void> importPurchasesXlsx(Uint8List bytes) async {
         'date': _asString(r.elementAtOrNull(3)),
       }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
-    // items
+
     for (int i = 1; i < shi.rows.length; i++) {
       final r = shi.rows[i];
       final pid = _asInt(r.elementAtOrNull(0));
