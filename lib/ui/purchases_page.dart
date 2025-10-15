@@ -1,483 +1,632 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:popperscuv5/data/database.dart' as appdb;
+import 'package:intl/intl.dart';
 import 'package:sqflite/sqflite.dart';
+import 'package:popperscuv5/data/database.dart' as appdb;
 
 class PurchasesPage extends StatefulWidget {
-  const PurchasesPage({super.key});
+  const PurchasesPage({Key? key}) : super(key: key);
+
   @override
   State<PurchasesPage> createState() => _PurchasesPageState();
 }
 
 class _PurchasesPageState extends State<PurchasesPage> {
   final _folioCtrl = TextEditingController();
-  final _supplierPhoneCtrl = TextEditingController();
-  final _dateCtrl = TextEditingController();
+  DateTime _date = DateTime.now();
 
-  // línea actual
-  final _skuCtrl = TextEditingController();
+  // Proveedor
+  int? _supplierId;
+  List<Map<String, dynamic>> _suppliers = [];
+
+  // Búsqueda de productos
+  final _searchCtrl = TextEditingController();
+  List<Map<String, dynamic>> _productResults = [];
+  Map<String, dynamic>? _selectedProduct;
+  Timer? _debouncer;
+
+  // Captura de renglón
   final _qtyCtrl = TextEditingController(text: '1');
   final _costCtrl = TextEditingController(text: '0');
 
-  // live search
-  final _focusSku = FocusNode();
-  final LayerLink _layerLink = LayerLink();
-  OverlayEntry? _overlay;
-  Timer? _debounce;
-  List<Map<String, Object?>> _suggestions = [];
-  int _highlightIndex = -1;
-  final GlobalKey _skuKey = GlobalKey();
+  // Carrito
+  final List<_PurchaseItemRow> _cart = [];
 
-  // historial del producto actual
-  List<_PurchaseHistoryRow> _history = [];
-
-  final List<_PurchaseLine> _lines = [];
+  final _money = NumberFormat.currency(locale: 'es_MX', symbol: '\$');
 
   @override
   void initState() {
     super.initState();
-    _focusSku.addListener(_onFocusChange);
+    _loadSuppliers();
     _prepareAutoFolio();
   }
 
   @override
   void dispose() {
-    _focusSku.removeListener(_onFocusChange);
-    _debounce?.cancel();
-    _overlay?.remove();
     _folioCtrl.dispose();
-    _supplierPhoneCtrl.dispose();
-    _dateCtrl.dispose();
-    _skuCtrl.dispose();
+    _searchCtrl.dispose();
     _qtyCtrl.dispose();
     _costCtrl.dispose();
-    _focusSku.dispose();
+    _debouncer?.cancel();
     super.dispose();
   }
 
   Future<void> _prepareAutoFolio() async {
     try {
       final db = await appdb.getDb();
-      final r = await db.rawQuery('SELECT IFNULL(MAX(id),0)+1 AS next FROM purchases');
-      final next = (r.first['next'] as int?) ?? 1;
-      final now = DateTime.now();
-      final folio = 'C-${now.year.toString().padLeft(4, "0")}'
-          '${now.month.toString().padLeft(2, "0")}'
-          '${now.day.toString().padLeft(2, "0")}-'
-          '${next.toString().padLeft(4, "0")}';
+      final r =
+          await db.rawQuery('SELECT IFNULL(MAX(id),0)+1 AS n FROM purchases');
+      final n = (r.first['n'] as int?) ?? 1;
+      final d = DateTime.now();
+      final folio =
+          'C-${d.year.toString().padLeft(4, '0')}${d.month.toString().padLeft(2, '0')}${d.day.toString().padLeft(2, '0')}-${n.toString().padLeft(4, '0')}';
       if (mounted) _folioCtrl.text = folio;
     } catch (_) {
-      // si algo pasa, deja folio vacío editable
+      // editable si falla
     }
   }
 
-  // ===== Live search =====
-  void _onFocusChange() {
-    if (!_focusSku.hasFocus) {
-      _hideOverlay();
-    } else {
-      _triggerSearch(_skuCtrl.text);
-    }
-  }
-
-  void _hideOverlay() {
-    _overlay?.remove();
-    _overlay = null;
-    _highlightIndex = -1;
-  }
-
-  void _triggerSearch(String q) {
-    _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 220), () async {
-      if (!_focusSku.hasFocus) return;
-      final db = await appdb.getDb();
-      final res = await db.query(
-        'products',
-        columns: ['id', 'sku', 'name', 'category', 'last_purchase_price'],
-        where: 'sku LIKE ? OR name LIKE ?',
-        whereArgs: ['%$q%', '%$q%'],
-        orderBy: 'name ASC',
-        limit: 20,
-      );
-      _suggestions = res;
-      _showOverlay();
+  Future<void> _loadSuppliers() async {
+    final db = await appdb.getDb();
+    final rows = await db.query('suppliers',
+        orderBy: 'COALESCE(name,"") COLLATE NOCASE');
+    if (!mounted) return;
+    setState(() {
+      _suppliers = rows;
+      if (_suppliers.isNotEmpty && _supplierId == null) {
+        _supplierId = _suppliers.first['id'] as int?;
+      }
     });
   }
 
-  void _showOverlay() {
-    _overlay?.remove();
-    final overlay = Overlay.of(context);
-    final render = _skuKey.currentContext?.findRenderObject() as RenderBox?;
-    final size = render?.size ?? const Size(300, 44);
-
-    _overlay = OverlayEntry(
-      builder: (context) => Positioned(
-        width: size.width,
-        child: CompositedTransformFollower(
-          link: _layerLink,
-          showWhenUnlinked: false,
-          offset: Offset(0, size.height + 4),
-          child: Material(
-            elevation: 6,
-            borderRadius: BorderRadius.circular(8),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 260),
-              child: ListView.builder(
-                padding: EdgeInsets.zero,
-                itemCount: _suggestions.length,
-                itemBuilder: (ctx, i) {
-                  final it = _suggestions[i];
-                  final sku = (it['sku'] ?? '').toString();
-                  final name = (it['name'] ?? '').toString();
-                  final selected = i == _highlightIndex;
-                  return InkWell(
-                    onTap: () => _selectSuggestion(it),
-                    child: Container(
-                      color: selected ? Theme.of(context).hoverColor : null,
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 10),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              '$name  ($sku)',
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          Text('\$${(it['last_purchase_price'] ?? 0)}'),
-                        ],
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-    overlay.insert(_overlay!);
+  void _searchProductsDebounced(String q) {
+    _debouncer?.cancel();
+    _debouncer = Timer(const Duration(milliseconds: 220), () {
+      _searchProducts(q);
+    });
   }
 
-  Future<void> _loadHistoryForProduct(int productId) async {
-    final db = await appdb.getDb();
-    final r = await db.rawQuery('''
-      SELECT p.date as date, pi.unit_cost as cost
-      FROM purchase_items pi
-      JOIN purchases p ON p.id = pi.purchase_id
-      WHERE pi.product_id = ?
-      ORDER BY p.date DESC
-      LIMIT 10
-    ''', [productId]);
-    _history = r
-        .map((e) => _PurchaseHistoryRow(
-              dateIso: (e['date'] ?? '').toString(),
-              unitCost: (e['cost'] as num?)?.toDouble() ?? 0,
-            ))
-        .toList();
-    if (mounted) setState(() {});
-  }
-
-  void _selectSuggestion(Map<String, Object?> it) async {
-    _skuCtrl.text = (it['sku'] ?? '').toString();
-    final price = (it['last_purchase_price'] as num?)?.toDouble() ?? 0;
-    _costCtrl.text = price.toStringAsFixed(2);
-    _qtyCtrl.selection =
-        TextSelection(baseOffset: 0, extentOffset: _qtyCtrl.text.length);
-    _hideOverlay();
-
-    final pid = it['id'] as int;
-    await _loadHistoryForProduct(pid);
-  }
-
-  // ===== Lógica de líneas =====
-  Future<void> _addLine() async {
-    final sku = _skuCtrl.text.trim();
-    if (sku.isEmpty) return;
-    final qty = int.tryParse(_qtyCtrl.text) ?? 1;
-    final cost = double.tryParse(_costCtrl.text) ?? 0;
-
-    final db = await appdb.getDb();
-    final prod = await db.query('products',
-        columns: ['id', 'sku', 'name', 'category'],
-        where: 'sku = ?',
-        whereArgs: [sku],
-        limit: 1);
-    if (prod.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('SKU no encontrado')),
-      );
+  Future<void> _searchProducts(String q) async {
+    q = q.trim();
+    if (q.isEmpty) {
+      if (mounted) setState(() => _productResults = []);
       return;
     }
-    final row = prod.first;
-    final pid = row['id'] as int;
-    final name = (row['name'] ?? '').toString();
-    final category = (row['category'] ?? '').toString();
+    final db = await appdb.getDb();
+    final rows = await db.rawQuery(
+      '''
+      SELECT id, sku, name, category, last_purchase_price
+      FROM products
+      WHERE sku LIKE ? OR name LIKE ?
+      ORDER BY name COLLATE NOCASE
+      LIMIT 20
+      ''',
+      ['%$q%', '%$q%'],
+    );
+    if (mounted) setState(() => _productResults = rows);
+  }
 
+  void _pickProduct(Map<String, dynamic> p) {
     setState(() {
-      _lines.add(_PurchaseLine(
-        productId: pid,
-        sku: sku,
-        name: name,
-        category: category,
-        qty: qty,
-        unitCost: cost,
-      ));
-      _skuCtrl.clear();
+      _selectedProduct = p;
+      final lastCost = (p['last_purchase_price'] as num?)?.toDouble() ?? 0.0;
+      _costCtrl.text = lastCost > 0 ? lastCost.toStringAsFixed(2) : '0';
       _qtyCtrl.text = '1';
-      _costCtrl.text = '0';
-      _history = [];
     });
   }
 
-  double get _total => _lines.fold(0, (s, l) => s + l.qty * l.unitCost);
-  int get _totalPieces => _lines.fold(0, (s, l) => s + l.qty);
+  void _addLine() {
+    if (_selectedProduct == null) {
+      _snack('Selecciona un producto');
+      return;
+    }
+    final qty = int.tryParse(_qtyCtrl.text.trim());
+    final cost = double.tryParse(_costCtrl.text.trim().replaceAll(',', '.'));
+    if (qty == null || qty <= 0 || cost == null || cost < 0) {
+      _snack('Cantidad / costo inválidos');
+      return;
+    }
 
-  // ===== Guardado con confirmación =====
-  Future<void> _saveWithConfirm() async {
-    if (_lines.isEmpty) return;
+    final p = _selectedProduct!;
+    final id = p['id'] as int;
+    final sku = (p['sku'] ?? '').toString();
+    final name = (p['name'] ?? '').toString();
+    final category = (p['category'] ?? '').toString();
 
-    // agrupar por categoría
-    final Map<String, _CatAgg> byCat = {};
-    for (final l in _lines) {
-      byCat.putIfAbsent(l.category, () => _CatAgg());
-      byCat[l.category]!.pieces += l.qty;
-      byCat[l.category]!.amount += l.qty * l.unitCost;
+    final idx = _cart.indexWhere((e) => e.productId == id);
+    setState(() {
+      if (idx >= 0) {
+        final prev = _cart[idx];
+        _cart[idx] =
+            prev.copyWith(quantity: prev.quantity + qty, unitCost: cost);
+      } else {
+        _cart.add(_PurchaseItemRow(
+          productId: id,
+          sku: sku,
+          name: name,
+          category: category,
+          quantity: qty,
+          unitCost: cost,
+        ));
+      }
+      _selectedProduct = null;
+      _searchCtrl.clear();
+      _productResults = [];
+      _qtyCtrl.text = '1';
+      _costCtrl.text = '0';
+    });
+  }
+
+  double get _cartTotal =>
+      _cart.fold<double>(0.0, (s, r) => s + r.quantity * r.unitCost);
+  int get _cartPieces => _cart.fold<int>(0, (s, r) => s + r.quantity);
+
+  Future<void> _saveConfirmed() async {
+    try {
+      final db = await appdb.getDb();
+      await db.transaction((txn) async {
+        final pid = await txn.insert('purchases', {
+          'folio': _folioCtrl.text.trim().isEmpty ? null : _folioCtrl.text,
+          'supplier_id': _supplierId,
+          'date': DateFormat('yyyy-MM-dd').format(_date),
+        });
+
+        for (final r in _cart) {
+          await txn.insert('purchase_items', {
+            'purchase_id': pid,
+            'product_id': r.productId,
+            'quantity': r.quantity,
+            'unit_cost': r.unitCost,
+          });
+
+          final cur = await txn.query('products',
+              columns: ['stock'],
+              where: 'id=?',
+              whereArgs: [r.productId],
+              limit: 1);
+          final stock = (cur.first['stock'] as int?) ?? 0;
+
+          await txn.update(
+            'products',
+            {
+              'stock': stock + r.quantity,
+              'last_purchase_price': r.unitCost,
+              'last_purchase_date': DateTime.now().toIso8601String(),
+            },
+            where: 'id=?',
+            whereArgs: [r.productId],
+          );
+        }
+      });
+
+      if (!mounted) return;
+      setState(() {
+        _cart.clear();
+        _folioCtrl.clear();
+        _selectedProduct = null;
+        _searchCtrl.clear();
+        _productResults = [];
+      });
+      _snack('Compra registrada');
+      _prepareAutoFolio();
+    } catch (e) {
+      _snack('Error al guardar: $e');
+    }
+  }
+
+  Future<void> _confirmAndSave() async {
+    if (_supplierId == null) {
+      _snack('Selecciona un proveedor');
+      return;
+    }
+    if (_cart.isEmpty) {
+      _snack('Carrito vacío');
+      return;
+    }
+
+    // Agrupar por categoría
+    final Map<String, _Agg> byCat = {};
+    for (final r in _cart) {
+      byCat.putIfAbsent(r.category, () => _Agg());
+      byCat[r.category]!.pieces += r.quantity;
+      byCat[r.category]!.amount += r.quantity * r.unitCost;
     }
 
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          title: const Text('Confirmar compra'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Align(
+      builder: (_) => AlertDialog(
+        title: const Text('Confirmar compra'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Align(
                 alignment: Alignment.centerLeft,
                 child: Text('Por categoría',
                     style:
-                        TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                        TextStyle(fontWeight: FontWeight.bold, fontSize: 14))),
+            const SizedBox(height: 8),
+            ...byCat.entries.map((e) => Row(
+                  children: [
+                    Expanded(
+                        child: Text(
+                            e.key.isEmpty ? 'Sin categoría' : e.key)),
+                    Text(
+                        '${e.value.pieces} pzs · ${_money.format(e.value.amount)}'),
+                  ],
+                )),
+            const Divider(height: 20),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Totales: ${_cartPieces} pzs · ${_money.format(_cartTotal)}',
+                style: const TextStyle(fontWeight: FontWeight.w600),
               ),
-              const SizedBox(height: 8),
-              ...byCat.entries.map((e) => Row(
-                    children: [
-                      Expanded(child: Text(e.key.isEmpty ? 'Sin categoría' : e.key)),
-                      Text('${e.value.pieces} pzs  ·  \$${e.value.amount.toStringAsFixed(2)}'),
-                    ],
-                  )),
-              const Divider(height: 20),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  'Totales de esta compra: ${_totalPieces} pzs  ·  \$${_total.toStringAsFixed(2)}',
-                  style: const TextStyle(fontWeight: FontWeight.w600),
-                ),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancelar'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Confirmar y guardar'),
             ),
           ],
-        );
-      },
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancelar')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Confirmar y guardar')),
+        ],
+      ),
     );
 
-    if (confirmed != true) return;
-    await _save(); // guarda definitivamente
-  }
-
-  Future<void> _save() async {
-    final db = await appdb.getDb();
-    await db.transaction((txn) async {
-      final id = await txn.insert('purchases', {
-        'folio': _folioCtrl.text.trim().isEmpty ? null : _folioCtrl.text.trim(),
-        'supplier_id':
-            await _ensureSupplier(txn, _supplierPhoneCtrl.text.trim()),
-        'date': _dateCtrl.text.trim().isEmpty
-            ? DateTime.now().toIso8601String()
-            : _dateCtrl.text.trim(),
-      });
-      for (final l in _lines) {
-        await txn.insert('purchase_items', {
-          'purchase_id': id,
-          'product_id': l.productId,
-          'quantity': l.qty,
-          'unit_cost': l.unitCost,
-        });
-        // actualiza last_purchase_price y stock
-        final cur = await txn.query('products',
-            columns: ['stock'], where: 'id=?', whereArgs: [l.productId], limit: 1);
-        final curStock = (cur.first['stock'] as int?) ?? 0;
-        await txn.update('products', {
-          'last_purchase_price': l.unitCost,
-          'last_purchase_date': DateTime.now().toIso8601String(),
-          'stock': curStock + l.qty,
-        }, where: 'id=?', whereArgs: [l.productId]);
-      }
-    });
-
-    setState(() {
-      _lines.clear();
-      _folioCtrl.clear();
-      _supplierPhoneCtrl.clear();
-      _dateCtrl.clear();
-      _history = [];
-    });
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Compra guardada')),
-      );
+    if (confirmed == true) {
+      await _saveConfirmed();
     }
-    // prepara siguiente folio
-    _prepareAutoFolio();
   }
 
-  Future<int?> _ensureSupplier(Transaction txn, String phone) async {
-    if (phone.isEmpty) return null;
-    final r = await txn.query('suppliers',
-        where: 'phone=?', whereArgs: [phone], limit: 1);
-    if (r.isNotEmpty) return r.first['id'] as int;
-    return txn.insert('suppliers', {'phone': phone});
+  Future<void> _quickAddSupplierDialog() async {
+    final phoneCtrl = TextEditingController();
+    final nameCtrl = TextEditingController();
+    final addrCtrl = TextEditingController();
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Nuevo proveedor'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: phoneCtrl,
+              keyboardType: TextInputType.phone,
+              decoration:
+                  const InputDecoration(labelText: 'Teléfono (ID) *'),
+            ),
+            TextField(
+              controller: nameCtrl,
+              decoration: const InputDecoration(labelText: 'Nombre'),
+            ),
+            TextField(
+              controller: addrCtrl,
+              decoration: const InputDecoration(labelText: 'Dirección'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancelar')),
+          FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Guardar')),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+
+    final phone = phoneCtrl.text.trim();
+    final name = nameCtrl.text.trim();
+    final addr = addrCtrl.text.trim();
+    if (phone.isEmpty) {
+      _snack('El teléfono es obligatorio');
+      return;
+    }
+
+    final db = await appdb.getDb();
+    final id = await db.insert(
+      'suppliers',
+      {'phone': phone, 'name': name, 'address': addr},
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+
+    await _loadSuppliers();
+    if (!mounted) return;
+    setState(() => _supplierId = id);
+    _snack('Proveedor agregado');
   }
+
+  void _snack(String msg) =>
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
 
   @override
   Widget build(BuildContext context) {
+    final total = _cartTotal;
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Compras')),
+      appBar: AppBar(
+        title: const Text('Compras'),
+        actions: [
+          IconButton(
+            tooltip: 'Historial',
+            icon: const Icon(Icons.history),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                  builder: (_) => const PurchasesHistoryPage()),
+            ),
+          ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          TextField(
-            controller: _folioCtrl,
-            decoration: const InputDecoration(labelText: 'Folio (auto)'),
-          ),
-          TextField(
-            controller: _supplierPhoneCtrl,
-            decoration:
-                const InputDecoration(labelText: 'Teléfono proveedor (opcional)'),
-          ),
-          TextField(
-            controller: _dateCtrl,
-            decoration:
-                const InputDecoration(labelText: 'Fecha ISO (opcional)'),
-          ),
-          const SizedBox(height: 16),
-
-          // === Autocomplete de productos ===
-          CompositedTransformTarget(
-            link: _layerLink,
-            child: TextField(
-              key: _skuKey,
-              controller: _skuCtrl,
-              focusNode: _focusSku,
-              decoration: const InputDecoration(
-                labelText: 'SKU o nombre (buscar)',
-                hintText: 'Escribe para buscar…',
+          // Proveedor + botón nuevo
+          Row(
+            children: [
+              Expanded(
+                child: DropdownButtonFormField<int>(
+                  value: _supplierId,
+                  items: _suppliers
+                      .map((s) => DropdownMenuItem<int>(
+                            value: s['id'] as int,
+                            child: Text(
+                              '${(s['name'] ?? '').toString().isEmpty ? '(Sin nombre)' : s['name']} — ${s['phone']}',
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ))
+                      .toList(),
+                  onChanged: (v) => setState(() => _supplierId = v),
+                  decoration:
+                      const InputDecoration(labelText: 'Proveedor'),
+                ),
               ),
-              onChanged: _triggerSearch,
-              onEditingComplete: _addLine,
-              onSubmitted: (_) => _addLine(),
-            ),
+              const SizedBox(width: 8),
+              IconButton(
+                onPressed: _quickAddSupplierDialog,
+                icon: const Icon(Icons.add_business),
+                tooltip: 'Nuevo proveedor',
+              ),
+            ],
           ),
+
+          const SizedBox(height: 12),
+
+          // Folio + Fecha
           Row(
             children: [
               Expanded(
                 child: TextField(
-                  controller: _qtyCtrl,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: 'Cantidad'),
+                  controller: _folioCtrl,
+                  decoration: const InputDecoration(labelText: 'Folio'),
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 12),
               Expanded(
-                child: TextField(
-                  controller: _costCtrl,
-                  keyboardType: TextInputType.number,
-                  decoration:
-                      const InputDecoration(labelText: 'Costo unitario'),
+                child: InkWell(
+                  onTap: () async {
+                    final picked = await showDatePicker(
+                      context: context,
+                      initialDate: _date,
+                      firstDate: DateTime(2020),
+                      lastDate: DateTime(2100),
+                    );
+                    if (picked != null) setState(() => _date = picked);
+                  },
+                  child: InputDecorator(
+                    decoration:
+                        const InputDecoration(labelText: 'Fecha'),
+                    child: Text(DateFormat('yyyy-MM-dd').format(_date)),
+                  ),
                 ),
               ),
-              const SizedBox(width: 8),
-              FilledButton(onPressed: _addLine, child: const Text('Agregar')),
             ],
           ),
 
-          // Historial del producto seleccionado
-          if (_history.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            const Text('Historial (últimas 10 compras)',
-                style: TextStyle(fontWeight: FontWeight.bold)),
-            ..._history.map((h) => ListTile(
-                  dense: true,
-                  contentPadding: EdgeInsets.zero,
-                  title: Text(
-                      'Fecha: ${h.dateIso}   ·   Precio: \$${h.unitCost.toStringAsFixed(2)}'),
-                )),
+          const Divider(height: 32),
+
+          // Búsqueda de productos
+          TextField(
+            controller: _searchCtrl,
+            decoration: const InputDecoration(
+              labelText: 'Buscar producto (SKU o nombre)',
+              prefixIcon: Icon(Icons.search),
+            ),
+            onChanged: _searchProductsDebounced,
+          ),
+          if (_productResults.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Container(
+              constraints: const BoxConstraints(maxHeight: 240),
+              decoration: BoxDecoration(
+                border:
+                    Border.all(color: Theme.of(context).dividerColor),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: _productResults.length,
+                itemBuilder: (_, i) {
+                  final p = _productResults[i];
+                  return ListTile(
+                    dense: true,
+                    title: Text('${p['name']}'),
+                    subtitle: Text(
+                        'SKU: ${p['sku']}  ·  Cat: ${p['category'] ?? ''}  ·  Últ. costo: ${_money.format((p['last_purchase_price'] as num?)?.toDouble() ?? 0)}'),
+                    onTap: () => _pickProduct(p),
+                  );
+                },
+              ),
+            ),
           ],
 
-          const SizedBox(height: 12),
-          const Divider(),
-          const Text('Detalle',
-              style: TextStyle(fontWeight: FontWeight.bold)),
-          ..._lines.map((l) => ListTile(
-                title: Text('${l.name}  (${l.sku})'),
-                subtitle: Text(
-                    'Cat: ${l.category.isEmpty ? "—" : l.category}  ·  Cant: ${l.qty}  ·  Costo: ${l.unitCost.toStringAsFixed(2)}'),
-                trailing: Text(
-                    '\$${(l.qty * l.unitCost).toStringAsFixed(2)}'),
-              )),
+          if (_selectedProduct != null) ...[
+            const SizedBox(height: 12),
+            Text(
+                'Seleccionado: ${_selectedProduct!['name']} (SKU: ${_selectedProduct!['sku']})'),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _qtyCtrl,
+                    keyboardType: TextInputType.number,
+                    decoration:
+                        const InputDecoration(labelText: 'Cantidad'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextField(
+                    controller: _costCtrl,
+                    keyboardType:
+                        const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(
+                        labelText: 'Costo unitario'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                FilledButton.icon(
+                  onPressed: _addLine,
+                  icon: const Icon(Icons.add),
+                  label: const Text('Agregar'),
+                ),
+              ],
+            ),
+          ],
+
+          const Divider(height: 32),
+
+          // Carrito
+          Row(
+            children: [
+              const Text('Renglones',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
+              const Spacer(),
+              if (_cart.isNotEmpty)
+                TextButton.icon(
+                  onPressed: () => setState(() => _cart.clear()),
+                  icon: const Icon(Icons.delete_sweep),
+                  label: const Text('Vaciar'),
+                ),
+            ],
+          ),
           const SizedBox(height: 8),
+          if (_cart.isEmpty)
+            const Text('Sin productos en la compra')
+          else
+            Column(
+              children: _cart
+                  .asMap()
+                  .entries
+                  .map((e) => _CartTile(
+                        row: e.value,
+                        onDelete: () =>
+                            setState(() => _cart.removeAt(e.key)),
+                        money: _money,
+                      ))
+                  .toList(),
+            ),
+
+          const SizedBox(height: 12),
           Align(
             alignment: Alignment.centerRight,
-            child: Text(
-              'Total: \$${_total.toStringAsFixed(2)}  (${_totalPieces} pzs)',
-              style:
-                  const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-            ),
+            child: Text('Total: ${_money.format(total)}',
+                style: const TextStyle(
+                    fontWeight: FontWeight.bold, fontSize: 16)),
           ),
-          const SizedBox(height: 12),
-          FilledButton(
-              onPressed: _saveWithConfirm,
-              child: const Text('Guardar compra')),
+
+          const SizedBox(height: 24),
+          FilledButton.icon(
+            onPressed: _confirmAndSave,
+            icon: const Icon(Icons.save),
+            label: const Text('Guardar compra'),
+          ),
+          const SizedBox(height: 24),
         ],
       ),
     );
   }
 }
 
-class _PurchaseLine {
+class _CartTile extends StatelessWidget {
+  const _CartTile({
+    super.key,
+    required this.row,
+    required this.onDelete,
+    required this.money,
+  });
+
+  final _PurchaseItemRow row;
+  final VoidCallback onDelete;
+  final NumberFormat money;
+
+  @override
+  Widget build(BuildContext context) {
+    final subtotal = row.quantity * row.unitCost;
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      child: ListTile(
+        title: Text(row.name),
+        subtitle: Text(
+            'SKU: ${row.sku} · Cat: ${row.category.isEmpty ? "—" : row.category} · ${row.quantity} × ${money.format(row.unitCost)}'),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(money.format(subtotal)),
+            IconButton(
+              onPressed: onDelete,
+              icon: const Icon(Icons.close),
+              tooltip: 'Quitar',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PurchaseItemRow {
   final int productId;
   final String sku;
   final String name;
   final String category;
-  final int qty;
+  final int quantity;
   final double unitCost;
-  _PurchaseLine({
+
+  _PurchaseItemRow({
     required this.productId,
     required this.sku,
     required this.name,
     required this.category,
-    required this.qty,
+    required this.quantity,
     required this.unitCost,
   });
+
+  _PurchaseItemRow copyWith({
+    int? productId,
+    String? sku,
+    String? name,
+    String? category,
+    int? quantity,
+    double? unitCost,
+  }) {
+    return _PurchaseItemRow(
+      productId: productId ?? this.productId,
+      sku: sku ?? this.sku,
+      name: name ?? this.name,
+      category: category ?? this.category,
+      quantity: quantity ?? this.quantity,
+      unitCost: unitCost ?? this.unitCost,
+    );
+  }
 }
 
-class _PurchaseHistoryRow {
-  final String dateIso;
-  final double unitCost;
-  _PurchaseHistoryRow({required this.dateIso, required this.unitCost});
-}
-
-class _CatAgg {
+class _Agg {
   int pieces = 0;
   double amount = 0;
 }
