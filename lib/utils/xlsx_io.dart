@@ -1,91 +1,48 @@
-import 'dart:io';
 import 'dart:typed_data';
 import 'package:excel/excel.dart' as ex;
-import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 import 'package:popperscuv5/data/database.dart' as appdb;
 
-/// ===== Helpers para leer celdas (Excel 4.x) =====
+/// ===== Helpers Excel 4.x (no .value en DateCellValue) =====
 String _asString(ex.Data? d) {
-  if (d is ex.TextCellValue) {
-    final v = (d as ex.TextCellValue).value;
-    return v.text ?? '';
-  }
-  if (d is ex.DoubleCellValue) {
-    final v = (d as ex.DoubleCellValue).value;
-    return v.toString();
-  }
-  if (d is ex.IntCellValue) {
-    final v = (d as ex.IntCellValue).value;
-    return v.toString();
-  }
+  if (d is ex.TextCellValue) return d.value.text ?? '';
+  if (d is ex.DoubleCellValue) return d.value.toString();
+  if (d is ex.IntCellValue) return d.value.toString();
   if (d is ex.DateCellValue) {
-    final v = (d as ex.DateCellValue);
-    // excel 4.0.6: sólo year/month/day
-    final dt = DateTime(v.year, v.month, v.day);
+    final dt = DateTime(d.year, d.month, d.day);
     return dt.toIso8601String();
   }
   return (d?.value ?? '').toString();
 }
 
 double _asDouble(ex.Data? d) {
-  if (d is ex.DoubleCellValue) {
-    final v = (d as ex.DoubleCellValue).value;
-    return v;
-  }
-  if (d is ex.IntCellValue) {
-    final v = (d as ex.IntCellValue).value;
-    return v.toDouble();
-  }
+  if (d is ex.DoubleCellValue) return d.value;
+  if (d is ex.IntCellValue) return d.value.toDouble();
   if (d is ex.TextCellValue) {
-    final v = (d as ex.TextCellValue).value;
-    final s = (v.text ?? '').replaceAll(',', '.');
+    final s = (d.value.text ?? '').replaceAll(',', '.');
     return double.tryParse(s) ?? 0.0;
   }
   return double.tryParse('${d?.value ?? ''}') ?? 0.0;
 }
 
 int _asInt(ex.Data? d) {
-  if (d is ex.IntCellValue) {
-    final v = (d as ex.IntCellValue).value;
-    return v;
-  }
-  if (d is ex.DoubleCellValue) {
-    final v = (d as ex.DoubleCellValue).value;
-    return v.round();
-  }
-  if (d is ex.TextCellValue) {
-    final v = (d as ex.TextCellValue).value;
-    return int.tryParse(v.text ?? '') ?? 0;
-  }
+  if (d is ex.IntCellValue) return d.value;
+  if (d is ex.DoubleCellValue) return d.value.round();
+  if (d is ex.TextCellValue) return int.tryParse(d.value.text ?? '') ?? 0;
   return int.tryParse('${d?.value ?? ''}') ?? 0;
 }
 
 DateTime? _asDate(ex.Data? d) {
-  if (d is ex.DateCellValue) {
-    final v = (d as ex.DateCellValue);
-    // excel 4.0.6: sólo year/month/day
-    return DateTime(v.year, v.month, v.day);
-  }
-  if (d is ex.TextCellValue) {
-    final v = (d as ex.TextCellValue).value;
-    return DateTime.tryParse(v.text ?? '');
-  }
+  if (d is ex.DateCellValue) return DateTime(d.year, d.month, d.day);
+  if (d is ex.TextCellValue) return DateTime.tryParse(d.value.text ?? '');
   return null;
 }
 
 ex.Sheet _sheet(ex.Excel book, String name) => book.sheets[name] ?? book[name];
 
-Future<File> _writeToDownloads(String filename, List<int> bytes) async {
-  final dir = Directory('/storage/emulated/0/Download');
-  final file = File(p.join(dir.path, filename));
-  await file.writeAsBytes(bytes, flush: true);
-  return file;
-}
+/// ======================= EXPORT: retornan BYTES =======================
 
-/// ======================= EXPORT =======================
-
-Future<void> exportProductsXlsx() async {
+Future<Uint8List> buildProductsXlsxBytes() async {
   final db = await appdb.DatabaseHelper.instance.db;
   final rows = await db.query('products', orderBy: 'name COLLATE NOCASE');
 
@@ -103,11 +60,10 @@ Future<void> exportProductsXlsx() async {
       ex.IntCellValue((r['stock'] as num?)?.toInt() ?? 0),
     ]);
   }
-  final bytes = book.save()!;
-  await _writeToDownloads('products.xlsx', bytes);
+  return Uint8List.fromList(book.save()!);
 }
 
-Future<void> exportClientsXlsx() async {
+Future<Uint8List> buildClientsXlsxBytes() async {
   final db = await appdb.DatabaseHelper.instance.db;
   final rows = await db.query('customers', orderBy: 'name COLLATE NOCASE');
 
@@ -121,11 +77,10 @@ Future<void> exportClientsXlsx() async {
       ex.TextCellValue((r['address'] ?? '').toString()),
     ]);
   }
-  final bytes = book.save()!;
-  await _writeToDownloads('clients.xlsx', bytes);
+  return Uint8List.fromList(book.save()!);
 }
 
-Future<void> exportSuppliersXlsx() async {
+Future<Uint8List> buildSuppliersXlsxBytes() async {
   final db = await appdb.DatabaseHelper.instance.db;
   final rows = await db.query('suppliers', orderBy: 'name COLLATE NOCASE');
 
@@ -139,11 +94,10 @@ Future<void> exportSuppliersXlsx() async {
       ex.TextCellValue((r['address'] ?? '').toString()),
     ]);
   }
-  final bytes = book.save()!;
-  await _writeToDownloads('suppliers.xlsx', bytes);
+  return Uint8List.fromList(book.save()!);
 }
 
-Future<void> exportSalesXlsx() async {
+Future<Uint8List> buildSalesXlsxBytes() async {
   final db = await appdb.DatabaseHelper.instance.db;
 
   final hdrSales = ['id','customer_phone','payment_method','place','shipping_cost','discount','date'];
@@ -152,7 +106,6 @@ Future<void> exportSalesXlsx() async {
   final book = ex.Excel.createExcel();
   final s = _sheet(book, 'ventas');
   s.appendRow(hdrSales.map((e) => ex.TextCellValue(e)).toList());
-
   final si = _sheet(book, 'venta_items');
   si.appendRow(hdrItems.map((e) => ex.TextCellValue(e)).toList());
 
@@ -185,11 +138,10 @@ Future<void> exportSalesXlsx() async {
     }
   }
 
-  final bytes = book.save()!;
-  await _writeToDownloads('sales.xlsx', bytes);
+  return Uint8List.fromList(book.save()!);
 }
 
-Future<void> exportPurchasesXlsx() async {
+Future<Uint8List> buildPurchasesXlsxBytes() async {
   final db = await appdb.DatabaseHelper.instance.db;
 
   final hdrPurchases = ['id','folio','supplier_phone','date'];
@@ -233,16 +185,14 @@ Future<void> exportPurchasesXlsx() async {
     }
   }
 
-  final bytes = book.save()!;
-  await _writeToDownloads('purchases.xlsx', bytes);
+  return Uint8List.fromList(book.save()!);
 }
 
-/// ======================= IMPORT =======================
+/// =============== IMPORT (igual que antes, sin cambios de esquema) ===============
 
 Future<int?> _ensureSupplierByPhone(DatabaseExecutor txn, String phone) async {
   if (phone.isEmpty) return null;
-  final existing =
-      await txn.query('suppliers', where: 'phone=?', whereArgs: [phone], limit: 1);
+  final existing = await txn.query('suppliers', where: 'phone=?', whereArgs: [phone], limit: 1);
   if (existing.isNotEmpty) return existing.first['id'] as int;
   final id = await txn.insert('suppliers', {'phone': phone});
   return id;
@@ -335,9 +285,7 @@ Future<void> importSalesXlsx(Uint8List bytes) async {
   final book = ex.Excel.decodeBytes(bytes);
   final sh = book['ventas'];
   final shi = book['venta_items'];
-  if (sh == null || shi == null) {
-    throw Exception('Hojas "ventas" y/o "venta_items" no encontradas');
-  }
+  if (sh == null || shi == null) throw Exception('Hojas "ventas" y/o "venta_items" no encontradas');
 
   final db = await appdb.DatabaseHelper.instance.db;
   await db.transaction((txn) async {
@@ -375,9 +323,7 @@ Future<void> importPurchasesXlsx(Uint8List bytes) async {
   final book = ex.Excel.decodeBytes(bytes);
   final sh = book['compras'];
   final shi = book['compra_items'];
-  if (sh == null || shi == null) {
-    throw Exception('Hojas "compras" y/o "compra_items" no encontradas');
-  }
+  if (sh == null || shi == null) throw Exception('Hojas "compras" y/o "compra_items" no encontradas');
 
   final db = await appdb.DatabaseHelper.instance.db;
   await db.transaction((txn) async {
