@@ -15,20 +15,25 @@ class ProfitPage extends StatefulWidget {
 class _ProfitPageState extends State<ProfitPage> {
   final _money = NumberFormat.currency(locale: 'es_MX', symbol: '\$');
 
-  // Rango de fechas (controlado por el botón de calendario)
+  // Rango de fechas
   DateTime _from = DateTime.now().subtract(const Duration(days: 30));
   DateTime _to = DateTime.now();
 
-  // Resumen global (sin envíos)
-  double _totalSales = 0.0; // SUM(si.qty * si.unit_price)
-  double _totalCost = 0.0;  // SUM(si.qty * products.last_purchase_price)
-  double _profit = 0.0;     // ventas - costo
-  double _marginPct = 0.0;  // utilidad / ventas
+  // Resumen global (SIN envíos)
+  double _itemsSum = 0.0;       // SUM(si.qty * si.unit_price)
+  double _discounts = 0.0;      // SUM(s.discount)
+  double _netSales = 0.0;       // itemsSum - discounts
+  double _cost = 0.0;           // SUM(si.qty * products.last_purchase_price)
+  double _profit = 0.0;         // netSales - cost
+  double _marginPct = 0.0;      // profit / netSales
 
-  // Desglose por producto (misma lógica de siempre)
+  // Solo informativo (NO entra en utilidad)
+  double _totalShipping = 0.0;  // SUM(s.shipping_cost)
+
+  // Desglose por producto (sin envíos, sin asignar descuentos por producto)
   List<Map<String, dynamic>> _productRows = [];
 
-  // Integrado en la tarjeta de utilidad: ventas por método de pago en el rango
+  // Desglose por método de pago (sin envíos) con descuentos restados por método
   List<Map<String, dynamic>> _paymentByMethod = [];
 
   bool _loading = true;
@@ -70,8 +75,8 @@ class _ProfitPageState extends State<ProfitPage> {
     setState(() => _loading = true);
     try {
       await Future.wait([
-        _loadSummaryAndPayments(), // resumen + métodos de pago en mismo rango
-        _loadProductsProfit(),     // desglose por producto
+        _loadSummaryShippingAndPayments(), // resumen + envíos + métodos de pago (con descuentos)
+        _loadProductsProfit(),             // desglose por producto (sin envíos, sin asignar descuentos)
       ]);
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -81,50 +86,107 @@ class _ProfitPageState extends State<ProfitPage> {
   String _fromTxt() => DateFormat('yyyy-MM-dd').format(_from);
   String _toTxt() => DateFormat('yyyy-MM-dd').format(_to);
 
-  /// Resumen (sin envíos) y desglose por método de pago en el rango.
-  Future<void> _loadSummaryAndPayments() async {
+  /// Resumen (SIN envíos) y pagos por método (restando descuentos)
+  Future<void> _loadSummaryShippingAndPayments() async {
     final db = await _db();
-    // Totales globales sin envíos en el rango (filtrando por s.date)
-    final sumRows = await db.rawQuery('''
-      SELECT 
-        COALESCE(SUM(si.quantity * si.unit_price), 0) AS sales,
-        COALESCE(SUM(si.quantity * COALESCE(p.last_purchase_price, 0)), 0) AS cost
+
+    // Suma de artículos (ventas brutas de items, sin envíos)
+    final itemsRows = await db.rawQuery('''
+      SELECT COALESCE(SUM(si.quantity * si.unit_price), 0) AS items_sum
+      FROM sale_items si
+      JOIN sales s ON s.id = si.sale_id
+      WHERE s.date BETWEEN ? AND ?
+    ''', [_fromTxt(), _toTxt()]);
+    final itemsSum = (itemsRows.first['items_sum'] as num?)?.toDouble() ?? 0.0;
+
+    // Costos (según last_purchase_price), calculado sobre los mismos items
+    final costRows = await db.rawQuery('''
+      SELECT COALESCE(SUM(si.quantity * COALESCE(p.last_purchase_price, 0)), 0) AS cost_sum
       FROM sale_items si
       JOIN products p ON p.id = si.product_id
       JOIN sales s ON s.id = si.sale_id
       WHERE s.date BETWEEN ? AND ?
     ''', [_fromTxt(), _toTxt()]);
+    final costSum = (costRows.first['cost_sum'] as num?)?.toDouble() ?? 0.0;
 
-    final s = sumRows.isNotEmpty ? sumRows.first : <String, Object?>{};
-    final sales = (s['sales'] as num?)?.toDouble() ?? 0.0;
-    final cost = (s['cost'] as num?)?.toDouble() ?? 0.0;
-    final profit = sales - cost;
-    final pct = sales > 0 ? (profit / sales) : 0.0;
-
-    // Desglose por método de pago (sin envíos, mismo rango)
-    final payRows = await db.rawQuery('''
-      SELECT 
-        COALESCE(s.payment_method, '(sin método)') AS method,
-        COALESCE(SUM(si.quantity * si.unit_price), 0) AS amount,
-        COUNT(DISTINCT s.id) AS sales_count
-      FROM sales s
-      JOIN sale_items si ON si.sale_id = s.id
-      WHERE s.date BETWEEN ? AND ?
-      GROUP BY method
-      ORDER BY amount DESC
+    // Descuentos totales del periodo
+    final discRows = await db.rawQuery('''
+      SELECT COALESCE(SUM(discount), 0) AS discounts
+      FROM sales
+      WHERE date BETWEEN ? AND ?
     ''', [_fromTxt(), _toTxt()]);
+    final discounts = (discRows.first['discounts'] as num?)?.toDouble() ?? 0.0;
+
+    // Envíos informativos (no entran en utilidad)
+    final shipRows = await db.rawQuery('''
+      SELECT COALESCE(SUM(shipping_cost), 0) AS shipping
+      FROM sales
+      WHERE date BETWEEN ? AND ?
+    ''', [_fromTxt(), _toTxt()]);
+    final shipping = (shipRows.first['shipping'] as num?)?.toDouble() ?? 0.0;
+
+    // Ventas netas = artículos - descuentos (sin envíos)
+    final netSales = (itemsSum - discounts).clamp(0.0, double.infinity);
+    final profit = netSales - costSum;
+    final margin = netSales > 0 ? (profit / netSales) : 0.0;
+
+    // Desglose por método = artículos por método - descuentos por método (sin envíos)
+    final payRows = await db.rawQuery('''
+      WITH items AS (
+        SELECT 
+          COALESCE(s.payment_method, '(sin método)') AS method,
+          COALESCE(SUM(si.quantity * si.unit_price), 0) AS items_amount,
+          COUNT(DISTINCT s.id) AS sales_count
+        FROM sales s
+        JOIN sale_items si ON si.sale_id = s.id
+        WHERE s.date BETWEEN ? AND ?
+        GROUP BY method
+      ),
+      disc AS (
+        SELECT
+          COALESCE(payment_method, '(sin método)') AS method,
+          COALESCE(SUM(discount), 0) AS discounts
+        FROM sales
+        WHERE date BETWEEN ? AND ?
+        GROUP BY method
+      )
+      SELECT 
+        i.method,
+        i.items_amount,
+        COALESCE(d.discounts, 0) AS discounts,
+        i.sales_count
+      FROM items i
+      LEFT JOIN disc d USING (method)
+      ORDER BY (i.items_amount - COALESCE(d.discounts, 0)) DESC
+    ''', [_fromTxt(), _toTxt(), _fromTxt(), _toTxt()]);
+
+    // Mapear para UI: amount = items_amount - discounts (no negativo)
+    final byMethod = payRows.map((m) {
+      final itemsAmount = (m['items_amount'] as num?)?.toDouble() ?? 0.0;
+      final disc = (m['discounts'] as num?)?.toDouble() ?? 0.0;
+      final amount = (itemsAmount - disc);
+      return {
+        'method': (m['method'] ?? '(sin método)').toString(),
+        'amount': amount < 0 ? 0.0 : amount,
+        'sales_count': (m['sales_count'] as num?)?.toInt() ?? 0,
+        'raw_items': itemsAmount,
+        'raw_discounts': disc,
+      };
+    }).toList();
 
     setState(() {
-      _totalSales = sales;
-      _totalCost = cost;
+      _itemsSum = itemsSum;
+      _discounts = discounts;
+      _netSales = netSales;
+      _cost = costSum;
       _profit = profit;
-      _marginPct = pct;
-      _paymentByMethod = payRows;
+      _marginPct = margin;
+      _totalShipping = shipping;
+      _paymentByMethod = byMethod;
     });
   }
 
-  /// Desglose por producto (sin envíos) en el rango
-  /// Mantiene la lógica: revenue vs cost con last_purchase_price
+  /// Desglose por producto (sin envíos; NOTA: no prorrateamos descuentos por producto)
   Future<void> _loadProductsProfit() async {
     final db = await _db();
     final rows = await db.rawQuery('''
@@ -201,7 +263,7 @@ class _ProfitPageState extends State<ProfitPage> {
           : ListView(
               padding: const EdgeInsets.all(12),
               children: [
-                // === TARJETA ÚNICA: Utilidad + Métodos de pago (en el mismo periodo) ===
+                // === TARJETA: Resumen (sin envíos) + Envíos informativos + Métodos de pago ===
                 Card(
                   margin: const EdgeInsets.only(bottom: 12),
                   child: Padding(
@@ -211,10 +273,13 @@ class _ProfitPageState extends State<ProfitPage> {
                       children: [
                         const Text('Resumen (sin envíos)', style: TextStyle(fontWeight: FontWeight.bold)),
                         const SizedBox(height: 8),
+                        _kv('Ventas de artículos', _money.format(_itemsSum)),
+                        _kv('Descuentos (restados)', '- ${_money.format(_discounts)}'),
+                        const SizedBox(height: 6),
                         Row(
                           children: [
-                            Expanded(child: _kv('Ventas', _money.format(_totalSales))),
-                            Expanded(child: _kv('Costo', _money.format(_totalCost))),
+                            Expanded(child: _kv('Ventas netas', _money.format(_netSales), bold: true)),
+                            Expanded(child: _kv('Costo', _money.format(_cost))),
                           ],
                         ),
                         const SizedBox(height: 6),
@@ -224,10 +289,12 @@ class _ProfitPageState extends State<ProfitPage> {
                             Expanded(child: _kv('Margen', '${(_marginPct * 100).toStringAsFixed(1)}%', bold: true)),
                           ],
                         ),
+                        const SizedBox(height: 6),
+                        _kv('Envíos (informativo)', _money.format(_totalShipping)),
                         const SizedBox(height: 12),
                         const Divider(),
                         const SizedBox(height: 6),
-                        const Text('Por método de pago (mismo periodo)', style: TextStyle(fontWeight: FontWeight.bold)),
+                        const Text('Por método de pago (sin envíos, neto de descuentos)', style: TextStyle(fontWeight: FontWeight.bold)),
                         const SizedBox(height: 8),
                         if (_paymentByMethod.isEmpty)
                           const Text('Sin ventas en el periodo')
@@ -236,13 +303,13 @@ class _ProfitPageState extends State<ProfitPage> {
                             final method = (m['method'] ?? '(sin método)').toString();
                             final amount = (m['amount'] as num?)?.toDouble() ?? 0.0;
                             final cnt = (m['sales_count'] as num?)?.toInt() ?? 0;
-                            final pct = _totalSales > 0 ? (amount / _totalSales) : 0.0;
+                            final pct = _netSales > 0 ? (amount / _netSales) : 0.0;
                             return ListTile(
                               dense: true,
                               contentPadding: EdgeInsets.zero,
                               leading: const Icon(Icons.payments),
                               title: Text(method, style: bold),
-                              subtitle: Text('$cnt ventas • ${(_totalSales > 0 ? pct * 100 : 0).toStringAsFixed(1)}%'),
+                              subtitle: Text('$cnt ventas • ${(pct * 100).toStringAsFixed(1)}%'),
                               trailing: Text(_money.format(amount), style: bold),
                             );
                           }),
@@ -251,7 +318,7 @@ class _ProfitPageState extends State<ProfitPage> {
                   ),
                 ),
 
-                // === Desglose por producto (misma lógica; sin envíos) ===
+                // === Desglose por producto (sin envíos) ===
                 Card(
                   child: Padding(
                     padding: const EdgeInsets.all(12),
