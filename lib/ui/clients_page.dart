@@ -98,7 +98,7 @@ class _ClientsPageState extends State<ClientsPage> {
     setState(() => _selectedClient = c);
     final db = await _db();
 
-    // Total histórico de ventas a ese cliente (envíos incluidos y descuentos restados para el total mostrado)
+    // Total histórico de ventas a ese cliente (envíos incluidos y descuentos restados)
     final totRow = await db.rawQuery('''
       SELECT 
         COALESCE(SUM(COALESCE(s.shipping_cost,0) + (
@@ -109,8 +109,8 @@ class _ClientsPageState extends State<ClientsPage> {
       WHERE s.customer_phone = ?
     ''', [c['phone']]);
 
-    final total = (totRow.isEmpty ? 0 : (totRow.first['total'] as num? ?? 0).toDouble());
-    setState(() => _selectedClientTotal = total);
+    final totalNum = (totRow.isEmpty ? 0 : (totRow.first['total'] ?? 0)) as num;
+    setState(() => _selectedClientTotal = totalNum.toDouble());
   }
 
   Future<void> _confirmAddClient() async {
@@ -201,16 +201,13 @@ class _ClientsPageState extends State<ClientsPage> {
   // ========== IMPORTAR DESDE CONTACTOS (flutter_contacts) ==========
   Future<void> _importFromContacts() async {
     try {
-      // Pide permiso (read-only es suficiente)
       final granted = await FlutterContacts.requestPermission(readonly: true);
       if (!granted) {
         _snack('Permiso de contactos denegado');
         return;
       }
 
-      // Carga con propiedades para obtener phones
       final contacts = await FlutterContacts.getContacts(withProperties: true);
-
       if (contacts.isEmpty) {
         _snack('No se encontraron contactos');
         return;
@@ -239,7 +236,7 @@ class _ClientsPageState extends State<ClientsPage> {
           await db.insert('customers', {
             'phone': normPhone,
             'name': name,
-            'address': '', // flutter_contacts requiere otra consulta para direcciones postales
+            'address': '',
           }, conflictAlgorithm: ConflictAlgorithm.replace);
           imported++;
         } catch (_) {
@@ -261,7 +258,6 @@ class _ClientsPageState extends State<ClientsPage> {
   }
 
   String _normalizePhone(String raw) {
-    // Quita espacios, guiones, paréntesis, + y puntos
     return raw.replaceAll(RegExp(r'[\s\-\(\)\.\+]'), '');
   }
   // ===========================================================
@@ -317,7 +313,6 @@ class _ClientsPageState extends State<ClientsPage> {
       ),
       body: Column(
         children: [
-          // Top 5
           if (_topClients.isNotEmpty)
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
@@ -342,12 +337,9 @@ class _ClientsPageState extends State<ClientsPage> {
               ),
             ),
           const Divider(height: 0),
-
-          // Lista de clientes
           Expanded(
             child: Row(
               children: [
-                // Lista
                 Expanded(
                   flex: 2,
                   child: _clients.isEmpty
@@ -372,8 +364,6 @@ class _ClientsPageState extends State<ClientsPage> {
                           },
                         ),
                 ),
-
-                // Detalle seleccionado
                 Expanded(
                   child: _selectedClient == null
                       ? const SizedBox()
