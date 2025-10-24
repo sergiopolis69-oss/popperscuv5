@@ -1,9 +1,7 @@
-import 'dart:async';
-
+// lib/ui/inventory_page.dart
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import 'package:sqflite/sqflite.dart';
-import 'package:popperscuv5/data/database.dart' as appdb;
+import '../data/database.dart' as appdb;
 
 class InventoryPage extends StatefulWidget {
   const InventoryPage({Key? key}) : super(key: key);
@@ -13,312 +11,288 @@ class InventoryPage extends StatefulWidget {
 }
 
 class _InventoryPageState extends State<InventoryPage> {
-  final _qCtrl = TextEditingController();
-  final _money = NumberFormat.currency(locale: 'es_MX', symbol: '\$');
+  // Datos
+  List<Map<String, dynamic>> _products = [];
+  List<String> _categories = [];
+  String? _selectedCategory; // null = Todas
+  bool _lowStockOnly = false;
 
-  List<Map<String, dynamic>> _rows = [];
-  List<String> _categories = []; // categorías existentes en DB (distintas)
-  String? _catFilter; // null = todas; '' = (sin categoría); otro = categoría
-  Timer? _debounce;
+  // Búsqueda
+  final _qCtrl = TextEditingController();
+
+  // Formulario de producto
+  final _skuCtrl = TextEditingController();
+  final _nameCtrl = TextEditingController();
+  final _categoryCtrl = TextEditingController(); // para "nueva categoría"
+  final _salePriceCtrl = TextEditingController(text: '0');
+  final _lastCostCtrl = TextEditingController(text: '0');
+  final _stockCtrl = TextEditingController(text: '0');
+
+  // Estado de edición
+  int? _editingId;
 
   @override
   void initState() {
     super.initState();
-    _loadCategories();
-    _load(); // carga inicial
-    _qCtrl.addListener(_onQChanged);
+    _loadAll();
   }
 
   @override
   void dispose() {
-    _debounce?.cancel();
-    _qCtrl.removeListener(_onQChanged);
     _qCtrl.dispose();
+    _skuCtrl.dispose();
+    _nameCtrl.dispose();
+    _categoryCtrl.dispose();
+    _salePriceCtrl.dispose();
+    _lastCostCtrl.dispose();
+    _stockCtrl.dispose();
     super.dispose();
   }
 
-  void _onQChanged() {
-    _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 250), () {
-      _load(q: _qCtrl.text.trim(), category: _catFilter);
-    });
+  Future<Database> _db() async {
+    try {
+      return await appdb.getDb();
+    } catch (_) {
+      return await appdb.DatabaseHelper.instance.db;
+    }
+  }
+
+  Future<void> _loadAll() async {
+    await Future.wait([_loadCategories(), _loadProducts()]);
   }
 
   Future<void> _loadCategories() async {
-    final db = await appdb.DatabaseHelper.instance.db;
+    final db = await _db();
     final rows = await db.rawQuery('''
-      SELECT DISTINCT TRIM(category) AS c
+      SELECT DISTINCT COALESCE(NULLIF(TRIM(category),''), '(Sin categoría)') AS cat
       FROM products
-      WHERE category IS NOT NULL AND TRIM(category) <> ''
-      ORDER BY c COLLATE NOCASE
+      ORDER BY cat COLLATE NOCASE
     ''');
-    final list = rows
-        .map((r) => (r['c'] ?? '').toString())
-        .where((s) => s.isNotEmpty)
-        .toList();
-    if (!mounted) return;
+    final list = rows.map((e) => (e['cat'] as String)).toList();
     setState(() {
       _categories = list;
+      // mantener selección si sigue existiendo
+      if (_selectedCategory != null && !_categories.contains(_selectedCategory)) {
+        _selectedCategory = null;
+      }
     });
   }
 
-  Future<void> _load({String? q, String? category}) async {
-    final db = await appdb.DatabaseHelper.instance.db;
-
-    final hasQ = q != null && q.isNotEmpty;
-    final hasCat = category != null; // null = todas
-    final catIsNull = hasCat && category == ''; // '' => (sin categoría)
-
-    final whereParts = <String>[];
+  Future<void> _loadProducts() async {
+    final db = await _db();
+    final q = _qCtrl.text.trim();
+    final where = <String>[];
     final args = <Object?>[];
 
-    if (hasQ) {
-      whereParts.add('(sku LIKE ? OR name LIKE ?)');
-      args.add('%$q%');
-      args.add('%$q%');
-    }
-    if (hasCat) {
-      if (catIsNull) {
-        whereParts.add('(category IS NULL OR TRIM(category) = "")');
+    // Filtro categoría
+    if (_selectedCategory != null) {
+      if (_selectedCategory == '(Sin categoría)') {
+        where.add("(category IS NULL OR TRIM(category) = '')");
       } else {
-        whereParts.add('TRIM(category) = ?');
-        args.add(category);
+        where.add("category = ?");
+        args.add(_selectedCategory);
       }
     }
 
-    final where = whereParts.isEmpty ? '' : 'WHERE ${whereParts.join(' AND ')}';
+    // Filtro búsqueda
+    if (q.isNotEmpty) {
+      where.add("(sku LIKE ? OR name LIKE ?)");
+      args.addAll(['%$q%', '%$q%']);
+    }
 
-    final rows = await db.rawQuery('''
-      SELECT id, sku, name, category,
-             default_sale_price, last_purchase_price, stock
-      FROM products
-      $where
-      ORDER BY name COLLATE NOCASE
-    ''', args);
+    // Filtro existencia baja
+    if (_lowStockOnly) {
+      where.add("(COALESCE(stock,0) <= 2)");
+    }
 
-    if (!mounted) return;
-    setState(() => _rows = rows);
+    final sql = StringBuffer()
+      ..write('SELECT id, sku, name, category, default_sale_price, last_purchase_price, stock ')
+      ..write('FROM products ');
+    if (where.isNotEmpty) {
+      sql.write('WHERE ${where.join(' AND ')} ');
+    }
+    sql.write('ORDER BY name COLLATE NOCASE');
+
+    final rows = await db.rawQuery(sql.toString(), args);
+    setState(() => _products = rows);
   }
 
-  Future<void> _openEdit({Map<String, dynamic>? product}) async {
-    final isEdit = product != null;
-    final skuCtrl = TextEditingController(text: (product?['sku'] ?? '').toString());
-    final nameCtrl = TextEditingController(text: (product?['name'] ?? '').toString());
-    final saleCtrl = TextEditingController(
-        text: ((product?['default_sale_price'] as num?)?.toString() ?? '0'));
-    final stockCtrl =
-        TextEditingController(text: ((product?['stock'] as num?)?.toString() ?? '0'));
-    final lastCostCtrl = TextEditingController(
-        text: ((product?['last_purchase_price'] as num?)?.toString() ?? '0'));
+  // ---- UI helpers ----
+  void _snack(String msg) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
 
-    // Categoría seleccionada en el formulario
-    String? selectedCat = (product?['category'] as String?)?.trim();
-    // Asegura que, si la categoría del producto no está en la lista, la incluimos temporalmente
-    final localCats = <String>[..._categories];
-    if (selectedCat != null && selectedCat.isNotEmpty && !localCats.contains(selectedCat)) {
-      localCats.add(selectedCat);
-      localCats.sort(
-        (a, b) => a.toLowerCase().compareTo(b.toLowerCase()),
-      );
+  // ---- CRUD ----
+  void _startCreate() {
+    setState(() {
+      _editingId = null;
+      _skuCtrl.text = '';
+      _nameCtrl.text = '';
+      _salePriceCtrl.text = '0';
+      _lastCostCtrl.text = '0';
+      _stockCtrl.text = '0';
+      _categoryCtrl.text = '';
+    });
+    _showProductDialog(title: 'Nuevo producto');
+  }
+
+  void _startEdit(Map<String, dynamic> p) {
+    setState(() {
+      _editingId = p['id'] as int;
+      _skuCtrl.text = (p['sku'] ?? '').toString();
+      _nameCtrl.text = (p['name'] ?? '').toString();
+      _salePriceCtrl.text =
+          ((p['default_sale_price'] as num?)?.toDouble() ?? 0).toStringAsFixed(2);
+      _lastCostCtrl.text =
+          ((p['last_purchase_price'] as num?)?.toDouble() ?? 0).toStringAsFixed(2);
+      _stockCtrl.text = ((p['stock'] as num?)?.toInt() ?? 0).toString();
+      _categoryCtrl.text = ''; // limpio campo de nueva categoría
+      _selectedDialogCategory =
+          (p['category'] == null || (p['category'] as String).trim().isEmpty)
+              ? '(Sin categoría)'
+              : (p['category'] as String);
+    });
+    _showProductDialog(title: 'Editar producto');
+  }
+
+  Future<void> _deleteProduct(int id) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Eliminar producto'),
+        content: const Text('¿Seguro que deseas eliminar este producto?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancelar')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Eliminar')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    final db = await _db();
+    await db.delete('products', where: 'id=?', whereArgs: [id]);
+    _snack('Producto eliminado');
+    await _loadAll();
+  }
+
+  // ---- Diálogo de producto (agregar/editar) ----
+  String? _selectedDialogCategory; // null usa "(Sin categoría)" si no hay nueva
+
+  Future<void> _showProductDialog({required String title}) async {
+    // Asegurar categorías cargadas
+    if (_categories.isEmpty) {
+      await _loadCategories();
     }
+    // Valor inicial para el dropdown del diálogo
+    _selectedDialogCategory ??= _categories.isNotEmpty ? _categories.first : '(Sin categoría)';
 
-    Future<void> addNewCategoryFlow(BuildContext ctx) async {
-      final cCtrl = TextEditingController();
-      final ok = await showDialog<bool>(
-        context: ctx,
-        builder: (_) => AlertDialog(
-          title: const Text('Nueva categoría'),
-          content: TextField(
-            controller: cCtrl,
-            decoration: const InputDecoration(
-              labelText: 'Nombre de la categoría',
-            ),
-            autofocus: true,
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(false),
-              child: const Text('Cancelar'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(ctx).pop(true),
-              child: const Text('Agregar'),
-            ),
-          ],
-        ),
-      );
-      if (ok == true) {
-        final name = cCtrl.text.trim();
-        if (name.isEmpty) return;
-        // Evita duplicados (case-insensitive)
-        final exists = localCats.any((e) => e.toLowerCase() == name.toLowerCase());
-        if (!exists) {
-          setState(() {
-            localCats.add(name);
-            localCats.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
-          });
-        }
-        selectedCat = name;
-      }
-    }
-
-    final res = await showModalBottomSheet<bool>(
+    await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      builder: (ctx) {
+      showDragHandle: true,
+      builder: (_) {
+        final bottomInset = MediaQuery.of(context).viewInsets.bottom;
         return Padding(
-          padding: EdgeInsets.only(
-            left: 16,
-            right: 16,
-            top: 16,
-            bottom: MediaQuery.of(ctx).viewInsets.bottom + 16,
-          ),
+          padding: EdgeInsets.only(left: 16, right: 16, bottom: bottomInset + 16, top: 8),
           child: SingleChildScrollView(
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        isEdit ? 'Editar producto' : 'Nuevo producto',
-                        style: Theme.of(ctx).textTheme.titleLarge,
-                      ),
-                    ),
-                    IconButton(
-                      onPressed: () => Navigator.of(ctx).pop(false),
-                      icon: const Icon(Icons.close),
-                    )
-                  ],
+                Text(title, style: Theme.of(context).textTheme.titleLarge),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _skuCtrl,
+                  decoration: const InputDecoration(labelText: 'SKU *'),
                 ),
                 const SizedBox(height: 8),
                 TextField(
-                  controller: skuCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'SKU * (único)',
-                  ),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: nameCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'Nombre *',
-                  ),
+                  controller: _nameCtrl,
+                  decoration: const InputDecoration(labelText: 'Nombre *'),
                 ),
                 const SizedBox(height: 8),
 
-                // Categoría: Dropdown + botón "Nueva"
+                // Categoría (dropdown) + botón "nueva"
                 Row(
                   children: [
                     Expanded(
                       child: DropdownButtonFormField<String>(
-                        value: (selectedCat == null || selectedCat!.isEmpty)
-                            ? '' // mapeamos null/empty -> '' para mostrar "(Sin categoría)"
-                            : selectedCat,
-                        decoration: const InputDecoration(
-                          labelText: 'Categoría',
-                        ),
-                        items: [
-                          const DropdownMenuItem<String>(
-                            value: '',
-                            child: Text('(Sin categoría)'),
-                          ),
-                          ...localCats.map((c) => DropdownMenuItem<String>(
-                                value: c,
-                                child: Text(c),
-                              )),
-                        ],
-                        onChanged: (v) {
-                          selectedCat = (v == null || v.isEmpty) ? null : v;
-                        },
+                        value: _selectedDialogCategory != null &&
+                                (_categories.contains(_selectedDialogCategory!) ||
+                                    _selectedDialogCategory == '(Sin categoría)')
+                            ? _selectedDialogCategory
+                            : null,
+                        items: <String>['(Sin categoría)', ..._categories.where((c) => c != '(Sin categoría)')]
+                            .map((c) => DropdownMenuItem(
+                                  value: c,
+                                  child: Text(c),
+                                ))
+                            .toList(),
+                        onChanged: (v) => setState(() => _selectedDialogCategory = v),
+                        decoration: const InputDecoration(labelText: 'Categoría'),
                       ),
                     ),
                     const SizedBox(width: 8),
                     IconButton(
-                      tooltip: 'Nueva categoría',
-                      onPressed: () => addNewCategoryFlow(ctx),
+                      tooltip: 'Agregar nueva categoría',
+                      onPressed: () async {
+                        final newCat = await _askNewCategory();
+                        if (newCat != null && newCat.trim().isNotEmpty) {
+                          if (!_categories.contains(newCat)) {
+                            setState(() => _categories = [..._categories, newCat]);
+                          }
+                          setState(() => _selectedDialogCategory = newCat);
+                        }
+                      },
                       icon: const Icon(Icons.add),
                     ),
                   ],
                 ),
+                const SizedBox(height: 8),
 
-                const SizedBox(height: 8),
-                TextField(
-                  controller: saleCtrl,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  decoration: const InputDecoration(
-                    labelText: 'Precio de venta (default)',
-                  ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _salePriceCtrl,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        decoration: const InputDecoration(labelText: 'Precio de venta'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextField(
+                        controller: _lastCostCtrl,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        decoration: const InputDecoration(labelText: 'Último costo de compra'),
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 8),
                 TextField(
-                  controller: lastCostCtrl,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  decoration: const InputDecoration(
-                    labelText: 'Último costo de compra',
-                  ),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: stockCtrl,
+                  controller: _stockCtrl,
                   keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                    labelText: 'Stock',
-                  ),
+                  decoration: const InputDecoration(labelText: 'Existencia'),
                 ),
                 const SizedBox(height: 16),
-                FilledButton.icon(
-                  onPressed: () async {
-                    final sku = skuCtrl.text.trim();
-                    final name = nameCtrl.text.trim();
-                    final sale = double.tryParse(saleCtrl.text.trim().replaceAll(',', '.')) ?? 0;
-                    final last = double.tryParse(lastCostCtrl.text.trim().replaceAll(',', '.')) ?? 0;
-                    final stock = int.tryParse(stockCtrl.text.trim()) ?? 0;
-
-                    if (sku.isEmpty || name.isEmpty) {
-                      _snack('SKU y Nombre son obligatorios');
-                      return;
-                    }
-                    try {
-                      final db = await appdb.DatabaseHelper.instance.db;
-                      final map = {
-                        'sku': sku,
-                        'name': name,
-                        'category': (selectedCat == null || selectedCat!.isEmpty) ? null : selectedCat,
-                        'default_sale_price': sale,
-                        'last_purchase_price': last,
-                        'stock': stock,
-                      };
-
-                      if (isEdit) {
-                        await db.update(
-                          'products',
-                          map,
-                          where: 'id = ?',
-                          whereArgs: [product!['id']],
-                          conflictAlgorithm: ConflictAlgorithm.abort,
-                        );
-                      } else {
-                        await db.insert(
-                          'products',
-                          map,
-                          conflictAlgorithm: ConflictAlgorithm.abort,
-                        );
-                      }
-
-                      if (ctx.mounted) Navigator.of(ctx).pop(true);
-                    } on DatabaseException catch (e) {
-                      if (e.isUniqueConstraintError()) {
-                        _snack('El SKU ya existe.');
-                      } else {
-                        _snack('Error al guardar: $e');
-                      }
-                    } catch (e) {
-                      _snack('Error al guardar: $e');
-                    }
-                  },
-                  icon: const Icon(Icons.save),
-                  label: Text(isEdit ? 'Guardar cambios' : 'Crear'),
+                Row(
+                  children: [
+                    if (_editingId != null)
+                      TextButton.icon(
+                        onPressed: () {
+                          Navigator.of(context).pop();
+                          _deleteProduct(_editingId!);
+                        },
+                        icon: const Icon(Icons.delete_outline),
+                        label: const Text('Eliminar'),
+                      ),
+                    const Spacer(),
+                    FilledButton.icon(
+                      onPressed: _saveProduct,
+                      icon: const Icon(Icons.save),
+                      label: const Text('Guardar'),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -326,173 +300,194 @@ class _InventoryPageState extends State<InventoryPage> {
         );
       },
     );
-
-    if (res == true) {
-      // refresca categorías (por si se creó/seleccionó una nueva)
-      await _loadCategories();
-      await _load(q: _qCtrl.text.trim(), category: _catFilter);
-      _snack(isEdit ? 'Producto actualizado' : 'Producto creado');
-    }
   }
 
-  Future<void> _delete(Map<String, dynamic> product) async {
+  Future<String?> _askNewCategory() async {
+    final ctrl = TextEditingController();
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
-        title: const Text('Eliminar producto'),
-        content: Text(
-            '¿Eliminar "${product['name']}" (SKU: ${product['sku']})?\n\n'
-            'Si ya fue usado en ventas o compras, no se podrá eliminar.'),
+        title: const Text('Nueva categoría'),
+        content: TextField(
+          controller: ctrl,
+          decoration: const InputDecoration(labelText: 'Nombre de la categoría'),
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancelar')),
-          FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Eliminar')),
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancelar')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Agregar')),
         ],
       ),
     );
-    if (ok != true) return;
+    if (ok == true) return ctrl.text.trim();
+    return null;
+  }
+
+  Future<void> _saveProduct() async {
+    final sku = _skuCtrl.text.trim();
+    final name = _nameCtrl.text.trim();
+    if (sku.isEmpty || name.isEmpty) {
+      _snack('SKU y nombre son obligatorios');
+      return;
+    }
+
+    // Si se eligió "(Sin categoría)" queda null/'' en DB
+    String? category;
+    if (_selectedDialogCategory != null && _selectedDialogCategory != '(Sin categoría)') {
+      category = _selectedDialogCategory;
+    }
+
+    final salePrice = double.tryParse(_salePriceCtrl.text.trim().replaceAll(',', '.')) ?? 0.0;
+    final lastCost = double.tryParse(_lastCostCtrl.text.trim().replaceAll(',', '.')) ?? 0.0;
+    final stock = int.tryParse(_stockCtrl.text.trim()) ?? 0;
+
+    final db = await _db();
+    final data = <String, Object?>{
+      'sku': sku,
+      'name': name,
+      'category': category,
+      'default_sale_price': salePrice,
+      'last_purchase_price': lastCost,
+      'stock': stock,
+    };
 
     try {
-      final db = await appdb.DatabaseHelper.instance.db;
-      final id = product['id'] as int;
-
-      final usedInSales = Sqflite.firstIntValue(await db
-              .rawQuery('SELECT COUNT(*) FROM sale_items WHERE product_id = ?', [id])) ??
-          0;
-      final usedInPurchases = Sqflite.firstIntValue(await db
-              .rawQuery('SELECT COUNT(*) FROM purchase_items WHERE product_id = ?', [id])) ??
-          0;
-
-      if (usedInSales > 0 || usedInPurchases > 0) {
-        _snack('No se puede eliminar: el producto tiene movimientos.');
-        return;
+      if (_editingId == null) {
+        await db.insert('products', data, conflictAlgorithm: ConflictAlgorithm.abort);
+        _snack('Producto agregado');
+      } else {
+        await db.update('products', data, where: 'id=?', whereArgs: [_editingId]);
+        _snack('Producto actualizado');
       }
-
-      await db.delete('products', where: 'id = ?', whereArgs: [id]);
-      await _loadCategories();
-      await _load(q: _qCtrl.text.trim(), category: _catFilter);
-      _snack('Producto eliminado');
+      if (mounted) {
+        Navigator.of(context).pop(); // cerrar modal
+      }
+      await _loadAll();
     } catch (e) {
-      _snack('Error al eliminar: $e');
+      _snack('Error al guardar: $e');
     }
   }
 
-  void _snack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
-
+  // ---- UI principal ----
   @override
   Widget build(BuildContext context) {
+    final lowCount = _products.where((p) => (p['stock'] as num? ?? 0) <= 2).length;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Inventario'),
         actions: [
           IconButton(
-            onPressed: () => _openEdit(),
-            tooltip: 'Nuevo producto',
-            icon: const Icon(Icons.add),
+            tooltip: 'Recargar',
+            onPressed: _loadAll,
+            icon: const Icon(Icons.refresh),
           ),
         ],
-      ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(56),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
             child: TextField(
               controller: _qCtrl,
               decoration: InputDecoration(
-                labelText: 'Buscar por SKU o nombre',
+                hintText: 'Buscar por SKU o nombre…',
                 prefixIcon: const Icon(Icons.search),
-                suffixIcon: (_qCtrl.text.isEmpty)
+                filled: true,
+                isDense: true,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                suffixIcon: _qCtrl.text.isEmpty
                     ? null
                     : IconButton(
-                        icon: const Icon(Icons.clear),
                         onPressed: () {
                           _qCtrl.clear();
-                          _load(q: '', category: _catFilter);
+                          _loadProducts();
                         },
+                        icon: const Icon(Icons.clear),
                       ),
               ),
+              onChanged: (_) => _loadProducts(),
             ),
           ),
-          // Filtro por categoría
+        ),
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _startCreate,
+        icon: const Icon(Icons.add),
+        label: const Text('Agregar'),
+      ),
+      body: Column(
+        children: [
+          // Filtros: Categoría + Existencia baja
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
             child: Row(
               children: [
                 Expanded(
                   child: DropdownButtonFormField<String>(
-                    value: _catFilter, // null = todas
+                    value: _selectedCategory,
+                    isExpanded: true,
+                    items: <String>[null, ..._categories]
+                        .map((c) => DropdownMenuItem<String>(
+                              value: c,
+                              child: Text(c ?? 'Todas las categorías'),
+                            ))
+                        .toList(),
+                    onChanged: (v) => setState(() {
+                      _selectedCategory = v;
+                      _loadProducts();
+                    }),
                     decoration: const InputDecoration(
+                      isDense: true,
                       labelText: 'Filtrar por categoría',
+                      border: OutlineInputBorder(),
                     ),
-                    items: [
-                      const DropdownMenuItem<String>(
-                        value: null,
-                        child: Text('Todas'),
-                      ),
-                      const DropdownMenuItem<String>(
-                        value: '',
-                        child: Text('(Sin categoría)'),
-                      ),
-                      ..._categories.map((c) => DropdownMenuItem<String>(
-                            value: c,
-                            child: Text(c),
-                          )),
-                    ],
-                    onChanged: (v) {
-                      setState(() => _catFilter = v);
-                      _load(q: _qCtrl.text.trim(), category: v);
-                    },
                   ),
                 ),
                 const SizedBox(width: 8),
-                IconButton(
-                  tooltip: 'Actualizar categorías',
-                  onPressed: () async {
-                    await _loadCategories();
-                    _snack('Categorías actualizadas');
+                FilterChip(
+                  label: Text('Existencia ≤ 2${lowCount > 0 ? ' ($lowCount)' : ''}'),
+                  selected: _lowStockOnly,
+                  onSelected: (v) {
+                    setState(() => _lowStockOnly = v);
+                    _loadProducts();
                   },
-                  icon: const Icon(Icons.refresh),
+                  avatar: const Icon(Icons.warning_amber_outlined, size: 18),
                 ),
               ],
             ),
           ),
+          const Divider(height: 0),
           Expanded(
-            child: _rows.isEmpty
-                ? const Center(child: Text('Sin productos'))
+            child: _products.isEmpty
+                ? const Center(child: Text('No hay productos'))
                 : ListView.separated(
-                    itemCount: _rows.length,
+                    itemCount: _products.length,
                     separatorBuilder: (_, __) => const Divider(height: 0),
-                    itemBuilder: (ctx, i) {
-                      final r = _rows[i];
-                      final sale = (r['default_sale_price'] as num?)?.toDouble() ?? 0;
-                      final last = (r['last_purchase_price'] as num?)?.toDouble() ?? 0;
-                      final stock = (r['stock'] as num?)?.toInt() ?? 0;
-
+                    itemBuilder: (_, i) {
+                      final p = _products[i];
+                      final stock = (p['stock'] as num?)?.toInt() ?? 0;
+                      final low = stock <= 2;
+                      final cat = (p['category'] == null || (p['category'] as String).trim().isEmpty)
+                          ? '(Sin categoría)'
+                          : (p['category'] as String);
                       return ListTile(
-                        title: Text('${r['name']}'),
-                        subtitle: Text(
-                          'SKU: ${r['sku']}  ·  Cat: ${r['category'] ?? '-'}\n'
-                          'PV: ${_money.format(sale)}  ·  Últ. costo: ${_money.format(last)}  ·  Stock: $stock',
+                        leading: CircleAvatar(
+                          backgroundColor: low ? Colors.red.shade50 : Colors.blue.shade50,
+                          child: Icon(low ? Icons.priority_high : Icons.inventory_2,
+                              color: low ? Colors.red : Colors.blue),
                         ),
-                        isThreeLine: true,
-                        onTap: () => _openEdit(product: r),
+                        title: Text('${p['name']}',
+                            maxLines: 1, overflow: TextOverflow.ellipsis),
+                        subtitle: Text('SKU: ${p['sku']} • $cat • Stock: $stock'),
                         trailing: IconButton(
-                          tooltip: 'Eliminar',
-                          icon: const Icon(Icons.delete_outline),
-                          onPressed: () => _delete(r),
+                          icon: const Icon(Icons.edit),
+                          tooltip: 'Editar',
+                          onPressed: () => _startEdit(p),
                         ),
                       );
                     },
                   ),
           ),
         ],
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _openEdit(),
-        icon: const Icon(Icons.add),
-        label: const Text('Agregar'),
       ),
     );
   }
