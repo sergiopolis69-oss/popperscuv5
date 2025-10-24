@@ -11,25 +11,22 @@ class InventoryPage extends StatefulWidget {
 }
 
 class _InventoryPageState extends State<InventoryPage> {
-  // Datos
   List<Map<String, dynamic>> _products = [];
   List<String> _categories = [];
-  String? _selectedCategory; // null = Todas
+  String? _selectedCategory;
   bool _lowStockOnly = false;
 
-  // Búsqueda
   final _qCtrl = TextEditingController();
 
-  // Formulario de producto
   final _skuCtrl = TextEditingController();
   final _nameCtrl = TextEditingController();
-  final _categoryCtrl = TextEditingController(); // para "nueva categoría"
+  final _categoryCtrl = TextEditingController();
   final _salePriceCtrl = TextEditingController(text: '0');
   final _lastCostCtrl = TextEditingController(text: '0');
   final _stockCtrl = TextEditingController(text: '0');
 
-  // Estado de edición
   int? _editingId;
+  String? _selectedDialogCategory;
 
   @override
   void initState() {
@@ -71,7 +68,6 @@ class _InventoryPageState extends State<InventoryPage> {
     final list = rows.map((e) => (e['cat'] as String)).toList();
     setState(() {
       _categories = list;
-      // mantener selección si sigue existiendo
       if (_selectedCategory != null && !_categories.contains(_selectedCategory)) {
         _selectedCategory = null;
       }
@@ -84,7 +80,6 @@ class _InventoryPageState extends State<InventoryPage> {
     final where = <String>[];
     final args = <Object?>[];
 
-    // Filtro categoría
     if (_selectedCategory != null) {
       if (_selectedCategory == '(Sin categoría)') {
         where.add("(category IS NULL OR TRIM(category) = '')");
@@ -94,13 +89,11 @@ class _InventoryPageState extends State<InventoryPage> {
       }
     }
 
-    // Filtro búsqueda
     if (q.isNotEmpty) {
       where.add("(sku LIKE ? OR name LIKE ?)");
       args.addAll(['%$q%', '%$q%']);
     }
 
-    // Filtro existencia baja
     if (_lowStockOnly) {
       where.add("(COALESCE(stock,0) <= 2)");
     }
@@ -117,12 +110,10 @@ class _InventoryPageState extends State<InventoryPage> {
     setState(() => _products = rows);
   }
 
-  // ---- UI helpers ----
   void _snack(String msg) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
-  // ---- CRUD ----
   void _startCreate() {
     setState(() {
       _editingId = null;
@@ -132,6 +123,7 @@ class _InventoryPageState extends State<InventoryPage> {
       _lastCostCtrl.text = '0';
       _stockCtrl.text = '0';
       _categoryCtrl.text = '';
+      _selectedDialogCategory = null;
     });
     _showProductDialog(title: 'Nuevo producto');
   }
@@ -146,7 +138,7 @@ class _InventoryPageState extends State<InventoryPage> {
       _lastCostCtrl.text =
           ((p['last_purchase_price'] as num?)?.toDouble() ?? 0).toStringAsFixed(2);
       _stockCtrl.text = ((p['stock'] as num?)?.toInt() ?? 0).toString();
-      _categoryCtrl.text = ''; // limpio campo de nueva categoría
+      _categoryCtrl.text = '';
       _selectedDialogCategory =
           (p['category'] == null || (p['category'] as String).trim().isEmpty)
               ? '(Sin categoría)'
@@ -175,15 +167,10 @@ class _InventoryPageState extends State<InventoryPage> {
     await _loadAll();
   }
 
-  // ---- Diálogo de producto (agregar/editar) ----
-  String? _selectedDialogCategory; // null usa "(Sin categoría)" si no hay nueva
-
   Future<void> _showProductDialog({required String title}) async {
-    // Asegurar categorías cargadas
     if (_categories.isEmpty) {
       await _loadCategories();
     }
-    // Valor inicial para el dropdown del diálogo
     _selectedDialogCategory ??= _categories.isNotEmpty ? _categories.first : '(Sin categoría)';
 
     await showModalBottomSheet<void>(
@@ -200,27 +187,16 @@ class _InventoryPageState extends State<InventoryPage> {
               children: [
                 Text(title, style: Theme.of(context).textTheme.titleLarge),
                 const SizedBox(height: 12),
-                TextField(
-                  controller: _skuCtrl,
-                  decoration: const InputDecoration(labelText: 'SKU *'),
-                ),
+                TextField(controller: _skuCtrl, decoration: const InputDecoration(labelText: 'SKU *')),
                 const SizedBox(height: 8),
-                TextField(
-                  controller: _nameCtrl,
-                  decoration: const InputDecoration(labelText: 'Nombre *'),
-                ),
+                TextField(controller: _nameCtrl, decoration: const InputDecoration(labelText: 'Nombre *')),
                 const SizedBox(height: 8),
 
-                // Categoría (dropdown) + botón "nueva"
                 Row(
                   children: [
                     Expanded(
                       child: DropdownButtonFormField<String>(
-                        value: _selectedDialogCategory != null &&
-                                (_categories.contains(_selectedDialogCategory!) ||
-                                    _selectedDialogCategory == '(Sin categoría)')
-                            ? _selectedDialogCategory
-                            : null,
+                        value: _selectedDialogCategory,
                         items: <String>['(Sin categoría)', ..._categories.where((c) => c != '(Sin categoría)')]
                             .map((c) => DropdownMenuItem(
                                   value: c,
@@ -308,10 +284,7 @@ class _InventoryPageState extends State<InventoryPage> {
       context: context,
       builder: (_) => AlertDialog(
         title: const Text('Nueva categoría'),
-        content: TextField(
-          controller: ctrl,
-          decoration: const InputDecoration(labelText: 'Nombre de la categoría'),
-        ),
+        content: TextField(controller: ctrl, decoration: const InputDecoration(labelText: 'Nombre')),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancelar')),
           FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Agregar')),
@@ -330,7 +303,6 @@ class _InventoryPageState extends State<InventoryPage> {
       return;
     }
 
-    // Si se eligió "(Sin categoría)" queda null/'' en DB
     String? category;
     if (_selectedDialogCategory != null && _selectedDialogCategory != '(Sin categoría)') {
       category = _selectedDialogCategory;
@@ -358,16 +330,13 @@ class _InventoryPageState extends State<InventoryPage> {
         await db.update('products', data, where: 'id=?', whereArgs: [_editingId]);
         _snack('Producto actualizado');
       }
-      if (mounted) {
-        Navigator.of(context).pop(); // cerrar modal
-      }
+      if (mounted) Navigator.of(context).pop();
       await _loadAll();
     } catch (e) {
       _snack('Error al guardar: $e');
     }
   }
 
-  // ---- UI principal ----
   @override
   Widget build(BuildContext context) {
     final lowCount = _products.where((p) => (p['stock'] as num? ?? 0) <= 2).length;
@@ -375,13 +344,7 @@ class _InventoryPageState extends State<InventoryPage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Inventario'),
-        actions: [
-          IconButton(
-            tooltip: 'Recargar',
-            onPressed: _loadAll,
-            icon: const Icon(Icons.refresh),
-          ),
-        ],
+        actions: [IconButton(onPressed: _loadAll, icon: const Icon(Icons.refresh))],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(56),
           child: Padding(
@@ -416,25 +379,24 @@ class _InventoryPageState extends State<InventoryPage> {
       ),
       body: Column(
         children: [
-          // Filtros: Categoría + Existencia baja
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
             child: Row(
               children: [
                 Expanded(
-                  child: DropdownButtonFormField<String>(
+                  child: DropdownButtonFormField<String?>(
                     value: _selectedCategory,
                     isExpanded: true,
-                    items: <String>[null, ..._categories]
-                        .map((c) => DropdownMenuItem<String>(
+                    items: <String?>[null, ..._categories]
+                        .map((c) => DropdownMenuItem<String?>(
                               value: c,
                               child: Text(c ?? 'Todas las categorías'),
                             ))
                         .toList(),
-                    onChanged: (v) => setState(() {
-                      _selectedCategory = v;
+                    onChanged: (v) {
+                      setState(() => _selectedCategory = v);
                       _loadProducts();
-                    }),
+                    },
                     decoration: const InputDecoration(
                       isDense: true,
                       labelText: 'Filtrar por categoría',
@@ -475,8 +437,7 @@ class _InventoryPageState extends State<InventoryPage> {
                           child: Icon(low ? Icons.priority_high : Icons.inventory_2,
                               color: low ? Colors.red : Colors.blue),
                         ),
-                        title: Text('${p['name']}',
-                            maxLines: 1, overflow: TextOverflow.ellipsis),
+                        title: Text(p['name'] ?? '', maxLines: 1, overflow: TextOverflow.ellipsis),
                         subtitle: Text('SKU: ${p['sku']} • $cat • Stock: $stock'),
                         trailing: IconButton(
                           icon: const Icon(Icons.edit),
