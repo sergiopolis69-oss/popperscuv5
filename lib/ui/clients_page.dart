@@ -14,7 +14,7 @@ class ClientsPage extends StatefulWidget {
 class _ClientsPageState extends State<ClientsPage> {
   final _qCtrl = TextEditingController();
 
-  // Top 5
+  // Top clientes
   List<Map<String, dynamic>> _topClients = [];
 
   // Resultados de búsqueda
@@ -51,21 +51,24 @@ class _ClientsPageState extends State<ClientsPage> {
     }
   }
 
+  // ----------- Data loaders -----------
+
   Future<void> _loadTopClients() async {
     final db = await _db();
     final rows = await db.rawQuery('''
       SELECT c.phone,
              COALESCE(NULLIF(TRIM(c.name),''), c.phone) AS name,
-             COALESCE(SUM(COALESCE(s.shipping_cost,0) + (
-                SELECT COALESCE(SUM(pi.quantity * pi.unit_price),0)
-                FROM sale_items pi
-                WHERE pi.sale_id = s.id
-             ) - COALESCE(s.discount,0)), 0) AS total
+             COALESCE(SUM(
+               (SELECT COALESCE(SUM(si.quantity * si.unit_price),0) 
+                  FROM sale_items si WHERE si.sale_id = s.id)
+               + COALESCE(s.shipping_cost,0)
+               - COALESCE(s.discount,0)
+             ), 0) AS total
       FROM customers c
       LEFT JOIN sales s ON s.customer_phone = c.phone
       GROUP BY c.phone
       ORDER BY total DESC
-      LIMIT 5
+      LIMIT 10
     ''');
     setState(() => _topClients = rows);
   }
@@ -88,8 +91,10 @@ class _ClientsPageState extends State<ClientsPage> {
       _clients = rows;
       if (_selectedClient != null) {
         final ph = _selectedClient!['phone'] as String;
-        _selectedClient =
-            rows.cast<Map<String, dynamic>?>().firstWhere((r) => r?['phone'] == ph, orElse: () => null);
+        _selectedClient = rows.cast<Map<String, dynamic>?>().firstWhere(
+              (r) => r?['phone'] == ph,
+              orElse: () => null,
+            );
       }
     });
   }
@@ -113,10 +118,12 @@ class _ClientsPageState extends State<ClientsPage> {
     setState(() => _selectedClientTotal = totalNum.toDouble());
   }
 
-  Future<void> _confirmAddClient() async {
-    _phoneCtrl.text = '';
-    _nameCtrl.text = '';
-    _addrCtrl.text = '';
+  // ----------- Agregar / Eliminar -----------
+
+  Future<void> _confirmAddClient({String prePhone = '', String preName = '', String preAddr = ''}) async {
+    _phoneCtrl.text = prePhone;
+    _nameCtrl.text = preName;
+    _addrCtrl.text = preAddr;
 
     final ok = await showDialog<bool>(
       context: context,
@@ -198,8 +205,9 @@ class _ClientsPageState extends State<ClientsPage> {
     }
   }
 
-  // ========== IMPORTAR DESDE CONTACTOS (flutter_contacts) ==========
-  Future<void> _importFromContacts() async {
+  // ----------- Importar UNO desde contactos -----------
+
+  Future<void> _importOneFromContacts() async {
     try {
       final granted = await FlutterContacts.requestPermission(readonly: true);
       if (!granted) {
@@ -207,48 +215,38 @@ class _ClientsPageState extends State<ClientsPage> {
         return;
       }
 
-      final contacts = await FlutterContacts.getContacts(withProperties: true);
-      if (contacts.isEmpty) {
-        _snack('No se encontraron contactos');
+      // Abre el picker nativo para escoger UN contacto
+      final picked = await FlutterContacts.openExternalPick();
+      if (picked == null) {
+        _snack('No seleccionaste contacto');
         return;
       }
 
-      final db = await _db();
-      int imported = 0;
-      int skipped = 0;
-
-      for (final c in contacts) {
-        final phone = _firstPhone(c);
-        if (phone == null || phone.isEmpty) {
-          skipped++;
-          continue;
-        }
-        final normPhone = _normalizePhone(phone);
-        if (normPhone.isEmpty) {
-          skipped++;
-          continue;
-        }
-
-        final displayName = (c.displayName ?? '').trim();
-        final name = displayName.isNotEmpty ? displayName : normPhone;
-
-        try {
-          await db.insert('customers', {
-            'phone': normPhone,
-            'name': name,
-            'address': '',
-          }, conflictAlgorithm: ConflictAlgorithm.replace);
-          imported++;
-        } catch (_) {
-          skipped++;
-        }
+      // Trae propiedades (teléfonos, etc.)
+      final full = await FlutterContacts.getContact(picked.id, withProperties: true);
+      if (full == null) {
+        _snack('No fue posible leer el contacto');
+        return;
       }
 
-      _snack('Importados: $imported • Omitidos: $skipped');
-      await _loadClients();
-      await _loadTopClients();
+      final phoneRaw = _firstPhone(full);
+      if (phoneRaw == null || phoneRaw.isEmpty) {
+        _snack('El contacto no tiene teléfono');
+        return;
+      }
+
+      final phone = _normalizePhone(phoneRaw);
+      final name = (full.displayName ?? '').trim();
+      final address = ''; // opcional: podrías mapear postalAddresses si quieres
+
+      // Confirmación (y permite editar antes de guardar)
+      await _confirmAddClient(
+        prePhone: phone,
+        preName: name.isNotEmpty ? name : phone,
+        preAddr: address,
+      );
     } catch (e) {
-      _snack('Error importando contactos: $e');
+      _snack('Error importando contacto: $e');
     }
   }
 
@@ -260,11 +258,150 @@ class _ClientsPageState extends State<ClientsPage> {
   String _normalizePhone(String raw) {
     return raw.replaceAll(RegExp(r'[\s\-\(\)\.\+]'), '');
   }
-  // ===========================================================
+
+  // ----------- Historial de ventas de un cliente -----------
+
+  Future<void> _showClientHistory(String phone, String name) async {
+    final db = await _db();
+
+    // Encabezados de ventas de ese cliente
+    final heads = await db.rawQuery('''
+      SELECT id, date, payment_method, place, 
+             COALESCE(shipping_cost,0) AS shipping_cost,
+             COALESCE(discount,0) AS discount
+      FROM sales
+      WHERE customer_phone = ?
+      ORDER BY date DESC, id DESC
+    ''', [phone]);
+
+    if (heads.isEmpty) {
+      // Hoja con mensaje vacío
+      // ignore: use_build_context_synchronously
+      await showModalBottomSheet(
+        context: context,
+        isScrollControlled: true,
+        builder: (_) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Wrap(children: [
+              Text('Historial de ventas de $name', style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 12),
+              const Text('No hay ventas registradas para este cliente.'),
+              const SizedBox(height: 16),
+            ]),
+          ),
+        ),
+      );
+      return;
+    }
+
+    // Items de ventas de ese cliente
+    final items = await db.rawQuery('''
+      SELECT si.sale_id, p.sku, p.name, si.quantity, si.unit_price
+      FROM sale_items si
+      JOIN sales s ON s.id = si.sale_id
+      JOIN products p ON p.id = si.product_id
+      WHERE s.customer_phone = ?
+      ORDER BY si.sale_id DESC, p.name COLLATE NOCASE
+    ''', [phone]);
+
+    final bySale = <int, List<Map<String, dynamic>>>{};
+    for (final it in items) {
+      bySale.putIfAbsent(it['sale_id'] as int, () => []).add(it);
+    }
+
+    // ignore: use_build_context_synchronously
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Historial de ventas de $name',
+                    style: Theme.of(context).textTheme.titleLarge),
+                const SizedBox(height: 12),
+                Expanded(
+                  child: ListView.separated(
+                    itemCount: heads.length,
+                    separatorBuilder: (_, __) => const Divider(height: 16),
+                    itemBuilder: (_, i) {
+                      final h = heads[i];
+                      final saleId = h['id'] as int;
+                      final its = bySale[saleId] ?? const [];
+                      final itemsTotal = its.fold<double>(
+                        0.0,
+                        (a, b) => a + (b['quantity'] as int) * (b['unit_price'] as num).toDouble(),
+                      );
+                      final qtyTotal = its.fold<int>(
+                        0,
+                        (a, b) => a + (b['quantity'] as int),
+                      );
+                      final shipping = (h['shipping_cost'] as num).toDouble();
+                      final discount = (h['discount'] as num).toDouble();
+                      final grandTotal = itemsTotal + shipping - discount;
+
+                      return Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('Venta #$saleId • ${h['date']}',
+                                  style: const TextStyle(fontWeight: FontWeight.bold)),
+                              const SizedBox(height: 2),
+                              Text('Pago: ${h['payment_method'] ?? '(s/d)'} • Lugar: ${h['place'] ?? '(s/d)'}'),
+                              const SizedBox(height: 8),
+                              ...its.map((it) => ListTile(
+                                    dense: true,
+                                    contentPadding: EdgeInsets.zero,
+                                    title: Text('${it['sku']}  ${it['name']}'),
+                                    trailing: Text('${it['quantity']} × \$${(it['unit_price'] as num).toStringAsFixed(2)}'),
+                                  )),
+                              const Divider(),
+                              Row(
+                                children: [
+                                  Expanded(child: Text('Pzas: $qtyTotal')),
+                                  Expanded(child: Text('Artículos: \$${itemsTotal.toStringAsFixed(2)}')),
+                                ],
+                              ),
+                              Row(
+                                children: [
+                                  Expanded(child: Text('Envío: \$${shipping.toStringAsFixed(2)}')),
+                                  Expanded(child: Text('Descuento: -\$${discount.toStringAsFixed(2)}')),
+                                ],
+                              ),
+                              const SizedBox(height: 6),
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: Text('Total: \$${grandTotal.toStringAsFixed(2)}',
+                                    style: const TextStyle(fontWeight: FontWeight.bold)),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  // ----------- UI Helpers -----------
 
   void _snack(String msg) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
+
+  // ----------- Build -----------
 
   @override
   Widget build(BuildContext context) {
@@ -273,13 +410,13 @@ class _ClientsPageState extends State<ClientsPage> {
         title: const Text('Clientes'),
         actions: [
           IconButton(
-            tooltip: 'Importar desde contactos',
-            onPressed: _importFromContacts,
+            tooltip: 'Importar 1 contacto',
+            onPressed: _importOneFromContacts,
             icon: const Icon(Icons.contact_phone),
           ),
           IconButton(
             tooltip: 'Agregar cliente',
-            onPressed: _confirmAddClient,
+            onPressed: () => _confirmAddClient(),
             icon: const Icon(Icons.person_add_alt_1),
           ),
         ],
@@ -319,7 +456,7 @@ class _ClientsPageState extends State<ClientsPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Top 5 por ventas históricas',
+                  Text('Top 10 por ventas históricas',
                       style: Theme.of(context).textTheme.titleMedium),
                   const SizedBox(height: 8),
                   Wrap(
@@ -340,6 +477,7 @@ class _ClientsPageState extends State<ClientsPage> {
           Expanded(
             child: Row(
               children: [
+                // Lista de clientes
                 Expanded(
                   flex: 2,
                   child: _clients.isEmpty
@@ -355,15 +493,29 @@ class _ClientsPageState extends State<ClientsPage> {
                                 '${c['phone']}${(c['address'] ?? '').toString().isNotEmpty ? ' • ${c['address']}' : ''}',
                               ),
                               onTap: () => _selectClient(c),
-                              trailing: IconButton(
-                                icon: const Icon(Icons.delete_outline),
-                                tooltip: 'Eliminar',
-                                onPressed: () => _confirmDeleteClient(c),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    tooltip: 'Historial',
+                                    icon: const Icon(Icons.history),
+                                    onPressed: () => _showClientHistory(
+                                      (c['phone'] ?? '').toString(),
+                                      (c['name'] ?? c['phone']).toString(),
+                                    ),
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete_outline),
+                                    tooltip: 'Eliminar',
+                                    onPressed: () => _confirmDeleteClient(c),
+                                  ),
+                                ],
                               ),
                             );
                           },
                         ),
                 ),
+                // Panel de detalle
                 Expanded(
                   child: _selectedClient == null
                       ? const SizedBox()
@@ -395,6 +547,18 @@ class _ClientsPageState extends State<ClientsPage> {
                                         .textTheme
                                         .headlineSmall
                                         ?.copyWith(fontWeight: FontWeight.bold)),
+                                const SizedBox(height: 12),
+                                Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: FilledButton.icon(
+                                    onPressed: () => _showClientHistory(
+                                      (_selectedClient!['phone'] ?? '').toString(),
+                                      (_selectedClient!['name'] ?? _selectedClient!['phone']).toString(),
+                                    ),
+                                    icon: const Icon(Icons.history),
+                                    label: const Text('Ver historial'),
+                                  ),
+                                ),
                               ],
                             ),
                           ),
