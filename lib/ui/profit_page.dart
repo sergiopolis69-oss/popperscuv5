@@ -277,7 +277,7 @@ class _ProfitPageState extends State<ProfitPage> {
     } catch (_) {
       parsed = null;
     }
-    parsed ??= DateTime.tryParse(raw.replace(' ', 'T'));
+    parsed ??= DateTime.tryParse(raw.replaceFirst(' ', 'T'));
     if (parsed != null) {
       return DateFormat('yyyy-MM-dd').format(DateTime(parsed.year, parsed.month, parsed.day));
     }
@@ -492,7 +492,6 @@ class _ProfitPageState extends State<ProfitPage> {
                         },
                       ),
                     ),
-                    rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                     topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                   ),
                   borderData: FlBorderData(show: false),

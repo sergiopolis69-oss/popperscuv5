@@ -77,7 +77,7 @@ class _DashboardPageState extends State<DashboardPage> {
     } catch (_) {
       parsed = null;
     }
-    parsed ??= DateTime.tryParse(raw.replace(' ', 'T'));
+    parsed ??= DateTime.tryParse(raw.replaceFirst(' ', 'T'));
     if (parsed != null) {
       return _formatDate(DateTime(parsed.year, parsed.month, parsed.day));
     }
@@ -423,7 +423,6 @@ class _DashboardPageState extends State<DashboardPage> {
                         },
                       ),
                     ),
-                    rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                     topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                   ),
                   borderData: FlBorderData(show: false),
