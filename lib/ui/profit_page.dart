@@ -428,6 +428,7 @@ class _ProfitPageState extends State<ProfitPage> {
       ...netSpots.map((e) => e.y),
       ...profitSpots.map((e) => e.y),
     ].fold<double>(0, (prev, value) => value > prev ? value : prev);
+    final maxXValue = netSpots.isEmpty ? 0.0 : (netSpots.length - 1).toDouble();
 
     return Card(
       child: Padding(
@@ -441,6 +442,8 @@ class _ProfitPageState extends State<ProfitPage> {
               height: 220,
               child: LineChart(
                 LineChartData(
+                  minX: 0,
+                  maxX: maxXValue,
                   minY: 0,
                   maxY: maxY == 0 ? 1 : maxY * 1.2,
                   gridData: const FlGridData(drawVerticalLine: false),

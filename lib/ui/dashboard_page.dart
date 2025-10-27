@@ -259,43 +259,64 @@ class _DashboardPageState extends State<DashboardPage> {
                 padding: const EdgeInsets.all(12),
                 physics: const AlwaysScrollableScrollPhysics(),
                 children: [
-                  Wrap(
-                    spacing: 12,
-                    runSpacing: 12,
-                    children: [
-                      _SummaryCard(
-                        title: 'Ventas netas',
-                        value: _money.format(_netSales),
-                        icon: Icons.trending_up,
-                        color: Colors.indigo,
-                      ),
-                      _SummaryCard(
-                        title: 'Costo',
-                        value: _money.format(_cost),
-                        icon: Icons.inventory,
-                        color: Colors.deepPurple,
-                      ),
-                      _SummaryCard(
-                        title: 'Utilidad',
-                        value: _money.format(_profit),
-                        icon: Icons.attach_money,
-                        color: Colors.green,
-                        subtitle:
-                            _netSales > 0 ? 'Margen ${(100 * (_profit / _netSales)).toStringAsFixed(1)}%' : 'Margen 0%',
-                      ),
-                      _SummaryCard(
-                        title: 'Descuentos',
-                        value: '- ${_money.format(_discounts)}',
-                        icon: Icons.percent,
-                        color: Colors.orange,
-                      ),
-                      _SummaryCard(
-                        title: 'Envíos',
-                        value: _money.format(_shipping),
-                        icon: Icons.local_shipping,
-                        color: Colors.teal,
-                      ),
-                    ],
+                  LayoutBuilder(
+                    builder: (context, constraints) {
+                      const spacing = 12.0;
+                      final maxWidth = constraints.maxWidth;
+                      double cardWidth;
+                      if (maxWidth >= 520) {
+                        cardWidth = (maxWidth - spacing) / 2;
+                      } else {
+                        cardWidth = maxWidth;
+                      }
+                      if (cardWidth <= 0) {
+                        cardWidth = maxWidth;
+                      }
+
+                      final cards = <Widget>[
+                        _SummaryCard(
+                          title: 'Ventas netas',
+                          value: _money.format(_netSales),
+                          icon: Icons.trending_up,
+                          color: Colors.indigo,
+                        ),
+                        _SummaryCard(
+                          title: 'Costo',
+                          value: _money.format(_cost),
+                          icon: Icons.inventory,
+                          color: Colors.deepPurple,
+                        ),
+                        _SummaryCard(
+                          title: 'Utilidad',
+                          value: _money.format(_profit),
+                          icon: Icons.attach_money,
+                          color: Colors.green,
+                          subtitle: _netSales > 0
+                              ? 'Margen ${(100 * (_profit / _netSales)).toStringAsFixed(1)}%'
+                              : 'Margen 0%',
+                        ),
+                        _SummaryCard(
+                          title: 'Descuentos',
+                          value: '- ${_money.format(_discounts)}',
+                          icon: Icons.percent,
+                          color: Colors.orange,
+                        ),
+                        _SummaryCard(
+                          title: 'Envíos',
+                          value: _money.format(_shipping),
+                          icon: Icons.local_shipping,
+                          color: Colors.teal,
+                        ),
+                      ];
+
+                      return Wrap(
+                        spacing: spacing,
+                        runSpacing: 12,
+                        children: cards
+                            .map((card) => SizedBox(width: cardWidth, child: card))
+                            .toList(),
+                      );
+                    },
                   ),
                   const SizedBox(height: 16),
                   _buildPerformanceCard(context),
@@ -340,6 +361,7 @@ class _DashboardPageState extends State<DashboardPage> {
       ...spotsNet.map((e) => e.y),
       ...spotsProfit.map((e) => e.y),
     ].fold<double>(0, (previousValue, element) => element > previousValue ? element : previousValue);
+    final maxXValue = spotsNet.isEmpty ? 0.0 : (spotsNet.length - 1).toDouble();
 
     return Card(
       child: Padding(
@@ -353,6 +375,8 @@ class _DashboardPageState extends State<DashboardPage> {
               height: 220,
               child: LineChart(
                 LineChartData(
+                  minX: 0,
+                  maxX: maxXValue,
                   minY: 0,
                   maxY: maxY == 0 ? 1 : maxY * 1.2,
                   gridData: const FlGridData(drawVerticalLine: false),
@@ -691,29 +715,26 @@ class _SummaryCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return ConstrainedBox(
-      constraints: const BoxConstraints(minWidth: 180),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: color.withOpacity(0.08),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: color.withOpacity(0.2)),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(icon, color: color),
-            const SizedBox(height: 12),
-            Text(title, style: theme.textTheme.titleSmall),
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withOpacity(0.2)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: color),
+          const SizedBox(height: 12),
+          Text(title, style: theme.textTheme.titleSmall),
+          const SizedBox(height: 4),
+          Text(value, style: theme.textTheme.headlineSmall?.copyWith(color: color, fontWeight: FontWeight.bold)),
+          if (subtitle != null) ...[
             const SizedBox(height: 4),
-            Text(value, style: theme.textTheme.headlineSmall?.copyWith(color: color, fontWeight: FontWeight.bold)),
-            if (subtitle != null) ...[
-              const SizedBox(height: 4),
-              Text(subtitle!, style: theme.textTheme.bodySmall),
-            ],
+            Text(subtitle!, style: theme.textTheme.bodySmall),
           ],
-        ),
+        ],
       ),
     );
   }

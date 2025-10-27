@@ -406,83 +406,99 @@ class _InventoryPageState extends State<InventoryPage> {
         icon: const Icon(Icons.add),
         label: const Text('Agregar'),
       ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-            child: _buildSuggestionsCard(),
-          ),
-          const SizedBox(height: 8),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
-            child: Row(
-              children: [
-                Expanded(
-                  child: DropdownButtonFormField<String?>(
-                    value: _selectedCategory,
-                    isExpanded: true,
-                    items: <String?>[null, ..._categories]
-                        .map((c) => DropdownMenuItem<String?>(
-                              value: c,
-                              child: Text(c ?? 'Todas las categorías'),
-                            ))
-                        .toList(),
-                    onChanged: (v) {
-                      setState(() => _selectedCategory = v);
-                      _loadProducts();
-                    },
-                    decoration: const InputDecoration(
-                      isDense: true,
-                      labelText: 'Filtrar por categoría',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                FilterChip(
-                  label: Text('Existencia ≤ 2${lowCount > 0 ? ' ($lowCount)' : ''}'),
-                  selected: _lowStockOnly,
-                  onSelected: (v) {
-                    setState(() => _lowStockOnly = v);
-                    _loadProducts();
-                  },
-                  avatar: const Icon(Icons.warning_amber_outlined, size: 18),
-                ),
-              ],
+      body: RefreshIndicator(
+        onRefresh: _loadAll,
+        child: CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                child: _buildSuggestionsCard(),
+              ),
             ),
-          ),
-          const Divider(height: 0),
-          Expanded(
-            child: _products.isEmpty
-                ? const Center(child: Text('No hay productos'))
-                : ListView.separated(
-                    itemCount: _products.length,
-                    separatorBuilder: (_, __) => const Divider(height: 0),
-                    itemBuilder: (_, i) {
-                      final p = _products[i];
-                      final stock = (p['stock'] as num?)?.toInt() ?? 0;
-                      final low = stock <= 2;
-                      final cat = (p['category'] == null || (p['category'] as String).trim().isEmpty)
-                          ? '(Sin categoría)'
-                          : (p['category'] as String);
-                      return ListTile(
-                        leading: CircleAvatar(
-                          backgroundColor: low ? Colors.red.shade50 : Colors.blue.shade50,
-                          child: Icon(low ? Icons.priority_high : Icons.inventory_2,
-                              color: low ? Colors.red : Colors.blue),
+            const SliverToBoxAdapter(child: SizedBox(height: 8)),
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<String?>(
+                        value: _selectedCategory,
+                        isExpanded: true,
+                        items: <String?>[null, ..._categories]
+                            .map((c) => DropdownMenuItem<String?>(
+                                  value: c,
+                                  child: Text(c ?? 'Todas las categorías'),
+                                ))
+                            .toList(),
+                        onChanged: (v) {
+                          setState(() => _selectedCategory = v);
+                          _loadProducts();
+                        },
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          labelText: 'Filtrar por categoría',
+                          border: OutlineInputBorder(),
                         ),
-                        title: Text(p['name'] ?? '', maxLines: 1, overflow: TextOverflow.ellipsis),
-                        subtitle: Text('SKU: ${p['sku']} • $cat • Stock: $stock'),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.edit),
-                          tooltip: 'Editar',
-                          onPressed: () => _startEdit(p),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    FilterChip(
+                      label: Text('Existencia ≤ 2${lowCount > 0 ? ' ($lowCount)' : ''}'),
+                      selected: _lowStockOnly,
+                      onSelected: (v) {
+                        setState(() => _lowStockOnly = v);
+                        _loadProducts();
+                      },
+                      avatar: const Icon(Icons.warning_amber_outlined, size: 18),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SliverToBoxAdapter(child: Divider(height: 0)),
+            if (_products.isEmpty)
+              const SliverFillRemaining(
+                hasScrollBody: false,
+                child: Center(child: Text('No hay productos')),
+              )
+            else
+              SliverList(
+                delegate: SliverChildBuilderDelegate(
+                  (context, index) {
+                    final p = _products[index];
+                    final stock = (p['stock'] as num?)?.toInt() ?? 0;
+                    final low = stock <= 2;
+                    final cat = (p['category'] == null || (p['category'] as String).trim().isEmpty)
+                        ? '(Sin categoría)'
+                        : (p['category'] as String);
+                    return Column(
+                      children: [
+                        ListTile(
+                          leading: CircleAvatar(
+                            backgroundColor: low ? Colors.red.shade50 : Colors.blue.shade50,
+                            child: Icon(low ? Icons.priority_high : Icons.inventory_2,
+                                color: low ? Colors.red : Colors.blue),
+                          ),
+                          title: Text(p['name'] ?? '', maxLines: 1, overflow: TextOverflow.ellipsis),
+                          subtitle: Text('SKU: ${p['sku']} • $cat • Stock: $stock'),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.edit),
+                            tooltip: 'Editar',
+                            onPressed: () => _startEdit(p),
+                          ),
                         ),
-                      );
-                    },
-                  ),
-          ),
-        ],
+                        if (index != _products.length - 1) const Divider(height: 0),
+                      ],
+                    );
+                  },
+                  childCount: _products.length,
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
