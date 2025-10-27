@@ -474,6 +474,7 @@ class _ProfitPageState extends State<ProfitPage> {
                   borderData: FlBorderData(show: false),
                   lineTouchData: LineTouchData(
                     touchTooltipData: LineTouchTooltipData(
+                      tooltipBgColor: Theme.of(context).colorScheme.surfaceVariant,
                       getTooltipItems: (touches) => touches
                           .map(
                             (spot) => LineTooltipItem(

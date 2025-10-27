@@ -400,6 +400,7 @@ class _DashboardPageState extends State<DashboardPage> {
                   ],
                   lineTouchData: LineTouchData(
                     touchTooltipData: LineTouchTooltipData(
+                      tooltipBgColor: Theme.of(context).colorScheme.surfaceVariant,
                       getTooltipItems: (touchedSpots) => touchedSpots
                           .map(
                             (spot) => LineTooltipItem(
