@@ -328,6 +328,7 @@ class _DashboardPageState extends State<DashboardPage> {
       );
     }
 
+    final theme = Theme.of(context);
     final spotsNet = <FlSpot>[];
     final spotsProfit = <FlSpot>[];
     for (int i = 0; i < _daily.length; i++) {
@@ -400,14 +401,19 @@ class _DashboardPageState extends State<DashboardPage> {
                   ],
                   lineTouchData: LineTouchData(
                     touchTooltipData: LineTouchTooltipData(
-                      tooltipBgColor: Theme.of(context).colorScheme.surfaceVariant,
+                      tooltipPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      tooltipMargin: 12,
+                      tooltipRoundedRadius: 12,
                       getTooltipItems: (touchedSpots) => touchedSpots
                           .map(
                             (spot) => LineTooltipItem(
                               '${_dayLabel.format(_daily[spot.spotIndex].day)}\n'
                               '${spot.bar.color == Colors.indigo ? 'Ventas netas' : 'Utilidad'}: '
                               '${_money.format(spot.y)}',
-                              const TextStyle(fontWeight: FontWeight.w600),
+                              TextStyle(
+                                color: theme.colorScheme.onSurface,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                           )
                           .toList(),

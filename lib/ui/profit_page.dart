@@ -416,6 +416,7 @@ class _ProfitPageState extends State<ProfitPage> {
     }
 
     final dayLabel = DateFormat('MM/dd');
+    final theme = Theme.of(context);
     final netSpots = <FlSpot>[];
     final profitSpots = <FlSpot>[];
     for (int i = 0; i < _dailyPerformance.length; i++) {
@@ -474,14 +475,19 @@ class _ProfitPageState extends State<ProfitPage> {
                   borderData: FlBorderData(show: false),
                   lineTouchData: LineTouchData(
                     touchTooltipData: LineTouchTooltipData(
-                      tooltipBgColor: Theme.of(context).colorScheme.surfaceVariant,
+                      tooltipPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      tooltipMargin: 12,
+                      tooltipRoundedRadius: 12,
                       getTooltipItems: (touches) => touches
                           .map(
                             (spot) => LineTooltipItem(
                               '${dayLabel.format(_dailyPerformance[spot.spotIndex].day)}\n'
                               '${spot.bar.color == Colors.indigo ? 'Ventas netas' : 'Utilidad'}: '
                               '${_money.format(spot.y)}',
-                              const TextStyle(fontWeight: FontWeight.w600),
+                              TextStyle(
+                                color: theme.colorScheme.onSurface,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                           )
                           .toList(),
