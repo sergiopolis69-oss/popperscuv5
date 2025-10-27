@@ -515,6 +515,8 @@ class _ProfitPageState extends State<ProfitPage> {
                           )
                           .toList(),
                     ),
+                    rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                    topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                   ),
                   lineBarsData: [
                     LineChartBarData(
