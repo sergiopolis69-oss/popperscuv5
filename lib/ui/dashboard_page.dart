@@ -64,6 +64,26 @@ class _DashboardPageState extends State<DashboardPage> {
 
   String _formatDate(DateTime date) => DateFormat('yyyy-MM-dd').format(date);
 
+  String _normalizeDbDay(dynamic value) {
+    if (value == null) return '';
+    if (value is DateTime) {
+      return _formatDate(DateTime(value.year, value.month, value.day));
+    }
+    final raw = value.toString().trim();
+    if (raw.isEmpty) return '';
+    DateTime? parsed;
+    try {
+      parsed = DateTime.tryParse(raw);
+    } catch (_) {
+      parsed = null;
+    }
+    parsed ??= DateTime.tryParse(raw.replace(' ', 'T'));
+    if (parsed != null) {
+      return _formatDate(DateTime(parsed.year, parsed.month, parsed.day));
+    }
+    return raw.length >= 10 ? raw.substring(0, 10) : raw;
+  }
+
   Future<void> _loadAll() async {
     setState(() => _loading = true);
     try {
@@ -134,30 +154,30 @@ class _DashboardPageState extends State<DashboardPage> {
 
   Future<List<_DailyPoint>> _loadDailyPerformance(Database db) async {
     final revenueRows = await db.rawQuery('''
-      SELECT s.date AS day,
+      SELECT DATE(s.date) AS day,
              COALESCE(SUM(si.quantity * si.unit_price), 0) AS revenue,
              COALESCE(SUM(si.quantity * COALESCE(p.last_purchase_price, 0)), 0) AS cost
       FROM sales s
       JOIN sale_items si ON si.sale_id = s.id
       JOIN products p ON p.id = si.product_id
-      WHERE s.date BETWEEN ? AND ?
-      GROUP BY s.date
-      ORDER BY s.date
+      WHERE DATE(s.date) BETWEEN ? AND ?
+      GROUP BY DATE(s.date)
+      ORDER BY DATE(s.date)
     ''', [_formatDate(_from), _formatDate(_to)]);
     final discountsRows = await db.rawQuery('''
-      SELECT date AS day, COALESCE(SUM(discount), 0) AS discounts
+      SELECT DATE(date) AS day, COALESCE(SUM(discount), 0) AS discounts
       FROM sales
-      WHERE date BETWEEN ? AND ?
-      GROUP BY date
+      WHERE DATE(date) BETWEEN ? AND ?
+      GROUP BY DATE(date)
     ''', [_formatDate(_from), _formatDate(_to)]);
 
     final discountMap = {
       for (final row in discountsRows)
-        (row['day'] ?? '').toString(): (row['discounts'] as num?)?.toDouble() ?? 0.0,
+        _normalizeDbDay(row['day']): (row['discounts'] as num?)?.toDouble() ?? 0.0,
     };
     final revenueMap = {
       for (final row in revenueRows)
-        (row['day'] ?? '').toString(): (
+        _normalizeDbDay(row['day']): (
             (row['revenue'] as num?)?.toDouble() ?? 0.0,
             (row['cost'] as num?)?.toDouble() ?? 0.0)
     };
