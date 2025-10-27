@@ -1,7 +1,10 @@
 // lib/ui/inventory_page.dart
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:sqflite/sqflite.dart';
+
 import '../data/database.dart' as appdb;
+import '../utils/purchase_advisor.dart';
 
 class InventoryPage extends StatefulWidget {
   const InventoryPage({Key? key}) : super(key: key);
@@ -11,10 +14,13 @@ class InventoryPage extends StatefulWidget {
 }
 
 class _InventoryPageState extends State<InventoryPage> {
+  final _money = NumberFormat.currency(locale: 'es_MX', symbol: '\$');
   List<Map<String, dynamic>> _products = [];
   List<String> _categories = [];
   String? _selectedCategory;
   bool _lowStockOnly = false;
+  List<PurchaseSuggestion> _purchaseSuggestions = [];
+  bool _loadingRecommendations = false;
 
   final _qCtrl = TextEditingController();
 
@@ -55,7 +61,30 @@ class _InventoryPageState extends State<InventoryPage> {
   }
 
   Future<void> _loadAll() async {
-    await Future.wait([_loadCategories(), _loadProducts()]);
+    await Future.wait([
+      _loadCategories(),
+      _loadProducts(),
+      _loadRecommendations(),
+    ]);
+  }
+
+  Future<void> _loadRecommendations() async {
+    if (!_loadingRecommendations) {
+      setState(() => _loadingRecommendations = true);
+    }
+    try {
+      final db = await _db();
+      final suggestions = await fetchPurchaseSuggestions(db);
+      if (!mounted) return;
+      setState(() {
+        _purchaseSuggestions = suggestions;
+        _loadingRecommendations = false;
+      });
+    } catch (_) {
+      if (mounted) {
+        setState(() => _loadingRecommendations = false);
+      }
+    }
   }
 
   Future<void> _loadCategories() async {
@@ -380,6 +409,11 @@ class _InventoryPageState extends State<InventoryPage> {
       body: Column(
         children: [
           Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+            child: _buildSuggestionsCard(),
+          ),
+          const SizedBox(height: 8),
+          Padding(
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
             child: Row(
               children: [
@@ -449,6 +483,72 @@ class _InventoryPageState extends State<InventoryPage> {
                   ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildSuggestionsCard() {
+    if (_loadingRecommendations) {
+      return const Card(
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: Center(child: CircularProgressIndicator()),
+        ),
+      );
+    }
+
+    if (_purchaseSuggestions.isEmpty) {
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: const [
+              Text('Sugerencias de compra', style: TextStyle(fontWeight: FontWeight.bold)),
+              SizedBox(height: 8),
+              Text('Inventario saludable: no hay compras urgentes basadas en las ventas recientes.'),
+            ],
+          ),
+        ),
+      );
+    }
+
+    final top = _purchaseSuggestions.take(4).toList();
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Sugerencias de compra', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            ...top.map(
+              (s) => ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: CircleAvatar(
+                  backgroundColor: Colors.orange.shade100,
+                  child: const Icon(Icons.shopping_bag, color: Colors.deepOrange),
+                ),
+                title: Text(s.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                subtitle: Text('SKU ${s.sku} • Stock ${s.stock} • Ventas recientes ${s.soldLastPeriod}'),
+                trailing: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text('Comprar ${s.suggestedQuantity}'),
+                    Text(_money.format(s.estimatedCost), style: const TextStyle(fontWeight: FontWeight.bold)),
+                  ],
+                ),
+              ),
+            ),
+            if (_purchaseSuggestions.length > top.length)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text('Hay ${_purchaseSuggestions.length - top.length} sugerencias adicionales disponibles.'),
+              ),
+          ],
+        ),
       ),
     );
   }
