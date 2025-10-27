@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 // Asegúrate de que estos archivos existan con estas clases:
+import 'ui/dashboard_page.dart';      // -> class DashboardPage
 import 'ui/sales_page.dart';          // -> class SalesPage
 import 'ui/sales_history_page.dart';  // -> class SalesHistoryPage
 import 'ui/clients_page.dart';        // -> class ClientsPage
@@ -23,6 +24,7 @@ class _PDVAppState extends State<PDVApp> {
   int _index = 0;
 
   final _pages = const <Widget>[
+    DashboardPage(),
     SalesPage(),
     SalesHistoryPage(),
     ClientsPage(),
@@ -81,6 +83,7 @@ class _PDVAppState extends State<PDVApp> {
           selectedIndex: _index,
           onDestinationSelected: (i) => setState(() => _index = i),
           destinations: const [
+            NavigationDestination(icon: Icon(Icons.dashboard), label: 'Tablero'),
             NavigationDestination(icon: Icon(Icons.point_of_sale), label: 'Venta'),
             NavigationDestination(icon: Icon(Icons.history), label: 'Historial'),
             NavigationDestination(icon: Icon(Icons.people), label: 'Clientes'),
