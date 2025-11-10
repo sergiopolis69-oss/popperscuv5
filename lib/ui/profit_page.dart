@@ -48,6 +48,9 @@ class _ProfitPageState extends State<ProfitPage> {
     }
   }
 
+  String _fromTxt() => DateFormat('yyyy-MM-dd').format(_from);
+  String _toTxt() => DateFormat('yyyy-MM-dd').format(_to);
+
   Future<void> _pickRange() async {
     final picked = await showDateRangePicker(
       context: context,
@@ -80,12 +83,11 @@ class _ProfitPageState extends State<ProfitPage> {
     }
   }
 
-  String _fromTxt() => DateFormat('yyyy-MM-dd').format(_from);
-  String _toTxt() => DateFormat('yyyy-MM-dd').format(_to);
-
+  /// Resumen global: ventas, descuentos, envíos informativos, utilidad, métodos de pago
   Future<void> _loadSummaryShippingAndPayments() async {
     final db = await _db();
 
+    // Total de ventas de artículos (sin envío)
     final itemsRows = await db.rawQuery('''
       SELECT COALESCE(SUM(si.quantity * si.unit_price), 0) AS items_sum
       FROM sale_items si
@@ -94,6 +96,7 @@ class _ProfitPageState extends State<ProfitPage> {
     ''', [_fromTxt(), _toTxt()]);
     final itemsSum = (itemsRows.first['items_sum'] as num?)?.toDouble() ?? 0.0;
 
+    // Costo estimado usando last_purchase_price
     final costRows = await db.rawQuery('''
       SELECT COALESCE(SUM(si.quantity * COALESCE(p.last_purchase_price, 0)), 0) AS cost_sum
       FROM sale_items si
@@ -103,6 +106,7 @@ class _ProfitPageState extends State<ProfitPage> {
     ''', [_fromTxt(), _toTxt()]);
     final costSum = (costRows.first['cost_sum'] as num?)?.toDouble() ?? 0.0;
 
+    // Descuentos por venta
     final discRows = await db.rawQuery('''
       SELECT COALESCE(SUM(discount), 0) AS discounts
       FROM sales
@@ -110,6 +114,7 @@ class _ProfitPageState extends State<ProfitPage> {
     ''', [_fromTxt(), _toTxt()]);
     final discounts = (discRows.first['discounts'] as num?)?.toDouble() ?? 0.0;
 
+    // Envíos totales (informativos, NO entran en utilidad)
     final shipRows = await db.rawQuery('''
       SELECT COALESCE(SUM(shipping_cost), 0) AS shipping
       FROM sales
@@ -117,10 +122,12 @@ class _ProfitPageState extends State<ProfitPage> {
     ''', [_fromTxt(), _toTxt()]);
     final shipping = (shipRows.first['shipping'] as num?)?.toDouble() ?? 0.0;
 
+    // Ventas netas = artículos - descuentos (sin envíos)
     final netSales = (itemsSum - discounts).clamp(0.0, double.infinity);
     final profit = netSales - costSum;
     final margin = netSales > 0 ? (profit / netSales) : 0.0;
 
+    // Ventas netas por método de pago (también sin envíos)
     final payRows = await db.rawQuery('''
       WITH items AS (
         SELECT
@@ -175,6 +182,7 @@ class _ProfitPageState extends State<ProfitPage> {
     });
   }
 
+  /// Utilidad por producto (no tocar: esto ya te funcionaba bien)
   Future<void> _loadProductsProfit() async {
     final db = await _db();
     final rows = await db.rawQuery('''
@@ -216,8 +224,10 @@ class _ProfitPageState extends State<ProfitPage> {
     setState(() => _productRows = list);
   }
 
+  /// Tendencia diaria (ventas netas y utilidad por día)
   Future<void> _loadDailyPerformance() async {
     final db = await _db();
+
     final revenueRows = await db.rawQuery('''
       SELECT DATE(s.date) AS day,
              COALESCE(SUM(si.quantity * si.unit_price), 0) AS revenue,
@@ -229,6 +239,7 @@ class _ProfitPageState extends State<ProfitPage> {
       GROUP BY DATE(s.date)
       ORDER BY DATE(s.date)
     ''', [_fromTxt(), _toTxt()]);
+
     final discountsRows = await db.rawQuery('''
       SELECT DATE(date) AS day, COALESCE(SUM(discount), 0) AS discounts
       FROM sales
@@ -240,15 +251,18 @@ class _ProfitPageState extends State<ProfitPage> {
       for (final row in discountsRows)
         _normalizeDbDay(row['day']): (row['discounts'] as num?)?.toDouble() ?? 0.0,
     };
+
     final revenueMap = {
       for (final row in revenueRows)
         _normalizeDbDay(row['day']): (
-            (row['revenue'] as num?)?.toDouble() ?? 0.0,
-            (row['cost'] as num?)?.toDouble() ?? 0.0)
+          (row['revenue'] as num?)?.toDouble() ?? 0.0,
+          (row['cost'] as num?)?.toDouble() ?? 0.0,
+        ),
     };
 
     final diff = _to.difference(_from).inDays;
     final points = <_DailyProfitPoint>[];
+
     for (int i = 0; i <= diff; i++) {
       final day = DateTime(_from.year, _from.month, _from.day).add(Duration(days: i));
       final key = DateFormat('yyyy-MM-dd').format(day);
@@ -256,8 +270,10 @@ class _ProfitPageState extends State<ProfitPage> {
       final revenue = record != null ? record.$1 : 0.0;
       final cost = record != null ? record.$2 : 0.0;
       final discounts = discountMap[key] ?? 0.0;
+
       final net = (revenue - discounts).clamp(0.0, double.infinity);
       final profit = net - cost;
+
       points.add(_DailyProfitPoint(day: day, netSales: net, profit: profit));
     }
 
@@ -267,7 +283,8 @@ class _ProfitPageState extends State<ProfitPage> {
   String _normalizeDbDay(dynamic value) {
     if (value == null) return '';
     if (value is DateTime) {
-      return DateFormat('yyyy-MM-dd').format(DateTime(value.year, value.month, value.day));
+      return DateFormat('yyyy-MM-dd')
+          .format(DateTime(value.year, value.month, value.day));
     }
     final raw = value.toString().trim();
     if (raw.isEmpty) return '';
@@ -279,7 +296,8 @@ class _ProfitPageState extends State<ProfitPage> {
     }
     parsed ??= DateTime.tryParse(raw.replaceFirst(' ', 'T'));
     if (parsed != null) {
-      return DateFormat('yyyy-MM-dd').format(DateTime(parsed.year, parsed.month, parsed.day));
+      return DateFormat('yyyy-MM-dd')
+          .format(DateTime(parsed.year, parsed.month, parsed.day));
     }
     return raw.length >= 10 ? raw.substring(0, 10) : raw;
   }
@@ -287,7 +305,9 @@ class _ProfitPageState extends State<ProfitPage> {
   Future<void> _shareReport() async {
     final buffer = StringBuffer()
       ..writeln('Reporte de utilidad')
-      ..writeln('Periodo: ${DateFormat('dd/MM/yyyy').format(_from)} - ${DateFormat('dd/MM/yyyy').format(_to)}')
+      ..writeln(
+        'Periodo: ${DateFormat('dd/MM/yyyy').format(_from)} - ${DateFormat('dd/MM/yyyy').format(_to)}',
+      )
       ..writeln('Ventas de artículos: ${_money.format(_itemsSum)}')
       ..writeln('Descuentos: ${_money.format(_discounts)}')
       ..writeln('Ventas netas: ${_money.format(_netSales)}')
@@ -323,7 +343,8 @@ class _ProfitPageState extends State<ProfitPage> {
 
   @override
   Widget build(BuildContext context) {
-    final rangeText = '${DateFormat('dd/MM/yyyy').format(_from)} — ${DateFormat('dd/MM/yyyy').format(_to)}';
+    final rangeText =
+        '${DateFormat('dd/MM/yyyy').format(_from)} — ${DateFormat('dd/MM/yyyy').format(_to)}';
 
     return Scaffold(
       appBar: AppBar(
@@ -344,7 +365,10 @@ class _ProfitPageState extends State<ProfitPage> {
           preferredSize: const Size.fromHeight(28),
           child: Padding(
             padding: const EdgeInsets.only(bottom: 8),
-            child: Text('Periodo: $rangeText', style: Theme.of(context).textTheme.bodySmall),
+            child: Text(
+              'Periodo: $rangeText',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
           ),
         ),
       ),
@@ -420,13 +444,14 @@ class _ProfitPageState extends State<ProfitPage> {
 
   Widget _buildPerformanceCard(BuildContext context) {
     if (_dailyPerformance.isEmpty) {
-      return Card(
+      return const Card(
         child: Padding(
-          padding: const EdgeInsets.all(16),
+          padding: EdgeInsets.all(16),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: const [
-              Text('Tendencia diaria', style: TextStyle(fontWeight: FontWeight.bold)),
+            children: [
+              Text('Tendencia diaria',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
               SizedBox(height: 8),
               Text('No hay datos suficientes para graficar el periodo seleccionado.'),
             ],
@@ -437,6 +462,7 @@ class _ProfitPageState extends State<ProfitPage> {
 
     final dayLabel = DateFormat('MM/dd');
     final theme = Theme.of(context);
+
     final netSpots = <FlSpot>[];
     final profitSpots = <FlSpot>[];
     for (int i = 0; i < _dailyPerformance.length; i++) {
@@ -448,7 +474,8 @@ class _ProfitPageState extends State<ProfitPage> {
       ...netSpots.map((e) => e.y),
       ...profitSpots.map((e) => e.y),
     ].fold<double>(0, (prev, value) => value > prev ? value : prev);
-    final maxXValue = netSpots.isEmpty ? 0.0 : (netSpots.length - 1).toDouble();
+    final maxXValue =
+        netSpots.isEmpty ? 0.0 : (netSpots.length - 1).toDouble();
 
     return Card(
       child: Padding(
@@ -456,7 +483,8 @@ class _ProfitPageState extends State<ProfitPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Tendencia diaria', style: TextStyle(fontWeight: FontWeight.bold)),
+            const Text('Tendencia diaria',
+                style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 12),
             SizedBox(
               height: 220,
@@ -488,16 +516,27 @@ class _ProfitPageState extends State<ProfitPage> {
                           if (index < 0 || index >= _dailyPerformance.length) {
                             return const SizedBox.shrink();
                           }
-                          return Text(dayLabel.format(_dailyPerformance[index].day), style: const TextStyle(fontSize: 11));
+                          return Text(
+                            dayLabel.format(_dailyPerformance[index].day),
+                            style: const TextStyle(fontSize: 11),
+                          );
                         },
                       ),
                     ),
-                    topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                    topTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
+                    rightTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
                   ),
                   borderData: FlBorderData(show: false),
                   lineTouchData: LineTouchData(
                     touchTooltipData: LineTouchTooltipData(
-                      tooltipPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      tooltipPadding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 8,
+                      ),
                       tooltipMargin: 12,
                       tooltipRoundedRadius: 12,
                       getTooltipItems: (touches) => touches
@@ -514,8 +553,6 @@ class _ProfitPageState extends State<ProfitPage> {
                           )
                           .toList(),
                     ),
-                    rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                    topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                   ),
                   lineBarsData: [
                     LineChartBarData(
@@ -537,9 +574,9 @@ class _ProfitPageState extends State<ProfitPage> {
               ),
             ),
             const SizedBox(height: 12),
-            Wrap(
+            const Wrap(
               spacing: 16,
-              children: const [
+              children: [
                 _LegendEntry(color: Colors.indigo, label: 'Ventas netas'),
                 _LegendEntry(color: Colors.green, label: 'Utilidad'),
               ],
@@ -552,13 +589,14 @@ class _ProfitPageState extends State<ProfitPage> {
 
   Widget _buildPaymentCard(BuildContext context) {
     if (_paymentByMethod.isEmpty) {
-      return Card(
+      return const Card(
         child: Padding(
-          padding: const EdgeInsets.all(16),
+          padding: EdgeInsets.all(16),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: const [
-              Text('Métodos de pago', style: TextStyle(fontWeight: FontWeight.bold)),
+            children: [
+              Text('Métodos de pago',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
               SizedBox(height: 8),
               Text('No hay ventas registradas en este periodo.'),
             ],
@@ -567,7 +605,10 @@ class _ProfitPageState extends State<ProfitPage> {
       );
     }
 
-    final total = _paymentByMethod.fold<double>(0.0, (sum, m) => sum + ((m['amount'] as num?)?.toDouble() ?? 0.0));
+    final total = _paymentByMethod.fold<double>(
+      0.0,
+      (sum, m) => sum + ((m['amount'] as num?)?.toDouble() ?? 0.0),
+    );
 
     return Card(
       child: Padding(
@@ -575,7 +616,8 @@ class _ProfitPageState extends State<ProfitPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Métodos de pago', style: TextStyle(fontWeight: FontWeight.bold)),
+            const Text('Métodos de pago',
+                style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 12),
             SizedBox(
               height: 220,
@@ -589,13 +631,20 @@ class _ProfitPageState extends State<ProfitPage> {
                         sections: [
                           for (int i = 0; i < _paymentByMethod.length; i++)
                             PieChartSectionData(
-                              color: Colors.primaries[i % Colors.primaries.length].shade400,
-                              value: (_paymentByMethod[i]['amount'] as num?)?.toDouble() ?? 0.0,
+                              color: Colors
+                                  .primaries[i % Colors.primaries.length]
+                                  .shade400,
+                              value: (_paymentByMethod[i]['amount'] as num?)
+                                      ?.toDouble() ??
+                                  0.0,
                               title: total == 0
                                   ? '0%'
                                   : '${(((_paymentByMethod[i]['amount'] as num?)?.toDouble() ?? 0.0) / total * 100).toStringAsFixed(1)}%',
                               radius: 70,
-                              titleStyle: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                              titleStyle: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
                         ],
                       ),
@@ -615,18 +664,28 @@ class _ProfitPageState extends State<ProfitPage> {
                                   width: 12,
                                   height: 12,
                                   decoration: BoxDecoration(
-                                    color: Colors.primaries[i % Colors.primaries.length].shade400,
+                                    color: Colors
+                                        .primaries[i % Colors.primaries.length]
+                                        .shade400,
                                     borderRadius: BorderRadius.circular(4),
                                   ),
                                 ),
                                 const SizedBox(width: 8),
                                 Expanded(
                                   child: Text(
-                                    (_paymentByMethod[i]['method'] ?? '(sin método)').toString(),
+                                    (_paymentByMethod[i]['method'] ??
+                                            '(sin método)')
+                                        .toString(),
                                     overflow: TextOverflow.ellipsis,
                                   ),
                                 ),
-                                Text(_money.format((_paymentByMethod[i]['amount'] as num?)?.toDouble() ?? 0.0)),
+                                Text(
+                                  _money.format(
+                                    (_paymentByMethod[i]['amount'] as num?)
+                                            ?.toDouble() ??
+                                        0.0,
+                                  ),
+                                ),
                               ],
                             ),
                           ),
@@ -649,7 +708,8 @@ class _ProfitPageState extends State<ProfitPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Utilidad por producto', style: TextStyle(fontWeight: FontWeight.bold)),
+            const Text('Utilidad por producto',
+                style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 12),
             if (_productRows.isEmpty)
               const Text('Sin datos de ventas en el periodo')
@@ -663,7 +723,11 @@ class _ProfitPageState extends State<ProfitPage> {
 }
 
 class _DailyProfitPoint {
-  _DailyProfitPoint({required this.day, required this.netSales, required this.profit});
+  _DailyProfitPoint({
+    required this.day,
+    required this.netSales,
+    required this.profit,
+  });
 
   final DateTime day;
   final double netSales;
@@ -704,7 +768,11 @@ class _SummaryBadge extends StatelessWidget {
             const SizedBox(height: 12),
             Text(title, style: theme.textTheme.titleSmall),
             const SizedBox(height: 4),
-            Text(value, style: theme.textTheme.headlineSmall?.copyWith(color: color, fontWeight: FontWeight.bold)),
+            Text(
+              value,
+              style: theme.textTheme.headlineSmall
+                  ?.copyWith(color: color, fontWeight: FontWeight.bold),
+            ),
             if (subtitle != null) ...[
               const SizedBox(height: 4),
               Text(subtitle!, style: theme.textTheme.bodySmall),
@@ -730,7 +798,10 @@ class _LegendEntry extends StatelessWidget {
         Container(
           width: 12,
           height: 12,
-          decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(4)),
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(4),
+          ),
         ),
         const SizedBox(width: 6),
         Text(label),
@@ -769,18 +840,33 @@ class _ProductsTable extends StatelessWidget {
           return DataRow(
             cells: [
               DataCell(Text((r['sku'] ?? '').toString())),
-              DataCell(SizedBox(
-                width: 220,
-                child: Text(
-                  (r['name'] ?? '').toString(),
-                  overflow: TextOverflow.ellipsis,
+              DataCell(
+                SizedBox(
+                  width: 220,
+                  child: Text(
+                    (r['name'] ?? '').toString(),
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
-              )),
-              DataCell(Text(((r['qty'] as num?)?.toInt() ?? 0).toString())),
-              DataCell(Text(money.format((r['revenue'] as num?)?.toDouble() ?? 0.0))),
-              DataCell(Text(money.format((r['cost'] as num?)?.toDouble() ?? 0.0))),
-              DataCell(Text(money.format((r['profit'] as num?)?.toDouble() ?? 0.0))),
-              DataCell(Text('${(margin * 100).toStringAsFixed(1)}%', style: TextStyle(color: color))),
+              ),
+              DataCell(
+                Text(((r['qty'] as num?)?.toInt() ?? 0).toString()),
+              ),
+              DataCell(
+                Text(money.format((r['revenue'] as num?)?.toDouble() ?? 0.0)),
+              ),
+              DataCell(
+                Text(money.format((r['cost'] as num?)?.toDouble() ?? 0.0)),
+              ),
+              DataCell(
+                Text(money.format((r['profit'] as num?)?.toDouble() ?? 0.0)),
+              ),
+              DataCell(
+                Text(
+                  '${(margin * 100).toStringAsFixed(1)}%',
+                  style: TextStyle(color: color),
+                ),
+              ),
             ],
           );
         }).toList(),
