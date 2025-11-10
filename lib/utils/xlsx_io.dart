@@ -1,913 +1,612 @@
-// lib/ui/profit_page.dart
-import 'package:fl_chart/fl_chart.dart';
-import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
-import 'package:share_plus/share_plus.dart';
+// lib/utils/xlsx_io.dart
+import 'dart:typed_data';
+
+import 'package:excel/excel.dart' as ex;
 import 'package:sqflite/sqflite.dart';
 
 import '../data/database.dart' as appdb;
 
-class ProfitPage extends StatefulWidget {
-  const ProfitPage({super.key});
+/// Helpers ====================================================================
 
-  @override
-  State<ProfitPage> createState() => _ProfitPageState();
+Future<Database> _db() async {
+  try {
+    return await appdb.getDb();
+  } catch (_) {
+    return await appdb.DatabaseHelper.instance.db;
+  }
 }
 
-class _ProfitPageState extends State<ProfitPage> {
-  final _money = NumberFormat.currency(locale: 'es_MX', symbol: '\$');
+/// Lectura genérica de celdas, evitando APIs raras de excel 4.x.
+/// Convertimos todo a String y luego a num/DateTime cuando hace falta.
 
-  DateTime _from = DateTime.now().subtract(const Duration(days: 30));
-  DateTime _to = DateTime.now();
+String _cellStr(ex.Data? d) {
+  final v = d?.value;
+  if (v == null) return '';
+  // En excel 4.x, value suele ser un CellValue (Int, Double, Text, Date, etc)
+  // pero su toString() es razonable. Para evitar guerra de tipos,
+  // usamos eso y parseamos.
+  return v.toString().trim();
+}
 
-  double _itemsSum = 0.0;
-  double _discounts = 0.0;
-  double _netSales = 0.0;
-  double _cost = 0.0;
-  double _profit = 0.0;
-  double _marginPct = 0.0;
-  double _totalShipping = 0.0;
+double _cellDouble(ex.Data? d) {
+  final s = _cellStr(d).replaceAll(',', '.');
+  if (s.isEmpty) return 0.0;
+  return double.tryParse(s) ?? 0.0;
+}
 
-  List<Map<String, dynamic>> _productRows = [];
-  List<Map<String, dynamic>> _paymentByMethod = [];
-  List<_DailyProfitPoint> _dailyPerformance = [];
+int _cellInt(ex.Data? d) {
+  final s = _cellStr(d);
+  if (s.isEmpty) return 0;
+  return int.tryParse(s) ?? _cellDouble(d).round();
+}
 
-  bool _loading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadAll();
-  }
-
-  Future<Database> _db() async {
-    try {
-      return await appdb.getDb();
-    } catch (_) {
-      return await appdb.DatabaseHelper.instance.db;
+DateTime? _cellDate(ex.Data? d) {
+  final s = _cellStr(d);
+  if (s.isEmpty) return null;
+  // Intentamos parsear ISO o 'yyyy-MM-dd'
+  final dt = DateTime.tryParse(s);
+  if (dt != null) return dt;
+  // Si viene en formato 'dd/MM/yyyy', lo intentamos manualmente.
+  final parts = s.split(RegExp(r'[/-]'));
+  if (parts.length == 3) {
+    final p0 = int.tryParse(parts[0]);
+    final p1 = int.tryParse(parts[1]);
+    final p2 = int.tryParse(parts[2]);
+    if (p0 != null && p1 != null && p2 != null) {
+      // Suponemos dd/MM/yyyy
+      return DateTime(p2, p1, p0);
     }
   }
+  return null;
+}
 
-  Future<void> _pickRange() async {
-    final picked = await showDateRangePicker(
-      context: context,
-      firstDate: DateTime(2020, 1, 1),
-      lastDate: DateTime(2100, 12, 31),
-      initialDateRange: DateTimeRange(
-        start: DateTime(_from.year, _from.month, _from.day),
-        end: DateTime(_to.year, _to.month, _to.day),
-      ),
-    );
-    if (picked == null) return;
+/// Crea un libro nuevo con una hoja de nombre [name].
+ex.Excel _newBookWithSheet(String name) {
+  final book = ex.Excel.createExcel();
+  // El createExcel crea una hoja por defecto llamada "Sheet1".
+  // Podemos renombrar o simplemente usar [name].
+  if (!book.sheets.containsKey(name)) {
+    book.rename(book.getDefaultSheet()!, name);
+  }
+  return book;
+}
 
-    setState(() {
-      _from = DateTime(picked.start.year, picked.start.month, picked.start.day);
-      _to = DateTime(picked.end.year, picked.end.month, picked.end.day);
-    });
-    await _loadAll();
+/// EXPORTS =====================================================================
+
+Future<Uint8List> buildProductsXlsxBytes() async {
+  final db = await _db();
+  final rows = await db.rawQuery('SELECT * FROM products ORDER BY name COLLATE NOCASE');
+
+  final book = _newBookWithSheet('products');
+  final sheet = book['products'];
+
+  sheet.appendRow([
+    'id',
+    'sku',
+    'name',
+    'category',
+    'default_sale_price',
+    'last_purchase_price',
+    'stock',
+  ]);
+
+  for (final r in rows) {
+    sheet.appendRow([
+      r['id'],
+      r['sku'],
+      r['name'],
+      r['category'],
+      r['default_sale_price'],
+      r['last_purchase_price'],
+      r['stock'],
+    ]);
   }
 
-  Future<void> _loadAll() async {
-    setState(() => _loading = true);
-    try {
-      await Future.wait([
-        _loadSummaryShippingAndPayments(),
-        _loadProductsProfit(),
-        _loadDailyPerformance(),
-      ]);
-    } finally {
-      if (mounted) setState(() => _loading = false);
+  return Uint8List.fromList(book.encode()!);
+}
+
+Future<Uint8List> buildClientsXlsxBytes() async {
+  final db = await _db();
+  final rows = await db.rawQuery('SELECT * FROM customers ORDER BY name COLLATE NOCASE');
+
+  final book = _newBookWithSheet('clients');
+  final sheet = book['clients'];
+
+  sheet.appendRow([
+    'phone',
+    'name',
+    'address',
+  ]);
+
+  for (final r in rows) {
+    sheet.appendRow([
+      r['phone'],
+      r['name'],
+      r['address'],
+    ]);
+  }
+
+  return Uint8List.fromList(book.encode()!);
+}
+
+Future<Uint8List> buildSuppliersXlsxBytes() async {
+  final db = await _db();
+  final rows = await db.rawQuery('SELECT * FROM suppliers ORDER BY name COLLATE NOCASE');
+
+  final book = _newBookWithSheet('suppliers');
+  final sheet = book['suppliers'];
+
+  sheet.appendRow([
+    'phone',
+    'name',
+    'address',
+  ]);
+
+  for (final r in rows) {
+    sheet.appendRow([
+      r['phone'],
+      r['name'],
+      r['address'],
+    ]);
+  }
+
+  return Uint8List.fromList(book.encode()!);
+}
+
+/// EXPORT SALES XLSX (con costo, descuento unitario, envío por SKU, utilidad)
+Future<Uint8List> buildSalesXlsxBytes() async {
+  final db = await _db();
+
+  // Totales por venta para prorratear descuento y envío
+  final totals = await db.rawQuery('''
+    SELECT
+      s.id AS sale_id,
+      COALESCE(SUM(si.quantity * si.unit_price), 0) AS items_sum,
+      COALESCE(MAX(s.discount), 0) AS discount,
+      COALESCE(MAX(s.shipping_cost), 0) AS shipping
+    FROM sales s
+    JOIN sale_items si ON si.sale_id = s.id
+    GROUP BY s.id
+  ''');
+
+  final totalsBySale = <int, Map<String, double>>{};
+  for (final t in totals) {
+    final id = (t['sale_id'] as num).toInt();
+    totalsBySale[id] = {
+      'items_sum': (t['items_sum'] as num?)?.toDouble() ?? 0.0,
+      'discount': (t['discount'] as num?)?.toDouble() ?? 0.0,
+      'shipping': (t['shipping'] as num?)?.toDouble() ?? 0.0,
+    };
+  }
+
+  // Detalle por SKU
+  final rows = await db.rawQuery('''
+    SELECT
+      s.id AS sale_id,
+      s.date,
+      s.customer_phone,
+      COALESCE(c.name, '') AS customer_name,
+      COALESCE(s.payment_method, '') AS payment_method,
+      COALESCE(s.discount, 0) AS sale_discount,
+      COALESCE(s.shipping_cost, 0) AS sale_shipping,
+      si.quantity,
+      si.unit_price,
+      p.sku,
+      p.name AS product_name,
+      COALESCE(p.last_purchase_price, 0) AS unit_cost
+    FROM sale_items si
+    JOIN sales s   ON s.id = si.sale_id
+    JOIN products p ON p.id = si.product_id
+    LEFT JOIN customers c ON c.phone = s.customer_phone
+    ORDER BY s.date, s.id, p.name
+  ''');
+
+  final book = _newBookWithSheet('sales');
+  final sheet = book['sales'];
+
+  sheet.appendRow([
+    'sale_id',
+    'date',
+    'customer_id',
+    'customer_name',
+    'payment_method',
+    'sku',
+    'product_name',
+    'quantity',
+    'unit_price',
+    'line_gross',
+    'unit_cost',
+    'line_cost',
+    'discount_total_alloc',
+    'discount_per_unit',
+    'shipping_total_alloc',
+    'shipping_per_unit',
+    'line_profit',
+  ]);
+
+  for (final r in rows) {
+    final saleId = (r['sale_id'] as num).toInt();
+    final qty = (r['quantity'] as num?)?.toDouble() ?? 0.0;
+    final unitPrice = (r['unit_price'] as num?)?.toDouble() ?? 0.0;
+    final unitCost = (r['unit_cost'] as num?)?.toDouble() ?? 0.0;
+
+    final lineGross = qty * unitPrice;
+
+    final t = totalsBySale[saleId];
+    final itemsSum = t?['items_sum'] ?? lineGross;
+    final saleDiscount = t?['discount'] ?? (r['sale_discount'] as num?)?.toDouble() ?? 0.0;
+    final saleShipping = t?['shipping'] ?? (r['sale_shipping'] as num?)?.toDouble() ?? 0.0;
+
+    double lineDiscountTotal = 0.0;
+    double lineShippingTotal = 0.0;
+
+    if (itemsSum > 0) {
+      final ratio = lineGross / itemsSum;
+      lineDiscountTotal = saleDiscount * ratio;
+      lineShippingTotal = saleShipping * ratio;
     }
+
+    final discountPerUnit = qty > 0 ? lineDiscountTotal / qty : 0.0;
+    final shippingPerUnit = qty > 0 ? lineShippingTotal / qty : 0.0;
+
+    // Utilidad por SKU (NO restamos envío en la utilidad, sólo el descuento)
+    final lineRevenueNet = lineGross - lineDiscountTotal;
+    final lineCost = qty * unitCost;
+    final lineProfit = lineRevenueNet - lineCost;
+
+    sheet.appendRow([
+      saleId,
+      r['date'],
+      r['customer_phone'],
+      r['customer_name'],
+      r['payment_method'],
+      r['sku'],
+      r['product_name'],
+      qty,
+      unitPrice,
+      lineGross,
+      unitCost,
+      lineCost,
+      lineDiscountTotal,
+      discountPerUnit,
+      lineShippingTotal,
+      shippingPerUnit,
+      lineProfit,
+    ]);
   }
 
-  String _fromTxt() => DateFormat('yyyy-MM-dd').format(_from);
-  String _toTxt() => DateFormat('yyyy-MM-dd').format(_to);
+  return Uint8List.fromList(book.encode()!);
+}
 
-  Future<void> _loadSummaryShippingAndPayments() async {
-    final db = await _db();
+Future<Uint8List> buildPurchasesXlsxBytes() async {
+  final db = await _db();
 
-    final itemsRows = await db.rawQuery('''
-      SELECT COALESCE(SUM(si.quantity * si.unit_price), 0) AS items_sum
-      FROM sale_items si
-      JOIN sales s ON s.id = si.sale_id
-      WHERE s.date BETWEEN ? AND ?
-    ''', [_fromTxt(), _toTxt()]);
-    final itemsSum = (itemsRows.first['items_sum'] as num?)?.toDouble() ?? 0.0;
+  final rows = await db.rawQuery('''
+    SELECT
+      p.id AS purchase_id,
+      p.folio,
+      p.date,
+      p.supplier_phone,
+      COALESCE(s.name,'') AS supplier_name,
+      pi.quantity,
+      pi.unit_cost,
+      pr.sku,
+      pr.name AS product_name
+    FROM purchase_items pi
+    JOIN purchases p ON p.id = pi.purchase_id
+    JOIN products pr ON pr.id = pi.product_id
+    LEFT JOIN suppliers s ON s.phone = p.supplier_phone
+    ORDER BY p.date DESC, p.id DESC, pr.name
+  ''');
 
-    final costRows = await db.rawQuery('''
-      SELECT COALESCE(SUM(si.quantity * COALESCE(p.last_purchase_price, 0)), 0) AS cost_sum
-      FROM sale_items si
-      JOIN products p ON p.id = si.product_id
-      JOIN sales s ON s.id = si.sale_id
-      WHERE s.date BETWEEN ? AND ?
-    ''', [_fromTxt(), _toTxt()]);
-    final costSum = (costRows.first['cost_sum'] as num?)?.toDouble() ?? 0.0;
+  final book = _newBookWithSheet('purchases');
+  final sheet = book['purchases'];
 
-    final discRows = await db.rawQuery('''
-      SELECT COALESCE(SUM(discount), 0) AS discounts
-      FROM sales
-      WHERE date BETWEEN ? AND ?
-    ''', [_fromTxt(), _toTxt()]);
-    final discounts = (discRows.first['discounts'] as num?)?.toDouble() ?? 0.0;
+  sheet.appendRow([
+    'purchase_id',
+    'folio',
+    'date',
+    'supplier_phone',
+    'supplier_name',
+    'sku',
+    'product_name',
+    'quantity',
+    'unit_cost',
+    'line_total',
+  ]);
 
-    final shipRows = await db.rawQuery('''
-      SELECT COALESCE(SUM(shipping_cost), 0) AS shipping
-      FROM sales
-      WHERE date BETWEEN ? AND ?
-    ''', [_fromTxt(), _toTxt()]);
-    final shipping = (shipRows.first['shipping'] as num?)?.toDouble() ?? 0.0;
+  for (final r in rows) {
+    final qty = (r['quantity'] as num?)?.toDouble() ?? 0.0;
+    final unitCost = (r['unit_cost'] as num?)?.toDouble() ?? 0.0;
+    final lineTotal = qty * unitCost;
 
-    // Importante: envíos NO se incluyen en ventas netas, sólo informativo.
-    final netSales = (itemsSum - discounts).clamp(0.0, double.infinity);
-    final profit = netSales - costSum;
-    final margin = netSales > 0 ? (profit / netSales) : 0.0;
-
-    // Desglose por método de pago (ventas netas por método)
-    final payRows = await db.rawQuery('''
-      WITH items AS (
-        SELECT
-          COALESCE(s.payment_method, '(sin método)') AS method,
-          COALESCE(SUM(si.quantity * si.unit_price), 0) AS items_amount,
-          COUNT(DISTINCT s.id) AS sales_count
-        FROM sales s
-        JOIN sale_items si ON si.sale_id = s.id
-        WHERE s.date BETWEEN ? AND ?
-        GROUP BY method
-      ),
-      disc AS (
-        SELECT
-          COALESCE(payment_method, '(sin método)') AS method,
-          COALESCE(SUM(discount), 0) AS discounts
-        FROM sales
-        WHERE date BETWEEN ? AND ?
-        GROUP BY method
-      )
-      SELECT
-        i.method,
-        i.items_amount,
-        COALESCE(d.discounts, 0) AS discounts,
-        i.sales_count
-      FROM items i
-      LEFT JOIN disc d USING (method)
-      ORDER BY (i.items_amount - COALESCE(d.discounts, 0)) DESC
-    ''', [_fromTxt(), _toTxt(), _fromTxt(), _toTxt()]);
-
-    final byMethod = payRows.map((m) {
-      final itemsAmount = (m['items_amount'] as num?)?.toDouble() ?? 0.0;
-      final disc = (m['discounts'] as num?)?.toDouble() ?? 0.0;
-      final amount = (itemsAmount - disc);
-      return {
-        'method': (m['method'] ?? '(sin método)').toString(),
-        'amount': amount < 0 ? 0.0 : amount,
-        'sales_count': (m['sales_count'] as num?)?.toInt() ?? 0,
-        'raw_items': itemsAmount,
-        'raw_discounts': disc,
-      };
-    }).toList();
-
-    setState(() {
-      _itemsSum = itemsSum;
-      _discounts = discounts;
-      _netSales = netSales;
-      _cost = costSum;
-      _profit = profit;
-      _marginPct = margin;
-      _totalShipping = shipping;
-      _paymentByMethod = byMethod;
-    });
+    sheet.appendRow([
+      r['purchase_id'],
+      r['folio'],
+      r['date'],
+      r['supplier_phone'],
+      r['supplier_name'],
+      r['sku'],
+      r['product_name'],
+      qty,
+      unitCost,
+      lineTotal,
+    ]);
   }
 
-  Future<void> _loadProductsProfit() async {
-    final db = await _db();
-    final rows = await db.rawQuery('''
-      SELECT
-        p.id,
-        p.sku,
-        p.name,
-        COALESCE(SUM(si.quantity), 0) AS qty,
-        COALESCE(SUM(si.quantity * si.unit_price), 0) AS revenue,
-        COALESCE(SUM(si.quantity * COALESCE(p.last_purchase_price, 0)), 0) AS cost
-      FROM products p
-      LEFT JOIN sale_items si ON si.product_id = p.id
-      LEFT JOIN sales s ON s.id = si.sale_id
-      WHERE s.date BETWEEN ? AND ?
-      GROUP BY p.id, p.sku, p.name
-      HAVING qty > 0
-      ORDER BY revenue DESC
-    ''', [_fromTxt(), _toTxt()]);
+  return Uint8List.fromList(book.encode()!);
+}
 
-    final list = rows.map((r) {
-      final qty = (r['qty'] as num?)?.toInt() ?? 0;
-      final revenue = (r['revenue'] as num?)?.toDouble() ?? 0.0;
-      final cost = (r['cost'] as num?)?.toDouble() ?? 0.0;
-      final profit = revenue - cost;
-      final margin = revenue > 0 ? profit / revenue : 0.0;
+/// IMPORTS ====================================================================
 
-      return {
-        'id': r['id'],
-        'sku': (r['sku'] ?? '').toString(),
-        'name': (r['name'] ?? '').toString(),
-        'qty': qty,
-        'revenue': revenue,
-        'cost': cost,
-        'profit': profit,
-        'margin': margin,
-      };
-    }).toList();
+Future<void> importProductsXlsxBytes(Uint8List bytes) async {
+  final book = ex.Excel.decodeBytes(bytes);
+  final sheet = book.tables.values.first;
+  if (sheet == null) return;
 
-    setState(() => _productRows = list);
-  }
+  final db = await _db();
+  await db.transaction((txn) async {
+    for (var i = 1; i < sheet.rows.length; i++) {
+      final row = sheet.rows[i];
+      final sku = _cellStr(row[1]);
+      if (sku.isEmpty) continue;
 
-  Future<void> _loadDailyPerformance() async {
-    final db = await _db();
-    final revenueRows = await db.rawQuery('''
-      SELECT DATE(s.date) AS day,
-             COALESCE(SUM(si.quantity * si.unit_price), 0) AS revenue,
-             COALESCE(SUM(si.quantity * COALESCE(p.last_purchase_price, 0)), 0) AS cost
-      FROM sales s
-      JOIN sale_items si ON si.sale_id = s.id
-      JOIN products p ON p.id = si.product_id
-      WHERE DATE(s.date) BETWEEN ? AND ?
-      GROUP BY DATE(s.date)
-      ORDER BY DATE(s.date)
-    ''', [_fromTxt(), _toTxt()]);
-    final discountsRows = await db.rawQuery('''
-      SELECT DATE(date) AS day, COALESCE(SUM(discount), 0) AS discounts
-      FROM sales
-      WHERE DATE(date) BETWEEN ? AND ?
-      GROUP BY DATE(date)
-    ''', [_fromTxt(), _toTxt()]);
+      final name = _cellStr(row[2]);
+      final category = _cellStr(row[3]);
+      final defaultSalePrice = _cellDouble(row[4]);
+      final lastPurchasePrice = _cellDouble(row[5]);
+      final stock = _cellInt(row[6]);
 
-    final discountMap = {
-      for (final row in discountsRows)
-        _normalizeDbDay(row['day']):
-            (row['discounts'] as num?)?.toDouble() ?? 0.0,
-    };
-    final revenueMap = {
-      for (final row in revenueRows)
-        _normalizeDbDay(row['day']): (
-          (row['revenue'] as num?)?.toDouble() ?? 0.0,
-          (row['cost'] as num?)?.toDouble() ?? 0.0,
-        )
-    };
-
-    final diff = _to.difference(_from).inDays;
-    final points = <_DailyProfitPoint>[];
-    for (int i = 0; i <= diff; i++) {
-      final day =
-          DateTime(_from.year, _from.month, _from.day).add(Duration(days: i));
-      final key = DateFormat('yyyy-MM-dd').format(day);
-      final record = revenueMap[key];
-      final revenue = record != null ? record.$1 : 0.0;
-      final cost = record != null ? record.$2 : 0.0;
-      final discounts = discountMap[key] ?? 0.0;
-      final net = (revenue - discounts).clamp(0.0, double.infinity);
-      final profit = net - cost;
-      points.add(
-        _DailyProfitPoint(day: day, netSales: net, profit: profit),
+      await txn.insert(
+        'products',
+        {
+          'sku': sku,
+          'name': name,
+          'category': category,
+          'default_sale_price': defaultSalePrice,
+          'last_purchase_price': lastPurchasePrice,
+          'stock': stock,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
       );
     }
+  });
+}
 
-    setState(() => _dailyPerformance = points);
-  }
+Future<void> importClientsXlsxBytes(Uint8List bytes) async {
+  final book = ex.Excel.decodeBytes(bytes);
+  final sheet = book.tables.values.first;
+  if (sheet == null) return;
 
-  String _normalizeDbDay(dynamic value) {
-    if (value == null) return '';
-    if (value is DateTime) {
-      return DateFormat('yyyy-MM-dd')
-          .format(DateTime(value.year, value.month, value.day));
+  final db = await _db();
+  await db.transaction((txn) async {
+    for (var i = 1; i < sheet.rows.length; i++) {
+      final row = sheet.rows[i];
+      final phone = _cellStr(row[0]);
+      if (phone.isEmpty) continue;
+
+      final name = _cellStr(row[1]);
+      final address = _cellStr(row[2]);
+
+      await txn.insert(
+        'customers',
+        {
+          'phone': phone,
+          'name': name,
+          'address': address,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
     }
-    final raw = value.toString().trim();
-    if (raw.isEmpty) return '';
-    DateTime? parsed;
-    try {
-      parsed = DateTime.tryParse(raw);
-    } catch (_) {
-      parsed = null;
-    }
-    parsed ??= DateTime.tryParse(raw.replaceFirst(' ', 'T'));
-    if (parsed != null) {
-      return DateFormat('yyyy-MM-dd')
-          .format(DateTime(parsed.year, parsed.month, parsed.day));
-    }
-    return raw.length >= 10 ? raw.substring(0, 10) : raw;
-  }
+  });
+}
 
-  Future<void> _shareReport() async {
-    final buffer = StringBuffer()
-      ..writeln('Reporte de utilidad')
-      ..writeln(
-          'Periodo: ${DateFormat('dd/MM/yyyy').format(_from)} - ${DateFormat('dd/MM/yyyy').format(_to)}')
-      ..writeln('Ventas de artículos: ${_money.format(_itemsSum)}')
-      ..writeln('Descuentos: ${_money.format(_discounts)}')
-      ..writeln('Ventas netas: ${_money.format(_netSales)}')
-      ..writeln('Costo estimado: ${_money.format(_cost)}')
-      ..writeln('Utilidad: ${_money.format(_profit)}')
-      ..writeln(
-          'Margen: ${(100 * _marginPct).toStringAsFixed(1)}%')
-      ..writeln(
-          'Envíos (informativo): ${_money.format(_totalShipping)}')
-      ..writeln('');
+Future<void> importSuppliersXlsxBytes(Uint8List bytes) async {
+  final book = ex.Excel.decodeBytes(bytes);
+  final sheet = book.tables.values.first;
+  if (sheet == null) return;
 
-    if (_paymentByMethod.isNotEmpty) {
-      buffer.writeln('Ventas netas por método de pago:');
-      for (final m in _paymentByMethod) {
-        final method = (m['method'] ?? '(sin método)').toString();
-        final amount = (m['amount'] as num?)?.toDouble() ?? 0.0;
-        final count = (m['sales_count'] as num?)?.toInt() ?? 0;
-        buffer.writeln(
-            ' • $method: ${_money.format(amount)} en $count ventas');
+  final db = await _db();
+  await db.transaction((txn) async {
+    for (var i = 1; i < sheet.rows.length; i++) {
+      final row = sheet.rows[i];
+      final phone = _cellStr(row[0]);
+      if (phone.isEmpty) continue;
+
+      final name = _cellStr(row[1]);
+      final address = _cellStr(row[2]);
+
+      await txn.insert(
+        'suppliers',
+        {
+          'phone': phone,
+          'name': name,
+          'address': address,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+  });
+}
+
+/// Import ventas en el NUEVO formato de sales.xlsx.
+/// Si el usuario importa un archivo generado por esta misma app,
+/// reconstruimos sales + sale_items de forma básica.
+Future<void> importSalesXlsxBytes(Uint8List bytes) async {
+  final book = ex.Excel.decodeBytes(bytes);
+  final sheet = book.tables['sales'] ?? book.tables.values.first;
+  if (sheet == null) return;
+
+  final db = await _db();
+  await db.transaction((txn) async {
+    // Para evitar duplicar ventas, usamos sale_id + sku como llave simple.
+    for (var i = 1; i < sheet.rows.length; i++) {
+      final row = sheet.rows[i];
+      if (row.isEmpty) continue;
+
+      final saleId = _cellInt(row[0]);
+      if (saleId == 0) continue;
+
+      final date = _cellStr(row[1]);
+      final customerPhone = _cellStr(row[2]);
+      final customerName = _cellStr(row[3]);
+      final paymentMethod = _cellStr(row[4]);
+      final sku = _cellStr(row[5]);
+      if (sku.isEmpty) continue;
+
+      final productName = _cellStr(row[6]);
+      final qty = _cellInt(row[7]);
+      final unitPrice = _cellDouble(row[8]);
+
+      // Aseguramos producto por SKU
+      final prodRows = await txn.query(
+        'products',
+        where: 'sku = ?',
+        whereArgs: [sku],
+        limit: 1,
+      );
+      int productId;
+      if (prodRows.isEmpty) {
+        productId = await txn.insert('products', {
+          'sku': sku,
+          'name': productName,
+          'category': '',
+          'default_sale_price': unitPrice,
+          'last_purchase_price': 0.0,
+          'stock': 0,
+        });
+      } else {
+        productId = (prodRows.first['id'] as num).toInt();
       }
-      buffer.writeln('');
-    }
 
-    if (_productRows.isNotEmpty) {
-      buffer.writeln('Top productos por utilidad:');
-      for (final product in _productRows.take(5)) {
-        buffer.writeln(
-          ' • ${product['name']} (SKU ${product['sku']}): '
-          '${_money.format((product['profit'] as num?)?.toDouble() ?? 0.0)} de utilidad',
+      // Aseguramos cliente
+      if (customerPhone.isNotEmpty) {
+        await txn.insert(
+          'customers',
+          {
+            'phone': customerPhone,
+            'name': customerName,
+          },
+          conflictAlgorithm: ConflictAlgorithm.ignore,
         );
       }
+
+      // Insertamos/aseguramos la venta (id se ignora, se usa autoincrement; saleId del XLSX
+      // es sólo informativo, no se reutiliza como PK para evitar conflictos)
+      final realSaleId = await txn.insert(
+        'sales',
+        {
+          'date': date,
+          'customer_phone': customerPhone.isEmpty ? null : customerPhone,
+          'payment_method': paymentMethod,
+          // Descuento y envío no se reconstruyen con precisión desde este formato.
+          'discount': 0.0,
+          'shipping_cost': 0.0,
+        },
+      );
+
+      await txn.insert(
+        'sale_items',
+        {
+          'sale_id': realSaleId,
+          'product_id': productId,
+          'quantity': qty,
+          'unit_price': unitPrice,
+        },
+      );
+
+      // Actualizamos stock de forma simple (sumando ventas negativas NO, aquí sólo dejamos base).
+      // Si quisieras ajustar stock aquí, habría que definir una política más fina.
     }
+  });
+}
 
-    await Share.share(buffer.toString(),
-        subject: 'Reporte de utilidad');
-  }
+/// Import compras en el formato actual de purchases.xlsx.
+Future<void> importPurchasesXlsxBytes(Uint8List bytes) async {
+  final book = ex.Excel.decodeBytes(bytes);
+  final sheet = book.tables['purchases'] ?? book.tables.values.first;
+  if (sheet == null) return;
 
-  @override
-  Widget build(BuildContext context) {
-    final rangeText =
-        '${DateFormat('dd/MM/yyyy').format(_from)} — ${DateFormat('dd/MM/yyyy').format(_to)}';
+  final db = await _db();
+  await db.transaction((txn) async {
+    for (var i = 1; i < sheet.rows.length; i++) {
+      final row = sheet.rows[i];
+      if (row.isEmpty) continue;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Utilidad'),
-        actions: [
-          IconButton(
-            tooltip: 'Elegir periodo',
-            onPressed: _pickRange,
-            icon: const Icon(Icons.calendar_today),
-          ),
-          IconButton(
-            tooltip: 'Actualizar',
-            onPressed: _loadAll,
-            icon: const Icon(Icons.refresh),
-          ),
-        ],
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(28),
-          child: Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Text(
-              'Periodo: $rangeText',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          ),
-        ),
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _shareReport,
-        icon: const Icon(Icons.ios_share),
-        label: const Text('Generar reporte'),
-      ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : RefreshIndicator(
-              onRefresh: _loadAll,
-              child: ListView(
-                padding: const EdgeInsets.all(12),
-                physics: const AlwaysScrollableScrollPhysics(),
-                children: [
-                  Wrap(
-                    spacing: 12,
-                    runSpacing: 12,
-                    children: [
-                      _SummaryBadge(
-                        title: 'Ventas de artículos',
-                        value: _money.format(_itemsSum),
-                        icon: Icons.shopping_cart_checkout,
-                        color: Colors.indigo,
-                      ),
-                      _SummaryBadge(
-                        title: 'Descuentos',
-                        value: '- ${_money.format(_discounts)}',
-                        icon: Icons.percent,
-                        color: Colors.orange,
-                      ),
-                      _SummaryBadge(
-                        title: 'Ventas netas',
-                        value: _money.format(_netSales),
-                        icon: Icons.trending_up,
-                        color: Colors.blue,
-                      ),
-                      _SummaryBadge(
-                        title: 'Costo estimado',
-                        value: _money.format(_cost),
-                        icon: Icons.inventory,
-                        color: Colors.deepPurple,
-                      ),
-                      _SummaryBadge(
-                        title: 'Utilidad',
-                        value: _money.format(_profit),
-                        icon: Icons.attach_money,
-                        color: Colors.green,
-                        subtitle: _netSales > 0
-                            ? 'Margen ${(100 * _marginPct).toStringAsFixed(1)}%'
-                            : 'Margen 0%',
-                      ),
-                      _SummaryBadge(
-                        title: 'Envíos (informativo)',
-                        value: _money.format(_totalShipping),
-                        icon: Icons.local_shipping,
-                        color: Colors.teal,
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  _buildPerformanceCard(context),
-                  const SizedBox(height: 16),
-                  _buildPaymentCard(context),
-                  const SizedBox(height: 16),
-                  _buildProductsCard(context),
-                ],
-              ),
-            ),
-    );
-  }
+      final folio = _cellStr(row[1]);
+      final date = _cellStr(row[2]);
+      final supplierPhone = _cellStr(row[3]);
+      final supplierName = _cellStr(row[4]);
+      final sku = _cellStr(row[5]);
+      if (sku.isEmpty) continue;
 
-  Widget _buildPerformanceCard(BuildContext context) {
-    if (_dailyPerformance.isEmpty) {
-      return const Card(
-        child: Padding(
-          padding: EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Tendencia diaria',
-                  style: TextStyle(fontWeight: FontWeight.bold)),
-              SizedBox(height: 8),
-              Text('No hay datos suficientes para graficar el periodo seleccionado.'),
-            ],
-          ),
-        ),
+      final productName = _cellStr(row[6]);
+      final qty = _cellInt(row[7]);
+      final unitCost = _cellDouble(row[8]);
+
+      // Proveedor
+      if (supplierPhone.isNotEmpty) {
+        await txn.insert(
+          'suppliers',
+          {
+            'phone': supplierPhone,
+            'name': supplierName,
+          },
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+      }
+
+      // Producto
+      final prodRows = await txn.query(
+        'products',
+        where: 'sku = ?',
+        whereArgs: [sku],
+        limit: 1,
+      );
+      int productId;
+      if (prodRows.isEmpty) {
+        productId = await txn.insert('products', {
+          'sku': sku,
+          'name': productName,
+          'category': '',
+          'default_sale_price': 0.0,
+          'last_purchase_price': unitCost,
+          'stock': qty,
+        });
+      } else {
+        final existing = prodRows.first;
+        productId = (existing['id'] as num).toInt();
+        final prevStock = (existing['stock'] as num?)?.toInt() ?? 0;
+        await txn.update(
+          'products',
+          {
+            'last_purchase_price': unitCost,
+            'stock': prevStock + qty,
+          },
+          where: 'id = ?',
+          whereArgs: [productId],
+        );
+      }
+
+      // Compra
+      final realPurchaseId = await txn.insert(
+        'purchases',
+        {
+          'folio': folio,
+          'date': date,
+          'supplier_phone': supplierPhone.isEmpty ? null : supplierPhone,
+        },
+      );
+
+      await txn.insert(
+        'purchase_items',
+        {
+          'purchase_id': realPurchaseId,
+          'product_id': productId,
+          'quantity': qty,
+          'unit_cost': unitCost,
+        },
       );
     }
-
-    final dayLabel = DateFormat('MM/dd');
-    final theme = Theme.of(context);
-    final netSpots = <FlSpot>[];
-    final profitSpots = <FlSpot>[];
-    for (int i = 0; i < _dailyPerformance.length; i++) {
-      netSpots.add(FlSpot(i.toDouble(), _dailyPerformance[i].netSales));
-      profitSpots.add(FlSpot(i.toDouble(), _dailyPerformance[i].profit));
-    }
-
-    final maxY = [
-      ...netSpots.map((e) => e.y),
-      ...profitSpots.map((e) => e.y),
-    ].fold<double>(0, (prev, value) => value > prev ? value : prev);
-    final maxXValue =
-        netSpots.isEmpty ? 0.0 : (netSpots.length - 1).toDouble();
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment:
-              CrossAxisAlignment.start,
-          children: [
-            const Text('Tendencia diaria',
-                style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 12),
-            SizedBox(
-              height: 220,
-              child: LineChart(
-                LineChartData(
-                  minX: 0,
-                  maxX: maxXValue,
-                  minY: 0,
-                  maxY: maxY == 0 ? 1 : maxY * 1.2,
-                  gridData: const FlGridData(drawVerticalLine: false),
-                  titlesData: FlTitlesData(
-                    leftTitles: AxisTitles(
-                      sideTitles: SideTitles(
-                        showTitles: true,
-                        reservedSize: 52,
-                        interval: maxY == 0 ? 1 : maxY / 4,
-                        getTitlesWidget: (value, meta) => Text(
-                          _money.format(value),
-                          style: const TextStyle(fontSize: 10),
-                        ),
-                      ),
-                    ),
-                    bottomTitles: AxisTitles(
-                      sideTitles: SideTitles(
-                        showTitles: true,
-                        reservedSize: 28,
-                        getTitlesWidget: (value, meta) {
-                          final index = value.round();
-                          if (index < 0 ||
-                              index >= _dailyPerformance.length) {
-                            return const SizedBox.shrink();
-                          }
-                          return Text(
-                            dayLabel.format(
-                                _dailyPerformance[index].day),
-                            style:
-                                const TextStyle(fontSize: 11),
-                          );
-                        },
-                      ),
-                    ),
-                    topTitles: const AxisTitles(
-                        sideTitles: SideTitles(showTitles: false)),
-                    rightTitles: const AxisTitles(
-                        sideTitles: SideTitles(showTitles: false)),
-                  ),
-                  borderData: FlBorderData(show: false),
-                  lineTouchData: LineTouchData(
-                    touchTooltipData: LineTouchTooltipData(
-                      tooltipPadding:
-                          const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 8),
-                      tooltipMargin: 12,
-                      tooltipRoundedRadius: 12,
-                      getTooltipItems: (touches) => touches
-                          .map(
-                            (spot) => LineTooltipItem(
-                              '${dayLabel.format(_dailyPerformance[spot.spotIndex].day)}\n'
-                              '${spot.bar.color == Colors.indigo ? 'Ventas netas' : 'Utilidad'}: '
-                              '${_money.format(spot.y)}',
-                              TextStyle(
-                                color: theme
-                                    .colorScheme.onSurface,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          )
-                          .toList(),
-                    ),
-                  ),
-                  lineBarsData: [
-                    LineChartBarData(
-                      spots: netSpots,
-                      isCurved: true,
-                      color: Colors.indigo,
-                      barWidth: 4,
-                      dotData:
-                          const FlDotData(show: false),
-                    ),
-                    LineChartBarData(
-                      spots: profitSpots,
-                      isCurved: true,
-                      color: Colors.green,
-                      barWidth: 4,
-                      dotData:
-                          const FlDotData(show: false),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            const Wrap(
-              spacing: 16,
-              children: [
-                _LegendEntry(
-                    color: Colors.indigo, label: 'Ventas netas'),
-                _LegendEntry(
-                    color: Colors.green, label: 'Utilidad'),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildPaymentCard(BuildContext context) {
-    if (_paymentByMethod.isEmpty) {
-      return const Card(
-        child: Padding(
-          padding: EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment:
-                CrossAxisAlignment.start,
-            children: [
-              Text('Métodos de pago',
-                  style: TextStyle(fontWeight: FontWeight.bold)),
-              SizedBox(height: 8),
-              Text('No hay ventas registradas en este periodo.'),
-            ],
-          ),
-        ),
-      );
-    }
-
-    final total = _paymentByMethod.fold<double>(
-      0.0,
-      (sum, m) => sum + ((m['amount'] as num?)?.toDouble() ?? 0.0),
-    );
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment:
-              CrossAxisAlignment.start,
-          children: [
-            const Text('Métodos de pago',
-                style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 12),
-            SizedBox(
-              height: 220,
-              child: Row(
-                children: [
-                  Expanded(
-                    child: PieChart(
-                      PieChartData(
-                        sectionsSpace: 4,
-                        centerSpaceRadius: 40,
-                        sections: [
-                          for (int i = 0;
-                              i < _paymentByMethod.length;
-                              i++)
-                            PieChartSectionData(
-                              color: Colors
-                                  .primaries[i %
-                                      Colors.primaries.length]
-                                  .shade400,
-                              value: (_paymentByMethod[i]['amount']
-                                      as num?)
-                                  ?.toDouble() ??
-                                  0.0,
-                              title: total == 0
-                                  ? '0%'
-                                  : '${(((_paymentByMethod[i]['amount'] as num?)?.toDouble() ?? 0.0) / total * 100).toStringAsFixed(1)}%',
-                              radius: 70,
-                              titleStyle: const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment:
-                          CrossAxisAlignment.start,
-                      children: [
-                        for (int i = 0;
-                            i < _paymentByMethod.length;
-                            i++)
-                          Padding(
-                            padding:
-                                const EdgeInsets.symmetric(vertical: 4),
-                            child: Row(
-                              children: [
-                                Container(
-                                  width: 12,
-                                  height: 12,
-                                  decoration: BoxDecoration(
-                                    color: Colors
-                                        .primaries[i %
-                                            Colors.primaries.length]
-                                        .shade400,
-                                    borderRadius:
-                                        BorderRadius.circular(4),
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    (_paymentByMethod[i]['method'] ??
-                                            '(sin método)')
-                                        .toString(),
-                                    overflow:
-                                        TextOverflow.ellipsis,
-                                  ),
-                                ),
-                                Text(
-                                  _money.format(
-                                    (_paymentByMethod[i]['amount']
-                                            as num?)
-                                        ?.toDouble() ??
-                                            0.0,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildProductsCard(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment:
-              CrossAxisAlignment.start,
-          children: [
-            const Text('Utilidad por producto',
-                style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 12),
-            if (_productRows.isEmpty)
-              const Text('Sin datos de ventas en el periodo')
-            else
-              _ProductsTable(
-                rows: _productRows,
-                money: _money,
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _DailyProfitPoint {
-  _DailyProfitPoint({
-    required this.day,
-    required this.netSales,
-    required this.profit,
   });
-
-  final DateTime day;
-  final double netSales;
-  final double profit;
-}
-
-class _SummaryBadge extends StatelessWidget {
-  const _SummaryBadge({
-    required this.title,
-    required this.value,
-    required this.icon,
-    required this.color,
-    this.subtitle,
-  });
-
-  final String title;
-  final String value;
-  final IconData icon;
-  final Color color;
-  final String? subtitle;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return ConstrainedBox(
-      constraints: const BoxConstraints(minWidth: 180),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: color.withOpacity(0.08),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: color.withOpacity(0.2)),
-        ),
-        child: Column(
-          crossAxisAlignment:
-              CrossAxisAlignment.start,
-          children: [
-            Icon(icon, color: color),
-            const SizedBox(height: 12),
-            Text(title, style: theme.textTheme.titleSmall),
-            const SizedBox(height: 4),
-            Text(
-              value,
-              style: theme.textTheme.headlineSmall
-                  ?.copyWith(color: color, fontWeight: FontWeight.bold),
-            ),
-            if (subtitle != null) ...[
-              const SizedBox(height: 4),
-              Text(subtitle!, style: theme.textTheme.bodySmall),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _LegendEntry extends StatelessWidget {
-  const _LegendEntry({
-    required this.color,
-    required this.label,
-  });
-
-  final Color color;
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize:
-          MainAxisSize.min,
-      children: [
-        Container(
-          width: 12,
-          height: 12,
-          decoration: BoxDecoration(
-            color: color,
-            borderRadius: BorderRadius.circular(4),
-          ),
-        ),
-        const SizedBox(width: 6),
-        Text(label),
-      ],
-    );
-  }
-}
-
-class _ProductsTable extends StatelessWidget {
-  const _ProductsTable({
-    required this.rows,
-    required this.money,
-  });
-
-  final List<Map<String, dynamic>> rows;
-  final NumberFormat money;
-
-  @override
-  Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      scrollDirection:
-          Axis.horizontal,
-      child: DataTable(
-        columns: const [
-          DataColumn(label: Text('SKU')),
-          DataColumn(label: Text('Producto')),
-          DataColumn(label: Text('Cant.')),
-          DataColumn(label: Text('Ventas')),
-          DataColumn(label: Text('Costo')),
-          DataColumn(label: Text('Utilidad')),
-          DataColumn(label: Text('Margen')),
-        ],
-        rows: rows.map((r) {
-          final margin =
-              (r['margin'] as num?)?.toDouble() ?? 0.0;
-          final color = margin >= 0 ? Colors.green : Colors.red;
-
-          return DataRow(
-            cells: [
-              DataCell(Text((r['sku'] ?? '').toString())),
-              DataCell(
-                SizedBox(
-                  width: 220,
-                  child: Text(
-                    (r['name'] ?? '').toString(),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ),
-              DataCell(
-                Text(
-                  (((r['qty'] as num?)?.toInt() ?? 0)).toString(),
-                ),
-              ),
-              DataCell(
-                Text(
-                  money.format(
-                    (r['revenue'] as num?)?.toDouble() ?? 0.0,
-                  ),
-                ),
-              ),
-              DataCell(
-                Text(
-                  money.format(
-                    (r['cost'] as num?)?.toDouble() ?? 0.0,
-                  ),
-                ),
-              ),
-              DataCell(
-                Text(
-                  money.format(
-                    (r['profit'] as num?)?.toDouble() ?? 0.0,
-                  ),
-                ),
-              ),
-              DataCell(
-                Text(
-                  '${(margin * 100).toStringAsFixed(1)}%',
-                  style: TextStyle(color: color),
-                ),
-              ),
-            ],
-          );
-        }).toList(),
-      ),
-    );
-  }
 }
