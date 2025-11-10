@@ -8,7 +8,8 @@
 // - Export de ventas: ahora genera:
 //   * Hoja 'sales' (encabezados básicos de venta)
 //   * Hoja 'sale_items' (renglones de items)
-//   * Hoja 'sales_detail' (renglones SKU con costo, descuento, envío, utilidad).
+//   * Hoja 'sales_detail' (renglones SKU con costo, descuento, envío repartido,
+//     y utilidad por línea).
 // - Export de compras: hoja 'purchases' + 'purchase_items'.
 // - Import de ventas / compras: NO implementado (lanza UnimplementedError).
 //
@@ -45,7 +46,6 @@ String _cellAsString(ex.Data? d) {
 
   // Texto
   if (v is ex.TextCellValue) {
-    // TextCellValue.value normalmente es algo tipo TextSpan / String-like
     return v.value.toString();
   }
 
@@ -152,7 +152,7 @@ Future<Uint8List> buildProductsXlsxBytes() async {
 
   for (final r in rows) {
     book.appendRow(sheet, [
-      _i(r['id'] ?? 0),
+      _i((r['id'] as num?) ?? 0),
       _tx((r['sku'] ?? '').toString()),
       _tx((r['name'] ?? '').toString()),
       _tx((r['category'] ?? '').toString()),
@@ -227,7 +227,7 @@ Future<Uint8List> buildSuppliersXlsxBytes() async {
 //
 // Genera 3 hojas:
 // - 'sales': info por venta (id, fecha, cliente, método, descuento, envío)
-// - 'sale_items': renglones de items (similar a lo que ya tenías)
+// - 'sale_items': renglones de items
 // - 'sales_detail': renglón por SKU con costo, descuento y envío repartido,
 //   y utilidad por línea (sin contar envío como utilidad).
 
@@ -308,7 +308,7 @@ Future<Uint8List> buildSalesXlsxBytes() async {
 
   for (final r in salesRows) {
     book.appendRow(sSales, [
-      _i(r['id'] ?? 0),
+      _i((r['id'] as num?) ?? 0),
       _tx((r['date'] ?? '').toString()),
       _tx((r['customer_phone'] ?? '').toString()),
       _tx((r['customer_name'] ?? '').toString()),
@@ -330,8 +330,8 @@ Future<Uint8List> buildSalesXlsxBytes() async {
 
   for (final r in itemsRows) {
     book.appendRow(sItems, [
-      _i(r['sale_id'] ?? 0),
-      _i(r['product_id'] ?? 0),
+      _i((r['sale_id'] as num?) ?? 0),
+      _i((r['product_id'] as num?) ?? 0),
       _tx((r['sku'] ?? '').toString()),
       _tx((r['product_name'] ?? '').toString()),
       _d((r['quantity'] as num?) ?? 0),
@@ -491,7 +491,7 @@ Future<Uint8List> buildPurchasesXlsxBytes() async {
 
   for (final r in heads) {
     book.appendRow(sPurch, [
-      _i(r['id'] ?? 0),
+      _i((r['id'] as num?) ?? 0),
       _tx((r['folio'] ?? '').toString()),
       _tx((r['date'] ?? '').toString()),
       _tx((r['supplier_phone'] ?? '').toString()),
@@ -515,8 +515,8 @@ Future<Uint8List> buildPurchasesXlsxBytes() async {
     final lineTotal = qty * unitCost;
 
     book.appendRow(sItems, [
-      _i(r['purchase_id'] ?? 0),
-      _i(r['product_id'] ?? 0),
+      _i((r['purchase_id'] as num?) ?? 0),
+      _i((r['product_id'] as num?) ?? 0),
       _tx((r['sku'] ?? '').toString()),
       _tx((r['product_name'] ?? '').toString()),
       _d(qty),
@@ -656,8 +656,6 @@ Future<void> importSuppliersXlsxBytes(Uint8List bytes) async {
 // Por ahora NO implemento estos import para no hacerte
 // un “engaño piadoso”. Si presionas importar Ventas/Compras
 // verás un error claro en pantalla con el mensaje de abajo.
-// Si luego quieres que también se puedan importar, lo hacemos
-// con cuidado (respaldos y reglas claras de cómo se ajusta stock).
 
 Future<void> importSalesXlsxBytes(Uint8List bytes) async {
   throw UnimplementedError(
