@@ -8,41 +8,61 @@ import 'package:popperscuv5/data/database.dart' as appdb;
 /// ========= Helpers: Excel -> Dart =========
 
 String _asString(ex.Data? d) {
-  final v = d?.value;
-  if (v == null) return '';
-  if (v is ex.TextCellValue) return v.value;
-  if (v is ex.DoubleCellValue) return v.value.toString();
-  if (v is ex.IntCellValue) return v.value.toString();
-  if (v is ex.DateCellValue) return v.value.toIso8601String();
-  return v.toString();
+  final cell = d?.value;
+  if (cell == null) return '';
+
+  if (cell is ex.TextCellValue) {
+    // excel 4.x: TextCellValue.value es TextSpan
+    return cell.value.text ?? '';
+  }
+  if (cell is ex.DoubleCellValue) return cell.value.toString();
+  if (cell is ex.IntCellValue) return cell.value.toString();
+  if (cell is ex.DateCellValue) {
+    final dt = DateTime(cell.year, cell.month, cell.day);
+    return dt.toIso8601String();
+  }
+  return cell.toString();
 }
 
 double _asDouble(ex.Data? d) {
-  final v = d?.value;
-  if (v == null) return 0.0;
-  if (v is ex.DoubleCellValue) return v.value;
-  if (v is ex.IntCellValue) return v.value.toDouble();
-  if (v is ex.TextCellValue) {
-    final s = v.value.replaceAll(',', '.');
+  final cell = d?.value;
+  if (cell == null) return 0.0;
+
+  if (cell is ex.DoubleCellValue) return cell.value;
+  if (cell is ex.IntCellValue) return cell.value.toDouble();
+  if (cell is ex.TextCellValue) {
+    final txt = cell.value.text ?? '';
+    final s = txt.replaceAll(',', '.');
     return double.tryParse(s) ?? 0.0;
   }
   return 0.0;
 }
 
 int _asInt(ex.Data? d) {
-  final v = d?.value;
-  if (v == null) return 0;
-  if (v is ex.IntCellValue) return v.value;
-  if (v is ex.DoubleCellValue) return v.value.round();
-  if (v is ex.TextCellValue) return int.tryParse(v.value) ?? 0;
+  final cell = d?.value;
+  if (cell == null) return 0;
+
+  if (cell is ex.IntCellValue) return cell.value;
+  if (cell is ex.DoubleCellValue) return cell.value.round();
+  if (cell is ex.TextCellValue) {
+    final txt = cell.value.text ?? '';
+    return int.tryParse(txt) ?? 0;
+  }
   return 0;
 }
 
 DateTime? _asDate(ex.Data? d) {
-  final v = d?.value;
-  if (v == null) return null;
-  if (v is ex.DateCellValue) return v.value;
-  if (v is ex.TextCellValue) return DateTime.tryParse(v.value);
+  final cell = d?.value;
+  if (cell == null) return null;
+
+  if (cell is ex.DateCellValue) {
+    return DateTime(cell.year, cell.month, cell.day);
+  }
+  if (cell is ex.TextCellValue) {
+    final txt = cell.value.text ?? '';
+    if (txt.isEmpty) return null;
+    return DateTime.tryParse(txt);
+  }
   return null;
 }
 
