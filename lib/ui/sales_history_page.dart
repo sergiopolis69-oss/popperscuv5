@@ -46,7 +46,6 @@ class _SalesHistoryPageState extends State<SalesHistoryPage> {
       final hasQ = q != null && q.trim().isNotEmpty;
       final like = hasQ ? '%${q!.trim()}%' : null;
 
-      // Cabeceras: sin JOIN a customers para evitar filtrar ventas si falta vínculo
       final heads = await db.rawQuery('''
         SELECT 
           s.id,
@@ -77,7 +76,6 @@ class _SalesHistoryPageState extends State<SalesHistoryPage> {
       if (heads.isNotEmpty) {
         final ids = heads.map((e) => (e['id'] as num).toInt()).toList();
         final placeholders = List.filled(ids.length, '?').join(',');
-        // Traemos todos los renglones visibles de un jalón
         final rows = await db.rawQuery('''
           SELECT 
             si.sale_id,
@@ -258,7 +256,6 @@ class _SaleLinesTable extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // 1) agregados por línea y suma de bruto
     final lines = <_Line>[];
     double sumGross = 0.0;
 
@@ -279,7 +276,6 @@ class _SaleLinesTable extends StatelessWidget {
       ));
     }
 
-    // 2) prorrateo de descuento total por bruto
     for (final l in lines) {
       final share = sumGross > 0 ? (l.gross / sumGross) : 0.0;
       l.discountAlloc = saleDiscount * share;
@@ -288,7 +284,6 @@ class _SaleLinesTable extends StatelessWidget {
       l.profit = l.finalAmount - l.cost;
     }
 
-    // 3) totales
     final totalFinal = lines.fold<double>(0.0, (s, l) => s + l.finalAmount);
     final totalCost  = lines.fold<double>(0.0, (s, l) => s + l.cost);
     final totalProfit = totalFinal - totalCost;
@@ -297,7 +292,6 @@ class _SaleLinesTable extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Tabla scrolleable horizontal
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           child: DataTable(
@@ -323,20 +317,21 @@ class _SaleLinesTable extends StatelessWidget {
                   DataCell(Text(money.format(l.discountAlloc))),
                   DataCell(Text(money.format(l.finalAmount))),
                   DataCell(Text(money.format(l.cost))),
-                  DataCell(Text(
-                    money.format(l.profit),
-                    style: TextStyle(
-                      color: l.profit >= 0 ? Colors.green : Colors.red,
-                      fontWeight: FontWeight.w600,
+                  DataCell(
+                    Text(
+                      money.format(l.profit),
+                      style: TextStyle(
+                        color: l.profit >= 0 ? Colors.green : Colors.red,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
-                  ))),
+                  ),
                 ],
               );
             }).toList(),
           ),
         ),
         const SizedBox(height: 10),
-        // Totales + margen
         Row(
           mainAxisAlignment: MainAxisAlignment.end,
           children: [
