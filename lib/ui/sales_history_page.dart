@@ -37,8 +37,16 @@ class _SalesHistoryPageState extends State<SalesHistoryPage> {
     }
   }
 
-  String _fromTxt() => DateFormat('yyyy-MM-dd').format(_from);
-  String _toTxt() => DateFormat('yyyy-MM-dd').format(_to);
+  // Texto ISO fecha (solo día) para inicio inclusivo
+  String _fromTxtDay() => DateFormat('yyyy-MM-dd').format(
+        DateTime(_from.year, _from.month, _from.day),
+      );
+
+  // Texto ISO día siguiente (exclusivo) -> evita perder ventas con hora
+  String _toTxtNextDay() {
+    final next = DateTime(_to.year, _to.month, _to.day).add(const Duration(days: 1));
+    return DateFormat('yyyy-MM-dd').format(next);
+  }
 
   Future<void> _pickRange() async {
     final picked = await showDateRangePicker(
@@ -62,7 +70,7 @@ class _SalesHistoryPageState extends State<SalesHistoryPage> {
     setState(() => _loading = true);
     try {
       final db = await _db;
-      // Encabezados de ventas en rango
+      // Rango semiabierto: [from, toNextDay)
       final headers = await db.rawQuery('''
         SELECT
           s.id,
@@ -75,9 +83,9 @@ class _SalesHistoryPageState extends State<SalesHistoryPage> {
           COALESCE(s.shipping_cost, 0) AS shipping_cost
         FROM sales s
         LEFT JOIN customers c ON c.id = s.customer_id
-        WHERE DATE(s.date) BETWEEN ? AND ?
+        WHERE s.date >= ? AND s.date < ?
         ORDER BY s.date DESC, s.id DESC
-      ''', [_fromTxt(), _toTxt()]);
+      ''', [_fromTxtDay(), _toTxtNextDay()]);
 
       _sales = headers.map((h) {
         return _SaleHeader(
@@ -97,7 +105,7 @@ class _SalesHistoryPageState extends State<SalesHistoryPage> {
 
   Future<_SaleBreakdown> _loadSaleDetail(int saleId, double saleDiscount) async {
     final db = await _db;
-    // Traemos las líneas + último costo
+    // Detalle de líneas con último costo guardado
     final rows = await db.rawQuery('''
       SELECT
         si.product_id,
@@ -133,8 +141,7 @@ class _SalesHistoryPageState extends State<SalesHistoryPage> {
       ));
     }
 
-    // Prorrateo de descuento por importe bruto
-    // Si no hay bruto (venta 0), no asignamos descuento para evitar NaN
+    // Prorrateo del descuento total de la venta por importe bruto
     for (final l in lines) {
       final share = sumGross > 0 ? (l.gross / sumGross) : 0.0;
       final discAlloc = saleDiscount * share;
@@ -276,7 +283,7 @@ class _SaleTileState extends State<_SaleTile> {
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Encabezado de columnas
+                // Tabla de líneas
                 SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   child: DataTable(
@@ -349,11 +356,11 @@ class _SaleTileState extends State<_SaleTile> {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  'Nota: el descuento total de la venta (${widget.money.format(h.discount)}) se prorrateó según el importe bruto de cada línea.',
+                  'Nota: el descuento total (${widget.money.format(h.discount)}) se prorrateó por importe bruto de cada línea.',
                   style: theme.textTheme.bodySmall,
                 ),
                 if (h.shipping > 0)
-                  Text('Envío registrado (informativo): ${widget.money.format(h.shipping)}',
+                  Text('Envío (informativo): ${widget.money.format(h.shipping)}',
                       style: theme.textTheme.bodySmall),
               ],
             ),
@@ -363,7 +370,6 @@ class _SaleTileState extends State<_SaleTile> {
   }
 
   String _fmtDate(String raw) {
-    // Intento robusto: acepta 'yyyy-MM-dd' o 'yyyy-MM-dd HH:mm:ss'
     DateTime? dt = DateTime.tryParse(raw);
     dt ??= DateTime.tryParse(raw.replaceFirst(' ', 'T'));
     if (dt == null) return raw;
@@ -371,7 +377,6 @@ class _SaleTileState extends State<_SaleTile> {
   }
 
   String _fmtQ(double q) {
-    // Muestra sin decimales si es entero
     if (q == q.roundToDouble()) return q.toInt().toString();
     return q.toStringAsFixed(2);
   }
@@ -446,8 +451,7 @@ class _SaleLine {
   final double unitPrice;
   final double unitCost;
 
-  // Calculados
-  final double gross;
+  final double gross; // qty * unitPrice
   double discountAlloc = 0.0;
   double finalAmount = 0.0;
   double cost = 0.0;
