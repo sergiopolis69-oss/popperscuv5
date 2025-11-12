@@ -3,12 +3,10 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:sqflite/sqflite.dart';
 
-// Usa tu helper actual. Si tu proyecto expone getDb() en data/db.dart, cámbialo por ese import.
-// En tu repo actual lo habitual es data/database.dart con DatabaseHelper y/o getDb().
 import '../data/database.dart' as appdb;
 
 class SalesHistoryPage extends StatefulWidget {
-  const SalesHistoryPage({super.key});
+  const SalesHistoryPage({Key? key}) : super(key: key);
 
   @override
   State<SalesHistoryPage> createState() => _SalesHistoryPageState();
@@ -16,239 +14,458 @@ class SalesHistoryPage extends StatefulWidget {
 
 class _SalesHistoryPageState extends State<SalesHistoryPage> {
   final _money = NumberFormat.currency(locale: 'es_MX', symbol: '\$');
-  final _qCtrl = TextEditingController();
 
-  // Encabezados de ventas + acarreos (totales) ya calculados
-  List<Map<String, dynamic>> _sales = [];
-  // Cache de renglones por venta
-  final Map<int, List<Map<String, dynamic>>> _itemsBySale = {};
+  DateTime _from = DateTime.now().subtract(const Duration(days: 30));
+  DateTime _to = DateTime.now();
+  bool _loading = true;
+
+  late Future<Database> _db;
+  List<_SaleHeader> _sales = [];
 
   @override
   void initState() {
     super.initState();
-    _load(); // carga inicial sin filtro
+    _db = _safeDb();
+    _load();
   }
 
-  @override
-  void dispose() {
-    _qCtrl.dispose();
-    super.dispose();
-  }
-
-  Future<Database> _db() async {
-    // Soporta ambos estilos de helper que has usado en el proyecto
+  Future<Database> _safeDb() async {
     try {
-      // si existe getDb()
-      // ignore: unnecessary_await_in_return
       return await appdb.getDb();
     } catch (_) {
       return await appdb.DatabaseHelper.instance.db;
     }
   }
 
-  Future<void> _load({String? q}) async {
-    final db = await _db();
-    final hasQ = q != null && q.trim().isNotEmpty;
-    final like = hasQ ? '%${q!.trim()}%' : null;
+  String _fromTxt() => DateFormat('yyyy-MM-dd').format(_from);
+  String _toTxt() => DateFormat('yyyy-MM-dd').format(_to);
 
-    // Filtra por: id (folio), fecha, cliente (phone o name), y producto (sku o name)
-    // Nota: CAST(id AS TEXT) para permitir LIKE en el id.
-    final heads = await db.rawQuery('''
-      SELECT 
-        s.id,
-        s.customer_phone,
-        COALESCE(c.name, '') AS customer_name,
-        s.payment_method,
-        s.place,
-        s.shipping_cost,
-        s.discount,
-        s.date,
-        SUM(si.quantity) AS total_qty,
-        SUM(si.quantity * si.unit_price) AS total_amount
-      FROM sales s
-      LEFT JOIN customers c ON c.phone = s.customer_phone
-      LEFT JOIN sale_items si ON si.sale_id = s.id
-      LEFT JOIN products p ON p.id = si.product_id
-      ${hasQ ? '''
-      WHERE 
-        CAST(s.id AS TEXT) LIKE ? OR
-        s.date LIKE ? OR
-        s.customer_phone LIKE ? OR
-        COALESCE(c.name,'') LIKE ? OR
-        COALESCE(p.sku,'') LIKE ? OR
-        COALESCE(p.name,'') LIKE ?
-      ''' : ''}
-      GROUP BY s.id
-      ORDER BY s.date DESC, s.id DESC
-    ''', hasQ ? [like, like, like, like, like, like] : []);
-
-    // Cargar renglones para las ventas visibles (para expanders)
-    _itemsBySale.clear();
-    if (heads.isNotEmpty) {
-      final ids = heads.map((e) => e['id'] as int).toList();
-      // Para performance, trae todos los renglones de golpe (de las ventas en pantalla)
-      final placeholders = List.filled(ids.length, '?').join(',');
-      final rows = await db.rawQuery('''
-        SELECT si.sale_id, si.quantity, si.unit_price,
-               p.sku, p.name
-        FROM sale_items si
-        JOIN products p ON p.id = si.product_id
-        WHERE si.sale_id IN ($placeholders)
-        ORDER BY si.sale_id DESC, p.name COLLATE NOCASE
-      ''', ids);
-
-      for (final r in rows) {
-        final sid = r['sale_id'] as int;
-        (_itemsBySale[sid] ??= []).add(r);
-      }
-    }
-
-    setState(() {
-      _sales = heads;
-    });
-  }
-
-  Future<void> _confirmAndDeleteSale(int saleId) async {
-    final ok = await showDialog<bool>(
+  Future<void> _pickRange() async {
+    final picked = await showDateRangePicker(
       context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Eliminar venta'),
-        content: const Text(
-          'Esto revertirá el stock de los productos y eliminará la venta.\n\n¿Deseas continuar?',
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancelar')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Eliminar')),
-        ],
+      firstDate: DateTime(2020, 1, 1),
+      lastDate: DateTime(2100, 12, 31),
+      initialDateRange: DateTimeRange(
+        start: DateTime(_from.year, _from.month, _from.day),
+        end: DateTime(_to.year, _to.month, _to.day),
       ),
     );
+    if (picked == null) return;
+    setState(() {
+      _from = DateTime(picked.start.year, picked.start.month, picked.start.day);
+      _to = DateTime(picked.end.year, picked.end.month, picked.end.day);
+    });
+    await _load();
+  }
 
-    if (ok != true) return;
-
+  Future<void> _load() async {
+    setState(() => _loading = true);
     try {
-      final db = await _db();
-      await db.transaction((txn) async {
-        // Trae renglones de la venta para revertir existencias
-        final items = await txn.rawQuery(
-          'SELECT product_id, quantity FROM sale_items WHERE sale_id = ?',
-          [saleId],
+      final db = await _db;
+      // Encabezados de ventas en rango
+      final headers = await db.rawQuery('''
+        SELECT
+          s.id,
+          s.date,
+          s.customer_id,
+          COALESCE(c.name, '') AS customer_name,
+          COALESCE(c.phone, '') AS customer_phone,
+          COALESCE(s.payment_method, '') AS payment_method,
+          COALESCE(s.discount, 0) AS discount,
+          COALESCE(s.shipping_cost, 0) AS shipping_cost
+        FROM sales s
+        LEFT JOIN customers c ON c.id = s.customer_id
+        WHERE DATE(s.date) BETWEEN ? AND ?
+        ORDER BY s.date DESC, s.id DESC
+      ''', [_fromTxt(), _toTxt()]);
+
+      _sales = headers.map((h) {
+        return _SaleHeader(
+          id: (h['id'] as num).toInt(),
+          date: (h['date'] ?? '').toString(),
+          customerName: (h['customer_name'] ?? '').toString(),
+          customerPhone: (h['customer_phone'] ?? '').toString(),
+          paymentMethod: (h['payment_method'] ?? '').toString(),
+          discount: (h['discount'] as num?)?.toDouble() ?? 0.0,
+          shipping: (h['shipping_cost'] as num?)?.toDouble() ?? 0.0,
         );
+      }).toList();
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
 
-        // Revertir stock
-        for (final it in items) {
-          final pid = it['product_id'] as int;
-          final qty = (it['quantity'] as num).toInt();
-          await txn.rawUpdate(
-              'UPDATE products SET stock = COALESCE(stock,0) + ? WHERE id = ?',
-              [qty, pid]);
-        }
+  Future<_SaleBreakdown> _loadSaleDetail(int saleId, double saleDiscount) async {
+    final db = await _db;
+    // Traemos las líneas + último costo
+    final rows = await db.rawQuery('''
+      SELECT
+        si.product_id,
+        COALESCE(p.sku,'')        AS sku,
+        COALESCE(p.name,'')       AS product_name,
+        COALESCE(p.last_purchase_price, 0) AS unit_cost,
+        COALESCE(si.quantity, 0)  AS qty,
+        COALESCE(si.unit_price, 0) AS unit_price
+      FROM sale_items si
+      JOIN products p ON p.id = si.product_id
+      WHERE si.sale_id = ?
+      ORDER BY p.name COLLATE NOCASE
+    ''', [saleId]);
 
-        // Borra renglones y encabezado
-        await txn.delete('sale_items', where: 'sale_id = ?', whereArgs: [saleId]);
-        await txn.delete('sales', where: 'id = ?', whereArgs: [saleId]);
-      });
+    final lines = <_SaleLine>[];
+    double sumGross = 0.0;
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Venta eliminada')),
-        );
-      }
+    for (final r in rows) {
+      final qty = (r['qty'] as num?)?.toDouble() ?? 0.0;
+      final unitPrice = (r['unit_price'] as num?)?.toDouble() ?? 0.0;
+      final unitCost = (r['unit_cost'] as num?)?.toDouble() ?? 0.0;
+      final gross = qty * unitPrice;
+      sumGross += gross;
 
-      // Recargar la lista manteniendo el filtro actual
-      _load(q: _qCtrl.text.trim());
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error eliminando venta: $e')),
-      );
+      lines.add(_SaleLine(
+        productId: (r['product_id'] as num).toInt(),
+        sku: (r['sku'] ?? '').toString(),
+        name: (r['product_name'] ?? '').toString(),
+        qty: qty,
+        unitPrice: unitPrice,
+        unitCost: unitCost,
+        gross: gross,
+      ));
+    }
+
+    // Prorrateo de descuento por importe bruto
+    // Si no hay bruto (venta 0), no asignamos descuento para evitar NaN
+    for (final l in lines) {
+      final share = sumGross > 0 ? (l.gross / sumGross) : 0.0;
+      final discAlloc = saleDiscount * share;
+      final finalLine = (l.gross - discAlloc).clamp(0.0, double.infinity);
+      final costLine = l.qty * l.unitCost;
+      final profitLine = finalLine - costLine;
+
+      l.discountAlloc = discAlloc;
+      l.finalAmount = finalLine;
+      l.cost = costLine;
+      l.profit = profitLine;
+    }
+
+    final totalFinal = lines.fold<double>(0.0, (s, l) => s + l.finalAmount);
+    final totalCost = lines.fold<double>(0.0, (s, l) => s + l.cost);
+    final totalProfit = totalFinal - totalCost;
+    final margin = totalFinal > 0 ? (totalProfit / totalFinal) : 0.0;
+
+    return _SaleBreakdown(
+      lines: lines,
+      totalFinal: totalFinal,
+      totalCost: totalCost,
+      totalProfit: totalProfit,
+      margin: margin,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final rangeText =
+        '${DateFormat('dd/MM/yyyy').format(_from)} — ${DateFormat('dd/MM/yyyy').format(_to)}';
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Historial de ventas'),
+        actions: [
+          IconButton(
+            tooltip: 'Elegir periodo',
+            onPressed: _pickRange,
+            icon: const Icon(Icons.calendar_today),
+          ),
+          IconButton(
+            tooltip: 'Actualizar',
+            onPressed: _load,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(28),
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text('Periodo: $rangeText',
+                style: Theme.of(context).textTheme.bodySmall),
+          ),
+        ),
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : _sales.isEmpty
+              ? const Center(child: Text('No hay ventas en el periodo.'))
+              : ListView.separated(
+                  padding: const EdgeInsets.all(12),
+                  itemBuilder: (_, i) => _SaleTile(
+                    header: _sales[i],
+                    money: _money,
+                    loadDetail: () => _loadSaleDetail(_sales[i].id, _sales[i].discount),
+                  ),
+                  separatorBuilder: (_, __) => const SizedBox(height: 8),
+                  itemCount: _sales.length,
+                ),
+    );
+  }
+}
+
+class _SaleTile extends StatefulWidget {
+  const _SaleTile({
+    required this.header,
+    required this.money,
+    required this.loadDetail,
+  });
+
+  final _SaleHeader header;
+  final NumberFormat money;
+  final Future<_SaleBreakdown> Function() loadDetail;
+
+  @override
+  State<_SaleTile> createState() => _SaleTileState();
+}
+
+class _SaleTileState extends State<_SaleTile> {
+  _SaleBreakdown? _detail;
+  bool _loading = false;
+
+  Future<void> _ensureDetail() async {
+    if (_detail != null || _loading) return;
+    setState(() => _loading = true);
+    try {
+      _detail = await widget.loadDetail();
+    } finally {
+      if (mounted) setState(() => _loading = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        // Búsqueda
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
-          child: TextField(
-            controller: _qCtrl,
-            decoration: InputDecoration(
-              labelText: 'Buscar (folio, fecha, cliente o producto)',
-              hintText: 'Ej. 120, 2024-10, 5512345678, Ana, SKU123, palomitas',
-              prefixIcon: const Icon(Icons.search),
-              suffixIcon: IconButton(
-                tooltip: 'Buscar',
-                icon: const Icon(Icons.manage_search),
-                onPressed: () => _load(q: _qCtrl.text.trim()),
-              ),
-            ),
-            onSubmitted: (v) => _load(q: v.trim()),
-          ),
+    final h = widget.header;
+    final theme = Theme.of(context);
+
+    return Card(
+      child: ExpansionTile(
+        tilePadding: const EdgeInsets.symmetric(horizontal: 16),
+        title: Text(
+          'Venta #${h.id} • ${h.paymentMethod.isEmpty ? '(sin método)' : h.paymentMethod}',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
         ),
-        const SizedBox(height: 4),
-
-        // Lista
-        Expanded(
-          child: _sales.isEmpty
-              ? const Center(child: Text('Sin ventas'))
-              : ListView.builder(
-                  itemCount: _sales.length,
-                  itemBuilder: (_, i) {
-                    final s = _sales[i];
-                    final sid = s['id'] as int;
-                    final phone = (s['customer_phone'] ?? '').toString();
-                    final cust = (s['customer_name'] ?? '').toString();
-                    final pay = (s['payment_method'] ?? '').toString();
-                    final place = (s['place'] ?? '').toString();
-                    final date = (s['date'] ?? '').toString();
-                    final totalQty = (s['total_qty'] as num?)?.toInt() ?? 0;
-                    final totalAmt = (s['total_amount'] as num?)?.toDouble() ?? 0.0;
-
-                    final items = _itemsBySale[sid] ?? const <Map<String, dynamic>>[];
-
-                    return Card(
-                      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      child: ExpansionTile(
-                        tilePadding: const EdgeInsets.symmetric(horizontal: 12),
-                        childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                        title: Text('Folio $sid • $date'),
-                        subtitle: Text(
-                          [
-                            cust.isEmpty ? '(sin nombre)' : cust,
-                            phone.isEmpty ? '(s/ teléfono)' : phone,
-                            pay.isEmpty ? '(s/ pago)' : 'Pago: $pay',
-                            place.isEmpty ? null : 'Lugar: $place',
-                            '$totalQty pzas',
-                            _money.format(totalAmt),
-                          ].where((e) => e != null && e.isNotEmpty).join(' • '),
-                        ),
-                        trailing: IconButton(
-                          tooltip: 'Eliminar venta',
-                          icon: const Icon(Icons.delete_forever),
-                          onPressed: () => _confirmAndDeleteSale(sid),
-                        ),
-                        children: [
-                          const Divider(height: 1),
-                          ...items.map((it) {
-                            final sku = (it['sku'] ?? '').toString();
-                            final name = (it['name'] ?? '').toString();
-                            final q = (it['quantity'] as num?)?.toInt() ?? 0;
-                            final unit = (it['unit_price'] as num?)?.toDouble() ?? 0.0;
-                            final sub = q * unit;
-                            return ListTile(
-                              dense: true,
-                              title: Text('$sku  $name'),
-                              trailing: Text('$q × ${_money.format(unit)}  =  ${_money.format(sub)}'),
-                            );
-                          }),
+        subtitle: Text(
+          '${_fmtDate(h.date)} • ${h.customerName.isEmpty ? 'Cliente sin nombre' : h.customerName}',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        leading: const CircleAvatar(child: Icon(Icons.receipt_long)),
+        onExpansionChanged: (open) {
+          if (open) _ensureDetail();
+        },
+        childrenPadding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+        children: [
+          if (_loading)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 16),
+              child: Center(child: CircularProgressIndicator()),
+            )
+          else if (_detail == null)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              child: Text('Sin detalles', style: theme.textTheme.bodyMedium),
+            )
+          else
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Encabezado de columnas
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: DataTable(
+                    columns: const [
+                      DataColumn(label: Text('SKU')),
+                      DataColumn(label: Text('Producto')),
+                      DataColumn(label: Text('Cant.')),
+                      DataColumn(label: Text('PU')),
+                      DataColumn(label: Text('Bruto')),
+                      DataColumn(label: Text('Desc. asignado')),
+                      DataColumn(label: Text('Final')),
+                      DataColumn(label: Text('Costo')),
+                      DataColumn(label: Text('Utilidad')),
+                    ],
+                    rows: _detail!.lines.map((l) {
+                      return DataRow(
+                        cells: [
+                          DataCell(Text(l.sku)),
+                          DataCell(SizedBox(
+                            width: 220,
+                            child: Text(l.name, overflow: TextOverflow.ellipsis),
+                          )),
+                          DataCell(Text(_fmtQ(l.qty))),
+                          DataCell(Text(widget.money.format(l.unitPrice))),
+                          DataCell(Text(widget.money.format(l.gross))),
+                          DataCell(Text(widget.money.format(l.discountAlloc))),
+                          DataCell(Text(widget.money.format(l.finalAmount))),
+                          DataCell(Text(widget.money.format(l.cost))),
+                          DataCell(Text(
+                            widget.money.format(l.profit),
+                            style: TextStyle(
+                              color: l.profit >= 0 ? Colors.green : Colors.red,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          )),
                         ],
-                      ),
-                    );
-                  },
+                      );
+                    }).toList(),
+                  ),
                 ),
-        ),
-      ],
+                const SizedBox(height: 10),
+                // Totales y margen
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    _TotalChip(
+                      label: 'Total final',
+                      value: widget.money.format(_detail!.totalFinal),
+                      color: Colors.indigo,
+                    ),
+                    const SizedBox(width: 8),
+                    _TotalChip(
+                      label: 'Costo',
+                      value: widget.money.format(_detail!.totalCost),
+                      color: Colors.deepPurple,
+                    ),
+                    const SizedBox(width: 8),
+                    _TotalChip(
+                      label: 'Utilidad',
+                      value: widget.money.format(_detail!.totalProfit),
+                      color: _detail!.totalProfit >= 0 ? Colors.green : Colors.red,
+                    ),
+                    const SizedBox(width: 8),
+                    _TotalChip(
+                      label: 'Margen',
+                      value: '${(_detail!.margin * 100).toStringAsFixed(1)}%',
+                      color: _detail!.margin >= 0 ? Colors.teal : Colors.red,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Nota: el descuento total de la venta (${widget.money.format(h.discount)}) se prorrateó según el importe bruto de cada línea.',
+                  style: theme.textTheme.bodySmall,
+                ),
+                if (h.shipping > 0)
+                  Text('Envío registrado (informativo): ${widget.money.format(h.shipping)}',
+                      style: theme.textTheme.bodySmall),
+              ],
+            ),
+        ],
+      ),
     );
   }
+
+  String _fmtDate(String raw) {
+    // Intento robusto: acepta 'yyyy-MM-dd' o 'yyyy-MM-dd HH:mm:ss'
+    DateTime? dt = DateTime.tryParse(raw);
+    dt ??= DateTime.tryParse(raw.replaceFirst(' ', 'T'));
+    if (dt == null) return raw;
+    return DateFormat('dd/MM/yyyy HH:mm').format(dt);
+  }
+
+  String _fmtQ(double q) {
+    // Muestra sin decimales si es entero
+    if (q == q.roundToDouble()) return q.toInt().toString();
+    return q.toStringAsFixed(2);
+  }
+}
+
+class _TotalChip extends StatelessWidget {
+  const _TotalChip({required this.label, required this.value, required this.color});
+  final String label;
+  final String value;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        color: color.withOpacity(0.08),
+        border: Border.all(color: color.withOpacity(0.25)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          Text(label, style: theme.textTheme.labelMedium),
+          Text(value,
+              style: theme.textTheme.titleMedium?.copyWith(
+                color: color,
+                fontWeight: FontWeight.w700,
+              )),
+        ],
+      ),
+    );
+  }
+}
+
+class _SaleHeader {
+  _SaleHeader({
+    required this.id,
+    required this.date,
+    required this.customerName,
+    required this.customerPhone,
+    required this.paymentMethod,
+    required this.discount,
+    required this.shipping,
+  });
+
+  final int id;
+  final String date;
+  final String customerName;
+  final String customerPhone;
+  final String paymentMethod;
+  final double discount;
+  final double shipping;
+}
+
+class _SaleLine {
+  _SaleLine({
+    required this.productId,
+    required this.sku,
+    required this.name,
+    required this.qty,
+    required this.unitPrice,
+    required this.unitCost,
+    required this.gross,
+  });
+
+  final int productId;
+  final String sku;
+  final String name;
+  final double qty;
+  final double unitPrice;
+  final double unitCost;
+
+  // Calculados
+  final double gross;
+  double discountAlloc = 0.0;
+  double finalAmount = 0.0;
+  double cost = 0.0;
+  double profit = 0.0;
+}
+
+class _SaleBreakdown {
+  _SaleBreakdown({
+    required this.lines,
+    required this.totalFinal,
+    required this.totalCost,
+    required this.totalProfit,
+    required this.margin,
+  });
+
+  final List<_SaleLine> lines;
+  final double totalFinal;
+  final double totalCost;
+  final double totalProfit;
+  final double margin;
 }
