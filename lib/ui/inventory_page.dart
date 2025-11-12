@@ -15,15 +15,21 @@ class InventoryPage extends StatefulWidget {
 
 class _InventoryPageState extends State<InventoryPage> {
   final _money = NumberFormat.currency(locale: 'es_MX', symbol: '\$');
+
+  // Datos
   List<Map<String, dynamic>> _products = [];
   List<String> _categories = [];
   String? _selectedCategory;
   bool _lowStockOnly = false;
+
+  // Sugerencias de compra
   List<PurchaseSuggestion> _purchaseSuggestions = [];
   bool _loadingRecommendations = false;
 
+  // Búsqueda
   final _qCtrl = TextEditingController();
 
+  // Form de producto
   final _skuCtrl = TextEditingController();
   final _nameCtrl = TextEditingController();
   final _categoryCtrl = TextEditingController();
@@ -74,7 +80,7 @@ class _InventoryPageState extends State<InventoryPage> {
     }
     try {
       final db = await _db();
-      final suggestions = await fetchPurchaseSuggestions(db);
+      final suggestions = await fetchPurchaseSuggestions(db); // <- SIN límite
       if (!mounted) return;
       setState(() {
         _purchaseSuggestions = suggestions;
@@ -411,6 +417,7 @@ class _InventoryPageState extends State<InventoryPage> {
         child: CustomScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
+            // Sugerencias (TODAS)
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
@@ -418,6 +425,7 @@ class _InventoryPageState extends State<InventoryPage> {
               ),
             ),
             const SliverToBoxAdapter(child: SizedBox(height: 8)),
+            // Filtros
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
@@ -459,6 +467,7 @@ class _InventoryPageState extends State<InventoryPage> {
               ),
             ),
             const SliverToBoxAdapter(child: Divider(height: 0)),
+            // Lista de productos
             if (_products.isEmpty)
               const SliverFillRemaining(
                 hasScrollBody: false,
@@ -503,6 +512,7 @@ class _InventoryPageState extends State<InventoryPage> {
     );
   }
 
+  // ===== Tarjeta de sugerencias (TODAS) ======================================
   Widget _buildSuggestionsCard() {
     if (_loadingRecommendations) {
       return const Card(
@@ -529,8 +539,7 @@ class _InventoryPageState extends State<InventoryPage> {
       );
     }
 
-    final top = _purchaseSuggestions.take(4).toList();
-
+    // MUESTRA TODAS LAS SUGERENCIAS, SIN LÍMITE
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -539,30 +548,38 @@ class _InventoryPageState extends State<InventoryPage> {
           children: [
             const Text('Sugerencias de compra', style: TextStyle(fontWeight: FontWeight.bold)),
             const SizedBox(height: 8),
-            ...top.map(
-              (s) => ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: CircleAvatar(
-                  backgroundColor: Colors.orange.shade100,
-                  child: const Icon(Icons.shopping_bag, color: Colors.deepOrange),
-                ),
-                title: Text(s.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                subtitle: Text('SKU ${s.sku} • Stock ${s.stock} • Ventas recientes ${s.soldLastPeriod}'),
-                trailing: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Text('Comprar ${s.suggestedQuantity}'),
-                    Text(_money.format(s.estimatedCost), style: const TextStyle(fontWeight: FontWeight.bold)),
-                  ],
-                ),
-              ),
+            ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: _purchaseSuggestions.length,
+              separatorBuilder: (_, __) => const Divider(height: 1),
+              itemBuilder: (_, i) {
+                final s = _purchaseSuggestions[i];
+                return ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: CircleAvatar(
+                    backgroundColor: Colors.orange.shade100,
+                    child: const Icon(Icons.shopping_bag, color: Colors.deepOrange),
+                  ),
+                  title: Text(s.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  subtitle: Text('SKU ${s.sku} • Stock ${s.stock} • Ventas recientes ${s.soldLastPeriod}'),
+                  trailing: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text('Comprar ${s.suggestedQuantity}'),
+                      Text(_money.format(s.estimatedCost), style: const TextStyle(fontWeight: FontWeight.bold)),
+                    ],
+                  ),
+                  onLongPress: () {
+                    final line = '${s.sku}\t${s.name}\tStock:${s.stock}\tSug:${s.suggestedQuantity}\t${_money.format(s.estimatedCost)}';
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Copiado: $line')),
+                    );
+                  },
+                );
+              },
             ),
-            if (_purchaseSuggestions.length > top.length)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text('Hay ${_purchaseSuggestions.length - top.length} sugerencias adicionales disponibles.'),
-              ),
           ],
         ),
       ),
