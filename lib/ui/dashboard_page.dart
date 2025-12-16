@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -13,15 +15,9 @@ class DashboardPage extends StatefulWidget {
   State<DashboardPage> createState() => _DashboardPageState();
 }
 
-enum _TrendRangePreset {
-  global,
-  d7,
-  d14,
-  d30,
-  d90,
-  ytd,
-  all,
-}
+enum _TrendRangePreset { global, d7, d14, d30, d90, ytd, all }
+
+enum _TrendViewMode { both, netOnly, profitOnly }
 
 class _DashboardPageState extends State<DashboardPage> {
   final _money = NumberFormat.currency(locale: 'es_MX', symbol: '\$');
@@ -50,6 +46,11 @@ class _DashboardPageState extends State<DashboardPage> {
   DateTime? _trendFrom;
   DateTime? _trendTo;
   List<_DailyPoint> _daily = [];
+
+  // --- NUEVO: controles de análisis de la gráfica
+  _TrendViewMode _trendView = _TrendViewMode.both;
+  bool _showMovingAvg = false;
+  int _movingAvgWindow = 7; // 3, 7, 14
 
   @override
   void initState() {
@@ -113,7 +114,6 @@ class _DashboardPageState extends State<DashboardPage> {
       final topProducts = await _loadTopProducts(db);
       final suggestions = await fetchPurchaseSuggestions(db, from: _from, to: _to);
 
-      // Tendencia: respeta preset (si es "global" usa _from/_to)
       final trendRange = _resolveTrendRange();
       final daily = await _loadDailyPerformanceForRange(db, trendRange.$1, trendRange.$2);
 
@@ -124,9 +124,11 @@ class _DashboardPageState extends State<DashboardPage> {
         _profit = summary.profit;
         _discounts = summary.discounts;
         _shipping = summary.shipping;
+
         _categories = categories;
         _topProducts = topProducts;
         _suggestions = suggestions;
+
         _daily = daily;
       });
     } finally {
@@ -134,7 +136,7 @@ class _DashboardPageState extends State<DashboardPage> {
     }
   }
 
-  // --- NUEVO: recarga SOLO tendencia al cambiar preset (no afecta el resto)
+  // Recarga SOLO tendencia (por preset, moving average, etc. no hace falta recargar DB)
   Future<void> _reloadTrendOnly() async {
     setState(() => _dailyLoading = true);
     try {
@@ -148,7 +150,6 @@ class _DashboardPageState extends State<DashboardPage> {
     }
   }
 
-  // Rango que usa la gráfica
   (DateTime, DateTime) _resolveTrendRange() {
     if (_trendPreset == _TrendRangePreset.global) {
       final a = DateTime(_from.year, _from.month, _from.day);
@@ -178,7 +179,6 @@ class _DashboardPageState extends State<DashboardPage> {
         start = DateTime(end.year, 1, 1);
         break;
       case _TrendRangePreset.all:
-        // “Todo”: usamos una fecha muy vieja, y terminamos en end
         start = DateTime(2000, 1, 1);
         break;
       case _TrendRangePreset.global:
@@ -186,12 +186,32 @@ class _DashboardPageState extends State<DashboardPage> {
         break;
     }
 
-    if (_trendFrom != null && _trendPreset != _TrendRangePreset.all && _trendPreset != _TrendRangePreset.ytd) {
-      // Permite que el usuario “anclé” un inicio manual si quisieras luego (por ahora no lo exponemos)
-      // start = DateTime(_trendFrom!.year, _trendFrom!.month, _trendFrom!.day);
+    if (_trendFrom != null && _trendPreset == _TrendRangePreset.global) {
+      // (no usamos por ahora)
     }
 
     return (DateTime(start.year, start.month, start.day), end);
+  }
+
+  // --- Promedio móvil simple (SMA)
+  List<double> _movingAverage(List<double> values, int window) {
+    if (values.isEmpty) return const [];
+    if (window <= 1) return values.toList();
+    final w = math.max(2, window);
+    final out = List<double>.filled(values.length, 0.0);
+    double sum = 0.0;
+    final queue = <double>[];
+
+    for (int i = 0; i < values.length; i++) {
+      final v = values[i];
+      queue.add(v);
+      sum += v;
+      if (queue.length > w) {
+        sum -= queue.removeAt(0);
+      }
+      out[i] = sum / queue.length; // SMA con “warm-up”
+    }
+    return out;
   }
 
   Future<_Summary> _loadSummary(Database db) async {
@@ -201,6 +221,7 @@ class _DashboardPageState extends State<DashboardPage> {
       JOIN sales s ON s.id = si.sale_id
       WHERE s.date BETWEEN ? AND ?
     ''', [_formatDate(_from), _formatDate(_to)]);
+
     final costRows = await db.rawQuery('''
       SELECT COALESCE(SUM(si.quantity * COALESCE(p.last_purchase_price, 0)), 0) AS cost_sum
       FROM sale_items si
@@ -208,11 +229,13 @@ class _DashboardPageState extends State<DashboardPage> {
       JOIN sales s ON s.id = si.sale_id
       WHERE s.date BETWEEN ? AND ?
     ''', [_formatDate(_from), _formatDate(_to)]);
+
     final discRows = await db.rawQuery('''
       SELECT COALESCE(SUM(discount), 0) AS discounts
       FROM sales
       WHERE date BETWEEN ? AND ?
     ''', [_formatDate(_from), _formatDate(_to)]);
+
     final shipRows = await db.rawQuery('''
       SELECT COALESCE(SUM(shipping_cost), 0) AS shipping
       FROM sales
@@ -223,6 +246,7 @@ class _DashboardPageState extends State<DashboardPage> {
     final cost = (costRows.first['cost_sum'] as num?)?.toDouble() ?? 0.0;
     final discounts = (discRows.first['discounts'] as num?)?.toDouble() ?? 0.0;
     final shipping = (shipRows.first['shipping'] as num?)?.toDouble() ?? 0.0;
+
     final net = (itemsSum - discounts).clamp(0.0, double.infinity);
     final profit = net - cost;
 
@@ -235,7 +259,6 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
-  // --- CAMBIO: esta versión recibe rango (from/to) para la gráfica
   Future<List<_DailyPoint>> _loadDailyPerformanceForRange(Database db, DateTime from, DateTime to) async {
     final revenueRows = await db.rawQuery('''
       SELECT DATE(s.date) AS day,
@@ -322,20 +345,18 @@ class _DashboardPageState extends State<DashboardPage> {
       LIMIT 5
     ''', [_formatDate(_from), _formatDate(_to)]);
 
-    return rows
-        .map((row) {
-          final revenue = (row['revenue'] as num?)?.toDouble() ?? 0.0;
-          final cost = (row['cost'] as num?)?.toDouble() ?? 0.0;
-          final profit = revenue - cost;
-          return _TopProduct(
-            name: (row['name'] ?? '').toString(),
-            sku: (row['sku'] ?? '').toString(),
-            quantity: (row['qty'] as num?)?.toInt() ?? 0,
-            revenue: revenue,
-            profit: profit,
-          );
-        })
-        .toList();
+    return rows.map((row) {
+      final revenue = (row['revenue'] as num?)?.toDouble() ?? 0.0;
+      final cost = (row['cost'] as num?)?.toDouble() ?? 0.0;
+      final profit = revenue - cost;
+      return _TopProduct(
+        name: (row['name'] ?? '').toString(),
+        sku: (row['sku'] ?? '').toString(),
+        quantity: (row['qty'] as num?)?.toInt() ?? 0,
+        revenue: revenue,
+        profit: profit,
+      );
+    }).toList();
   }
 
   @override
@@ -421,7 +442,7 @@ class _DashboardPageState extends State<DashboardPage> {
                     },
                   ),
                   const SizedBox(height: 16),
-                  _buildPerformanceCard(context), // <- ahora trae selector
+                  _buildPerformanceCard(context),
                   const SizedBox(height: 16),
                   _buildCategoryCard(context),
                   const SizedBox(height: 16),
@@ -437,38 +458,87 @@ class _DashboardPageState extends State<DashboardPage> {
   Widget _buildPerformanceCard(BuildContext context) {
     final theme = Theme.of(context);
 
-    // Para mostrar rango actual de tendencia
     final trendRange = _resolveTrendRange();
     final trendLabel =
         '${DateFormat('dd/MM').format(trendRange.$1)} — ${DateFormat('dd/MM').format(trendRange.$2)}';
 
     Widget selectorRow() {
-      return Wrap(
-        spacing: 10,
-        runSpacing: 8,
-        crossAxisAlignment: WrapCrossAlignment.center,
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Periodo:', style: TextStyle(fontWeight: FontWeight.w600)),
-          DropdownButton<_TrendRangePreset>(
-            value: _trendPreset,
-            onChanged: (v) async {
-              if (v == null) return;
-              setState(() => _trendPreset = v);
-              await _reloadTrendOnly();
-            },
-            items: const [
-              DropdownMenuItem(value: _TrendRangePreset.global, child: Text('Rango global')),
-              DropdownMenuItem(value: _TrendRangePreset.d7, child: Text('Últimos 7 días')),
-              DropdownMenuItem(value: _TrendRangePreset.d14, child: Text('Últimos 14 días')),
-              DropdownMenuItem(value: _TrendRangePreset.d30, child: Text('Últimos 30 días')),
-              DropdownMenuItem(value: _TrendRangePreset.d90, child: Text('Últimos 90 días')),
-              DropdownMenuItem(value: _TrendRangePreset.ytd, child: Text('Año a la fecha (YTD)')),
-              DropdownMenuItem(value: _TrendRangePreset.all, child: Text('Todo')),
+          Wrap(
+            spacing: 10,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              const Text('Periodo:', style: TextStyle(fontWeight: FontWeight.w600)),
+              DropdownButton<_TrendRangePreset>(
+                value: _trendPreset,
+                onChanged: (v) async {
+                  if (v == null) return;
+                  setState(() => _trendPreset = v);
+                  await _reloadTrendOnly();
+                },
+                items: const [
+                  DropdownMenuItem(value: _TrendRangePreset.global, child: Text('Rango global')),
+                  DropdownMenuItem(value: _TrendRangePreset.d7, child: Text('Últimos 7 días')),
+                  DropdownMenuItem(value: _TrendRangePreset.d14, child: Text('Últimos 14 días')),
+                  DropdownMenuItem(value: _TrendRangePreset.d30, child: Text('Últimos 30 días')),
+                  DropdownMenuItem(value: _TrendRangePreset.d90, child: Text('Últimos 90 días')),
+                  DropdownMenuItem(value: _TrendRangePreset.ytd, child: Text('Año a la fecha (YTD)')),
+                  DropdownMenuItem(value: _TrendRangePreset.all, child: Text('Todo')),
+                ],
+              ),
+              Text('($trendLabel)', style: theme.textTheme.bodySmall),
+              if (_dailyLoading) const SizedBox(width: 8),
+              if (_dailyLoading)
+                const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
             ],
           ),
-          Text('($trendLabel)', style: theme.textTheme.bodySmall),
-          if (_dailyLoading) const SizedBox(width: 8),
-          if (_dailyLoading) const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 10,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              const Text('Ver:', style: TextStyle(fontWeight: FontWeight.w600)),
+              SegmentedButton<_TrendViewMode>(
+                segments: const [
+                  ButtonSegment(value: _TrendViewMode.both, label: Text('Ambas')),
+                  ButtonSegment(value: _TrendViewMode.netOnly, label: Text('Ventas')),
+                  ButtonSegment(value: _TrendViewMode.profitOnly, label: Text('Utilidad')),
+                ],
+                selected: {_trendView},
+                onSelectionChanged: (set) {
+                  setState(() => _trendView = set.first);
+                },
+              ),
+              const SizedBox(width: 6),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Switch(
+                    value: _showMovingAvg,
+                    onChanged: (v) => setState(() => _showMovingAvg = v),
+                  ),
+                  const Text('Promedio móvil'),
+                ],
+              ),
+              if (_showMovingAvg)
+                DropdownButton<int>(
+                  value: _movingAvgWindow,
+                  onChanged: (v) {
+                    if (v == null) return;
+                    setState(() => _movingAvgWindow = v);
+                  },
+                  items: const [
+                    DropdownMenuItem(value: 3, child: Text('3 días')),
+                    DropdownMenuItem(value: 7, child: Text('7 días')),
+                    DropdownMenuItem(value: 14, child: Text('14 días')),
+                  ],
+                ),
+            ],
+          ),
         ],
       );
     }
@@ -491,19 +561,98 @@ class _DashboardPageState extends State<DashboardPage> {
       );
     }
 
-    final spotsNet = <FlSpot>[];
-    final spotsProfit = <FlSpot>[];
-    for (int i = 0; i < _daily.length; i++) {
-      spotsNet.add(FlSpot(i.toDouble(), _daily[i].netSales));
-      spotsProfit.add(FlSpot(i.toDouble(), _daily[i].profit));
+    // Series base
+    final netValues = _daily.map((e) => e.netSales).toList();
+    final profitValues = _daily.map((e) => e.profit).toList();
+
+    // Moving average (si aplica)
+    final netMA = _showMovingAvg ? _movingAverage(netValues, _movingAvgWindow) : const <double>[];
+    final profitMA = _showMovingAvg ? _movingAverage(profitValues, _movingAvgWindow) : const <double>[];
+
+    // Spots
+    List<FlSpot> toSpots(List<double> vals) => [
+          for (int i = 0; i < vals.length; i++) FlSpot(i.toDouble(), vals[i]),
+        ];
+
+    final spotsNet = toSpots(netValues);
+    final spotsProfit = toSpots(profitValues);
+
+    final spotsNetMA = _showMovingAvg ? toSpots(netMA) : const <FlSpot>[];
+    final spotsProfitMA = _showMovingAvg ? toSpots(profitMA) : const <FlSpot>[];
+
+    // Decide qué dibujar
+    final showNet = _trendView == _TrendViewMode.both || _trendView == _TrendViewMode.netOnly;
+    final showProfit = _trendView == _TrendViewMode.both || _trendView == _TrendViewMode.profitOnly;
+
+    // Escala Y basada en lo visible
+    final yValues = <double>[];
+    if (showNet) yValues.addAll(spotsNet.map((e) => e.y));
+    if (showProfit) yValues.addAll(spotsProfit.map((e) => e.y));
+    if (_showMovingAvg) {
+      if (showNet) yValues.addAll(spotsNetMA.map((e) => e.y));
+      if (showProfit) yValues.addAll(spotsProfitMA.map((e) => e.y));
+    }
+    final maxY = yValues.fold<double>(0, (prev, el) => el > prev ? el : prev);
+    final maxXValue = spotsNet.isEmpty ? 0.0 : (spotsNet.length - 1).toDouble();
+
+    // Barras visibles (incluye MA si está activo)
+    final bars = <LineChartBarData>[];
+
+    if (showNet) {
+      bars.add(
+        LineChartBarData(
+          spots: spotsNet,
+          isCurved: true,
+          color: Colors.indigo,
+          barWidth: 4,
+          dotData: const FlDotData(show: false),
+        ),
+      );
+      if (_showMovingAvg) {
+        bars.add(
+          LineChartBarData(
+            spots: spotsNetMA,
+            isCurved: true,
+            color: Colors.indigo.withOpacity(0.45),
+            barWidth: 3,
+            dotData: const FlDotData(show: false),
+            dashArray: const [8, 6],
+          ),
+        );
+      }
     }
 
-    final maxY = [
-      ...spotsNet.map((e) => e.y),
-      ...spotsProfit.map((e) => e.y),
-    ].fold<double>(0, (prev, el) => el > prev ? el : prev);
+    if (showProfit) {
+      bars.add(
+        LineChartBarData(
+          spots: spotsProfit,
+          isCurved: true,
+          color: Colors.green,
+          barWidth: 4,
+          dotData: const FlDotData(show: false),
+        ),
+      );
+      if (_showMovingAvg) {
+        bars.add(
+          LineChartBarData(
+            spots: spotsProfitMA,
+            isCurved: true,
+            color: Colors.green.withOpacity(0.45),
+            barWidth: 3,
+            dotData: const FlDotData(show: false),
+            dashArray: const [8, 6],
+          ),
+        );
+      }
+    }
 
-    final maxXValue = spotsNet.isEmpty ? 0.0 : (spotsNet.length - 1).toDouble();
+    String seriesNameForColor(Color? c) {
+      if (c == null) return '';
+      // Nota: net MA y net comparten tono -> usamos opacidad para distinguir
+      if (c.value == Colors.indigo.value) return 'Ventas netas';
+      if (c.value == Colors.green.value) return 'Utilidad';
+      return '';
+    }
 
     return Card(
       child: Padding(
@@ -529,8 +678,10 @@ class _DashboardPageState extends State<DashboardPage> {
                       sideTitles: SideTitles(
                         showTitles: true,
                         reservedSize: 52,
-                        getTitlesWidget: (value, meta) =>
-                            Text(_money.format(value), style: const TextStyle(fontSize: 10)),
+                        getTitlesWidget: (value, meta) => Text(
+                          _money.format(value),
+                          style: const TextStyle(fontSize: 10),
+                        ),
                         interval: maxY == 0 ? 1 : maxY / 4,
                       ),
                     ),
@@ -541,8 +692,7 @@ class _DashboardPageState extends State<DashboardPage> {
                         getTitlesWidget: (value, meta) {
                           final index = value.round();
                           if (index < 0 || index >= _daily.length) return const SizedBox.shrink();
-                          final day = _daily[index].day;
-                          return Text(_dayLabel.format(day), style: const TextStyle(fontSize: 11));
+                          return Text(_dayLabel.format(_daily[index].day), style: const TextStyle(fontSize: 11));
                         },
                       ),
                     ),
@@ -550,40 +700,25 @@ class _DashboardPageState extends State<DashboardPage> {
                     rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                   ),
                   borderData: FlBorderData(show: false),
-                  lineBarsData: [
-                    LineChartBarData(
-                      spots: spotsNet,
-                      isCurved: true,
-                      color: Colors.indigo,
-                      barWidth: 4,
-                      dotData: const FlDotData(show: false),
-                    ),
-                    LineChartBarData(
-                      spots: spotsProfit,
-                      isCurved: true,
-                      color: Colors.green,
-                      barWidth: 4,
-                      dotData: const FlDotData(show: false),
-                    ),
-                  ],
+                  lineBarsData: bars,
                   lineTouchData: LineTouchData(
                     touchTooltipData: LineTouchTooltipData(
                       tooltipPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       tooltipMargin: 12,
                       tooltipRoundedRadius: 12,
-                      getTooltipItems: (touchedSpots) => touchedSpots
-                          .map(
-                            (spot) => LineTooltipItem(
-                              '${_dayLabel.format(_daily[spot.spotIndex].day)}\n'
-                              '${spot.bar.color == Colors.indigo ? 'Ventas netas' : 'Utilidad'}: '
-                              '${_money.format(spot.y)}',
-                              TextStyle(
-                                color: theme.colorScheme.onSurface,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          )
-                          .toList(),
+                      getTooltipItems: (touchedSpots) => touchedSpots.map((spot) {
+                        final day = _daily[spot.spotIndex].day;
+                        final label = seriesNameForColor(spot.bar.color);
+                        final isMA = _showMovingAvg && (spot.bar.dashArray?.isNotEmpty ?? false);
+                        final name = isMA ? '$label (MA ${_movingAvgWindow}d)' : label;
+                        return LineTooltipItem(
+                          '${_dayLabel.format(day)}\n$name: ${_money.format(spot.y)}',
+                          TextStyle(
+                            color: theme.colorScheme.onSurface,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        );
+                      }).toList(),
                     ),
                   ),
                 ),
@@ -592,9 +727,14 @@ class _DashboardPageState extends State<DashboardPage> {
             const SizedBox(height: 12),
             Wrap(
               spacing: 16,
-              children: const [
-                _LegendEntry(color: Colors.indigo, label: 'Ventas netas'),
-                _LegendEntry(color: Colors.green, label: 'Utilidad'),
+              runSpacing: 8,
+              children: [
+                if (showNet) const _LegendEntry(color: Colors.indigo, label: 'Ventas netas'),
+                if (showProfit) const _LegendEntry(color: Colors.green, label: 'Utilidad'),
+                if (_showMovingAvg && showNet)
+                  _LegendEntry(color: Colors.indigo.withOpacity(0.45), label: 'MA ${_movingAvgWindow}d (ventas)'),
+                if (_showMovingAvg && showProfit)
+                  _LegendEntry(color: Colors.green.withOpacity(0.45), label: 'MA ${_movingAvgWindow}d (utilidad)'),
               ],
             ),
           ],
@@ -646,10 +786,7 @@ class _DashboardPageState extends State<DashboardPage> {
                               value: _categories[i].revenue,
                               title: '${((_categories[i].revenue / total) * 100).toStringAsFixed(1)}%',
                               radius: 70,
-                              titleStyle: const TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
-                              ),
+                              titleStyle: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                             ),
                         ],
                       ),
@@ -794,7 +931,6 @@ class _DashboardPageState extends State<DashboardPage> {
 
 class _DailyPoint {
   _DailyPoint({required this.day, required this.netSales, required this.profit});
-
   final DateTime day;
   final double netSales;
   final double profit;
@@ -802,7 +938,6 @@ class _DailyPoint {
 
 class _CategorySlice {
   _CategorySlice({required this.category, required this.revenue});
-
   final String category;
   final double revenue;
 }
