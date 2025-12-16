@@ -108,8 +108,10 @@ class _SalesPageState extends State<SalesPage> {
   // -----------------------
   // TOTALES / UTILIDAD EN VIVO
   // -----------------------
-  double get _shipping => double.tryParse(_shippingCtrl.text.replaceAll(',', '.')) ?? 0.0;
-  double get _discount => double.tryParse(_discountCtrl.text.replaceAll(',', '.')) ?? 0.0;
+  double get _shipping =>
+      double.tryParse(_shippingCtrl.text.replaceAll(',', '.')) ?? 0.0;
+  double get _discount =>
+      double.tryParse(_discountCtrl.text.replaceAll(',', '.')) ?? 0.0;
 
   double get subtotal => _cart.fold<double>(
         0.0,
@@ -117,6 +119,9 @@ class _SalesPageState extends State<SalesPage> {
       );
 
   double get total => max(0.0, subtotal + _shipping - _discount);
+
+  // NUEVO: ventas netas de ARTÍCULOS (sin envío) para margen %
+  double get _netItemsSales => max(0.0, subtotal - _discount);
 
   /// Descuento proporcional por renglón, utilidad por renglón y utilidad total
   Map<String, dynamic> _liveProfit() {
@@ -151,6 +156,14 @@ class _SalesPageState extends State<SalesPage> {
       'details': details,
       'profit': totalProfit,
     };
+  }
+
+  // NUEVO: margen de utilidad en vivo (%), basado en netItemsSales (sin envío)
+  double get _liveMarginPct {
+    final profit = (_liveProfit()['profit'] as double?) ?? 0.0;
+    final base = _netItemsSales;
+    if (base <= 0) return 0.0;
+    return profit / base; // 0.25 = 25%
   }
 
   // -----------------------
@@ -213,6 +226,9 @@ class _SalesPageState extends State<SalesPage> {
       final profit = profitData['profit'] as double;
       final items = profitData['details'] as List<Map<String, dynamic>>;
 
+      // NUEVO: margen %
+      final marginPct = _netItemsSales > 0 ? (profit / _netItemsSales) : 0.0;
+
       if (!mounted) return;
       await showDialog(
         context: context,
@@ -238,8 +254,10 @@ class _SalesPageState extends State<SalesPage> {
                         crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
                           Text('Desc: ${_money.format(e['lineDiscount'])}'),
-                          Text('Util: ${_money.format(e['profit'])}',
-                              style: const TextStyle(fontWeight: FontWeight.w600)),
+                          Text(
+                            'Util: ${_money.format(e['profit'])}',
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
                         ],
                       ),
                     )),
@@ -249,7 +267,10 @@ class _SalesPageState extends State<SalesPage> {
                 _kv('Descuento total', '- ${_money.format(_discount)}'),
                 const SizedBox(height: 4),
                 _kv('Total', _money.format(total), bold: true),
+
+                // NUEVO: utilidad y margen %
                 _kv('Utilidad (en vivo)', _money.format(profit), bold: true),
+                _kv('Margen (utilidad %)', '${(marginPct * 100).toStringAsFixed(1)}%', bold: true),
               ],
             ),
           ),
@@ -279,6 +300,9 @@ class _SalesPageState extends State<SalesPage> {
   Widget build(BuildContext context) {
     final profit = _liveProfit()['profit'] as double;
 
+    // NUEVO: margen %
+    final marginPct = _liveMarginPct;
+
     return Padding(
       padding: const EdgeInsets.all(12),
       child: ListView(
@@ -289,7 +313,10 @@ class _SalesPageState extends State<SalesPage> {
           const SizedBox(height: 12),
           _cartCard(),
           const SizedBox(height: 12),
-          _totalsCard(profit),
+
+          // NUEVO: le paso también el margen %
+          _totalsCard(profit, marginPct),
+
           const SizedBox(height: 12),
           FilledButton.icon(
             onPressed: _saving ? null : _saveSale,
@@ -438,17 +465,12 @@ class _SalesPageState extends State<SalesPage> {
                     SizedBox(
                       width: 90,
                       child: TextFormField(
-                        initialValue:
-                            (e['unit_price'] as double).toStringAsFixed(2),
+                        initialValue: (e['unit_price'] as double).toStringAsFixed(2),
                         textAlign: TextAlign.end,
-                        keyboardType:
-                            const TextInputType.numberWithOptions(decimal: true),
-                        decoration:
-                            const InputDecoration(isDense: true, labelText: 'PU'),
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        decoration: const InputDecoration(isDense: true, labelText: 'PU'),
                         onChanged: (v) {
-                          final val = double.tryParse(
-                                  v.replaceAll(',', '.')) ??
-                              (e['unit_price'] as double);
+                          final val = double.tryParse(v.replaceAll(',', '.')) ?? (e['unit_price'] as double);
                           setState(() => e['unit_price'] = max(0.0, val));
                         },
                       ),
@@ -469,7 +491,8 @@ class _SalesPageState extends State<SalesPage> {
     );
   }
 
-  Widget _totalsCard(double liveProfit) {
+  // CAMBIO MÍNIMO: ahora recibe marginPct también
+  Widget _totalsCard(double liveProfit, double marginPct) {
     return Card(
       child: Padding(
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
@@ -487,16 +510,14 @@ class _SalesPageState extends State<SalesPage> {
                       DropdownMenuItem(value: 'transferencia', child: Text('transferencia')),
                       DropdownMenuItem(value: 'otros', child: Text('otros')),
                     ],
-                    onChanged: (v) =>
-                        setState(() => _paymentMethod = v ?? 'efectivo'),
+                    onChanged: (v) => setState(() => _paymentMethod = v ?? 'efectivo'),
                   ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: TextField(
                     controller: _placeCtrl,
-                    decoration:
-                        const InputDecoration(labelText: 'Lugar de venta'),
+                    decoration: const InputDecoration(labelText: 'Lugar de venta'),
                   ),
                 ),
               ],
@@ -507,8 +528,7 @@ class _SalesPageState extends State<SalesPage> {
                 Expanded(
                   child: TextField(
                     controller: _shippingCtrl,
-                    keyboardType:
-                        const TextInputType.numberWithOptions(decimal: true),
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
                     decoration: const InputDecoration(labelText: 'Costo de envío'),
                     onChanged: (_) => setState(() {}),
                   ),
@@ -517,8 +537,7 @@ class _SalesPageState extends State<SalesPage> {
                 Expanded(
                   child: TextField(
                     controller: _discountCtrl,
-                    keyboardType:
-                        const TextInputType.numberWithOptions(decimal: true),
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
                     decoration: const InputDecoration(labelText: 'Descuento'),
                     onChanged: (_) => setState(() {}),
                   ),
@@ -532,8 +551,10 @@ class _SalesPageState extends State<SalesPage> {
             const Divider(),
             _kv('Total', _money.format(total), bold: true, big: true),
             const SizedBox(height: 6),
-            _kv('Utilidad (en vivo)', _money.format(liveProfit),
-                bold: true, big: true),
+            _kv('Utilidad (en vivo)', _money.format(liveProfit), bold: true, big: true),
+
+            // NUEVO: margen %
+            _kv('Margen (utilidad %)', '${(marginPct * 100).toStringAsFixed(1)}%', bold: true),
           ],
         ),
       ),
@@ -558,31 +579,17 @@ class _SalesPageState extends State<SalesPage> {
             TextField(
               controller: phoneCtrl,
               keyboardType: TextInputType.phone,
-              decoration: const InputDecoration(
-                labelText: 'Teléfono (ID obligatorio)',
-              ),
+              decoration: const InputDecoration(labelText: 'Teléfono (ID obligatorio)'),
             ),
             const SizedBox(height: 8),
-            TextField(
-              controller: nameCtrl,
-              decoration: const InputDecoration(labelText: 'Nombre'),
-            ),
+            TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Nombre')),
             const SizedBox(height: 8),
-            TextField(
-              controller: addrCtrl,
-              decoration: const InputDecoration(labelText: 'Dirección'),
-            ),
+            TextField(controller: addrCtrl, decoration: const InputDecoration(labelText: 'Dirección')),
           ],
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Guardar'),
-          ),
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancelar')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Guardar')),
         ],
       ),
     );
@@ -608,8 +615,7 @@ class _SalesPageState extends State<SalesPage> {
 
     setState(() {
       _customerPhone = phone;
-      _customerName =
-          nameCtrl.text.trim().isEmpty ? phone : nameCtrl.text.trim();
+      _customerName = nameCtrl.text.trim().isEmpty ? phone : nameCtrl.text.trim();
     });
 
     _snack('Cliente guardado');
