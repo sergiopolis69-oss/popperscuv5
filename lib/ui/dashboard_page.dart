@@ -13,6 +13,16 @@ class DashboardPage extends StatefulWidget {
   State<DashboardPage> createState() => _DashboardPageState();
 }
 
+enum _TrendRangePreset {
+  global,
+  d7,
+  d14,
+  d30,
+  d90,
+  ytd,
+  all,
+}
+
 class _DashboardPageState extends State<DashboardPage> {
   final _money = NumberFormat.currency(locale: 'es_MX', symbol: '\$');
   final _dayLabel = DateFormat('MM/dd');
@@ -21,16 +31,25 @@ class _DashboardPageState extends State<DashboardPage> {
   DateTime _to = DateTime.now();
 
   bool _loading = true;
+
+  // KPIs globales (usan _from/_to)
   double _netSales = 0;
   double _cost = 0;
   double _profit = 0;
   double _discounts = 0;
   double _shipping = 0;
 
-  List<_DailyPoint> _daily = [];
+  // Datos globales
   List<_CategorySlice> _categories = [];
   List<_TopProduct> _topProducts = [];
   List<PurchaseSuggestion> _suggestions = [];
+
+  // Tendencia (puede usar rango distinto)
+  bool _dailyLoading = false;
+  _TrendRangePreset _trendPreset = _TrendRangePreset.global;
+  DateTime? _trendFrom;
+  DateTime? _trendTo;
+  List<_DailyPoint> _daily = [];
 
   @override
   void initState() {
@@ -59,7 +78,8 @@ class _DashboardPageState extends State<DashboardPage> {
       _from = DateTime(picked.start.year, picked.start.month, picked.start.day);
       _to = DateTime(picked.end.year, picked.end.month, picked.end.day);
     });
-    await _loadAll();
+
+    await _loadAll(); // recarga todo
   }
 
   String _formatDate(DateTime date) => DateFormat('yyyy-MM-dd').format(date);
@@ -89,10 +109,13 @@ class _DashboardPageState extends State<DashboardPage> {
     try {
       final db = await _db();
       final summary = await _loadSummary(db);
-      final daily = await _loadDailyPerformance(db);
       final categories = await _loadCategoryBreakdown(db);
       final topProducts = await _loadTopProducts(db);
       final suggestions = await fetchPurchaseSuggestions(db, from: _from, to: _to);
+
+      // Tendencia: respeta preset (si es "global" usa _from/_to)
+      final trendRange = _resolveTrendRange();
+      final daily = await _loadDailyPerformanceForRange(db, trendRange.$1, trendRange.$2);
 
       if (!mounted) return;
       setState(() {
@@ -101,14 +124,74 @@ class _DashboardPageState extends State<DashboardPage> {
         _profit = summary.profit;
         _discounts = summary.discounts;
         _shipping = summary.shipping;
-        _daily = daily;
         _categories = categories;
         _topProducts = topProducts;
         _suggestions = suggestions;
+        _daily = daily;
       });
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  // --- NUEVO: recarga SOLO tendencia al cambiar preset (no afecta el resto)
+  Future<void> _reloadTrendOnly() async {
+    setState(() => _dailyLoading = true);
+    try {
+      final db = await _db();
+      final range = _resolveTrendRange();
+      final daily = await _loadDailyPerformanceForRange(db, range.$1, range.$2);
+      if (!mounted) return;
+      setState(() => _daily = daily);
+    } finally {
+      if (mounted) setState(() => _dailyLoading = false);
+    }
+  }
+
+  // Rango que usa la gráfica
+  (DateTime, DateTime) _resolveTrendRange() {
+    if (_trendPreset == _TrendRangePreset.global) {
+      final a = DateTime(_from.year, _from.month, _from.day);
+      final b = DateTime(_to.year, _to.month, _to.day);
+      return (a, b);
+    }
+    final now = DateTime.now();
+    final end = _trendTo != null
+        ? DateTime(_trendTo!.year, _trendTo!.month, _trendTo!.day)
+        : DateTime(now.year, now.month, now.day);
+
+    DateTime start;
+    switch (_trendPreset) {
+      case _TrendRangePreset.d7:
+        start = end.subtract(const Duration(days: 6));
+        break;
+      case _TrendRangePreset.d14:
+        start = end.subtract(const Duration(days: 13));
+        break;
+      case _TrendRangePreset.d30:
+        start = end.subtract(const Duration(days: 29));
+        break;
+      case _TrendRangePreset.d90:
+        start = end.subtract(const Duration(days: 89));
+        break;
+      case _TrendRangePreset.ytd:
+        start = DateTime(end.year, 1, 1);
+        break;
+      case _TrendRangePreset.all:
+        // “Todo”: usamos una fecha muy vieja, y terminamos en end
+        start = DateTime(2000, 1, 1);
+        break;
+      case _TrendRangePreset.global:
+        start = DateTime(_from.year, _from.month, _from.day);
+        break;
+    }
+
+    if (_trendFrom != null && _trendPreset != _TrendRangePreset.all && _trendPreset != _TrendRangePreset.ytd) {
+      // Permite que el usuario “anclé” un inicio manual si quisieras luego (por ahora no lo exponemos)
+      // start = DateTime(_trendFrom!.year, _trendFrom!.month, _trendFrom!.day);
+    }
+
+    return (DateTime(start.year, start.month, start.day), end);
   }
 
   Future<_Summary> _loadSummary(Database db) async {
@@ -152,7 +235,8 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
-  Future<List<_DailyPoint>> _loadDailyPerformance(Database db) async {
+  // --- CAMBIO: esta versión recibe rango (from/to) para la gráfica
+  Future<List<_DailyPoint>> _loadDailyPerformanceForRange(Database db, DateTime from, DateTime to) async {
     final revenueRows = await db.rawQuery('''
       SELECT DATE(s.date) AS day,
              COALESCE(SUM(si.quantity * si.unit_price), 0) AS revenue,
@@ -163,18 +247,20 @@ class _DashboardPageState extends State<DashboardPage> {
       WHERE DATE(s.date) BETWEEN ? AND ?
       GROUP BY DATE(s.date)
       ORDER BY DATE(s.date)
-    ''', [_formatDate(_from), _formatDate(_to)]);
+    ''', [_formatDate(from), _formatDate(to)]);
+
     final discountsRows = await db.rawQuery('''
       SELECT DATE(date) AS day, COALESCE(SUM(discount), 0) AS discounts
       FROM sales
       WHERE DATE(date) BETWEEN ? AND ?
       GROUP BY DATE(date)
-    ''', [_formatDate(_from), _formatDate(_to)]);
+    ''', [_formatDate(from), _formatDate(to)]);
 
     final discountMap = {
       for (final row in discountsRows)
         _normalizeDbDay(row['day']): (row['discounts'] as num?)?.toDouble() ?? 0.0,
     };
+
     final revenueMap = {
       for (final row in revenueRows)
         _normalizeDbDay(row['day']): (
@@ -182,10 +268,10 @@ class _DashboardPageState extends State<DashboardPage> {
             (row['cost'] as num?)?.toDouble() ?? 0.0)
     };
 
-    final totalDays = _to.difference(_from).inDays;
+    final totalDays = to.difference(from).inDays;
     final points = <_DailyPoint>[];
     for (int i = 0; i <= totalDays; i++) {
-      final day = DateTime(_from.year, _from.month, _from.day).add(Duration(days: i));
+      final day = DateTime(from.year, from.month, from.day).add(Duration(days: i));
       final key = _formatDate(day);
       final revenuePair = revenueMap[key];
       final revenue = revenuePair != null ? revenuePair.$1 : 0.0;
@@ -289,9 +375,7 @@ class _DashboardPageState extends State<DashboardPage> {
                       } else {
                         cardWidth = maxWidth;
                       }
-                      if (cardWidth <= 0) {
-                        cardWidth = maxWidth;
-                      }
+                      if (cardWidth <= 0) cardWidth = maxWidth;
 
                       final cards = <Widget>[
                         _SummaryCard(
@@ -332,14 +416,12 @@ class _DashboardPageState extends State<DashboardPage> {
                       return Wrap(
                         spacing: spacing,
                         runSpacing: 12,
-                        children: cards
-                            .map((card) => SizedBox(width: cardWidth, child: card))
-                            .toList(),
+                        children: cards.map((card) => SizedBox(width: cardWidth, child: card)).toList(),
                       );
                     },
                   ),
                   const SizedBox(height: 16),
-                  _buildPerformanceCard(context),
+                  _buildPerformanceCard(context), // <- ahora trae selector
                   const SizedBox(height: 16),
                   _buildCategoryCard(context),
                   const SizedBox(height: 16),
@@ -353,23 +435,62 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   Widget _buildPerformanceCard(BuildContext context) {
+    final theme = Theme.of(context);
+
+    // Para mostrar rango actual de tendencia
+    final trendRange = _resolveTrendRange();
+    final trendLabel =
+        '${DateFormat('dd/MM').format(trendRange.$1)} — ${DateFormat('dd/MM').format(trendRange.$2)}';
+
+    Widget selectorRow() {
+      return Wrap(
+        spacing: 10,
+        runSpacing: 8,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          const Text('Periodo:', style: TextStyle(fontWeight: FontWeight.w600)),
+          DropdownButton<_TrendRangePreset>(
+            value: _trendPreset,
+            onChanged: (v) async {
+              if (v == null) return;
+              setState(() => _trendPreset = v);
+              await _reloadTrendOnly();
+            },
+            items: const [
+              DropdownMenuItem(value: _TrendRangePreset.global, child: Text('Rango global')),
+              DropdownMenuItem(value: _TrendRangePreset.d7, child: Text('Últimos 7 días')),
+              DropdownMenuItem(value: _TrendRangePreset.d14, child: Text('Últimos 14 días')),
+              DropdownMenuItem(value: _TrendRangePreset.d30, child: Text('Últimos 30 días')),
+              DropdownMenuItem(value: _TrendRangePreset.d90, child: Text('Últimos 90 días')),
+              DropdownMenuItem(value: _TrendRangePreset.ytd, child: Text('Año a la fecha (YTD)')),
+              DropdownMenuItem(value: _TrendRangePreset.all, child: Text('Todo')),
+            ],
+          ),
+          Text('($trendLabel)', style: theme.textTheme.bodySmall),
+          if (_dailyLoading) const SizedBox(width: 8),
+          if (_dailyLoading) const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+        ],
+      );
+    }
+
     if (_daily.isEmpty) {
       return Card(
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: const [
-              Text('Tendencia de ventas y utilidad', style: TextStyle(fontWeight: FontWeight.bold)),
-              SizedBox(height: 12),
-              Text('No hay datos en el periodo seleccionado.'),
+            children: [
+              const Text('Tendencia de ventas y utilidad', style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              selectorRow(),
+              const SizedBox(height: 12),
+              const Text('No hay datos en el periodo seleccionado.'),
             ],
           ),
         ),
       );
     }
 
-    final theme = Theme.of(context);
     final spotsNet = <FlSpot>[];
     final spotsProfit = <FlSpot>[];
     for (int i = 0; i < _daily.length; i++) {
@@ -380,7 +501,8 @@ class _DashboardPageState extends State<DashboardPage> {
     final maxY = [
       ...spotsNet.map((e) => e.y),
       ...spotsProfit.map((e) => e.y),
-    ].fold<double>(0, (previousValue, element) => element > previousValue ? element : previousValue);
+    ].fold<double>(0, (prev, el) => el > prev ? el : prev);
+
     final maxXValue = spotsNet.isEmpty ? 0.0 : (spotsNet.length - 1).toDouble();
 
     return Card(
@@ -390,6 +512,8 @@ class _DashboardPageState extends State<DashboardPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text('Tendencia de ventas y utilidad', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            selectorRow(),
             const SizedBox(height: 12),
             SizedBox(
               height: 220,
@@ -405,7 +529,8 @@ class _DashboardPageState extends State<DashboardPage> {
                       sideTitles: SideTitles(
                         showTitles: true,
                         reservedSize: 52,
-                        getTitlesWidget: (value, meta) => Text(_money.format(value), style: const TextStyle(fontSize: 10)),
+                        getTitlesWidget: (value, meta) =>
+                            Text(_money.format(value), style: const TextStyle(fontSize: 10)),
                         interval: maxY == 0 ? 1 : maxY / 4,
                       ),
                     ),
@@ -415,15 +540,14 @@ class _DashboardPageState extends State<DashboardPage> {
                         reservedSize: 28,
                         getTitlesWidget: (value, meta) {
                           final index = value.round();
-                          if (index < 0 || index >= _daily.length) {
-                            return const SizedBox.shrink();
-                          }
+                          if (index < 0 || index >= _daily.length) return const SizedBox.shrink();
                           final day = _daily[index].day;
                           return Text(_dayLabel.format(day), style: const TextStyle(fontSize: 11));
                         },
                       ),
                     ),
                     topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                    rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                   ),
                   borderData: FlBorderData(show: false),
                   lineBarsData: [
@@ -584,7 +708,8 @@ class _DashboardPageState extends State<DashboardPage> {
       );
     }
 
-    final topRevenue = _topProducts.fold<double>(0, (value, element) => element.revenue > value ? element.revenue : value);
+    final topRevenue =
+        _topProducts.fold<double>(0, (value, element) => element.revenue > value ? element.revenue : value);
 
     return Card(
       child: Padding(
@@ -644,9 +769,7 @@ class _DashboardPageState extends State<DashboardPage> {
                     child: const Icon(Icons.lightbulb, color: Colors.orange),
                   ),
                   title: Text(s.name),
-                  subtitle: Text(
-                    'SKU ${s.sku} • Stock ${s.stock} • Ventas recientes ${s.soldLastPeriod}',
-                  ),
+                  subtitle: Text('SKU ${s.sku} • Stock ${s.stock} • Ventas recientes ${s.soldLastPeriod}'),
                   trailing: Column(
                     crossAxisAlignment: CrossAxisAlignment.end,
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -748,7 +871,10 @@ class _SummaryCard extends StatelessWidget {
           const SizedBox(height: 12),
           Text(title, style: theme.textTheme.titleSmall),
           const SizedBox(height: 4),
-          Text(value, style: theme.textTheme.headlineSmall?.copyWith(color: color, fontWeight: FontWeight.bold)),
+          Text(
+            value,
+            style: theme.textTheme.headlineSmall?.copyWith(color: color, fontWeight: FontWeight.bold),
+          ),
           if (subtitle != null) ...[
             const SizedBox(height: 4),
             Text(subtitle!, style: theme.textTheme.bodySmall),
