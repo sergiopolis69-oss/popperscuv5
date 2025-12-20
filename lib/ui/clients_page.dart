@@ -1170,4 +1170,3 @@ class _ClientsPageState extends State<ClientsPage> {
 enum _VolumeMetric { netSales, qty }
 
 enum _PeriodPreset { d7, d30, d60, d90, y1, all, custom }
-```0
