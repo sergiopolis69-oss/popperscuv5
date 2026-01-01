@@ -86,15 +86,11 @@ class _InventoryPageState extends State<InventoryPage> {
   }
 
   Future<void> _loadRecommendations() async {
-    if (!_loadingRecommendations) {
-      setState(() => _loadingRecommendations = true);
-    }
+    if (!_loadingRecommendations) setState(() => _loadingRecommendations = true);
 
     try {
       final db = await _db();
       final suggestions = await fetchPurchaseSuggestions(db); // <- SIN límite
-
-      // Armar reporte agrupado por categoría (sin cambiar la lógica de recomendaciones)
       final report = await _buildSuggestionsReport(db, suggestions);
 
       if (!mounted) return;
@@ -109,9 +105,8 @@ class _InventoryPageState extends State<InventoryPage> {
         _loadingRecommendations = false;
       });
     } catch (_) {
-      if (mounted) {
-        setState(() => _loadingRecommendations = false);
-      }
+      if (!mounted) return;
+      setState(() => _loadingRecommendations = false);
     }
   }
 
@@ -151,16 +146,12 @@ class _InventoryPageState extends State<InventoryPage> {
       args.addAll(['%$q%', '%$q%']);
     }
 
-    if (_lowStockOnly) {
-      where.add("(COALESCE(stock,0) <= 2)");
-    }
+    if (_lowStockOnly) where.add("(COALESCE(stock,0) <= 2)");
 
     final sql = StringBuffer()
       ..write('SELECT id, sku, name, category, default_sale_price, last_purchase_price, stock ')
       ..write('FROM products ');
-    if (where.isNotEmpty) {
-      sql.write('WHERE ${where.join(' AND ')} ');
-    }
+    if (where.isNotEmpty) sql.write('WHERE ${where.join(' AND ')} ');
     sql.write('ORDER BY name COLLATE NOCASE');
 
     final rows = await db.rawQuery(sql.toString(), args);
@@ -168,6 +159,7 @@ class _InventoryPageState extends State<InventoryPage> {
   }
 
   void _snack(String msg) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
@@ -187,7 +179,7 @@ class _InventoryPageState extends State<InventoryPage> {
 
   void _startEdit(Map<String, dynamic> p) {
     setState(() {
-      _editingId = p['id'] as int;
+      _editingId = (p['id'] as num).toInt();
       _skuCtrl.text = (p['sku'] ?? '').toString();
       _nameCtrl.text = (p['name'] ?? '').toString();
       _salePriceCtrl.text =
@@ -224,11 +216,9 @@ class _InventoryPageState extends State<InventoryPage> {
     await _loadAll();
   }
 
-  // ✅ Ajuste: bottom sheet no se encima con nav bar / teclado
+  // ✅ BottomSheet ajustado para nav buttons + teclado
   Future<void> _showProductDialog({required String title}) async {
-    if (_categories.isEmpty) {
-      await _loadCategories();
-    }
+    if (_categories.isEmpty) await _loadCategories();
     _selectedDialogCategory ??= _categories.isNotEmpty ? _categories.first : '(Sin categoría)';
 
     await showModalBottomSheet<void>(
@@ -239,7 +229,8 @@ class _InventoryPageState extends State<InventoryPage> {
       builder: (_) {
         final mq = MediaQuery.of(context);
         final keyboard = mq.viewInsets.bottom;
-        final bottomSafe = mq.padding.bottom; // ✅ nav bar / gesture area
+        final bottomSafe = mq.padding.bottom;
+
         return Padding(
           padding: EdgeInsets.only(
             left: 16,
@@ -262,12 +253,10 @@ class _InventoryPageState extends State<InventoryPage> {
                     Expanded(
                       child: DropdownButtonFormField<String>(
                         value: _selectedDialogCategory,
-                        items: <String>['(Sin categoría)', ..._categories.where((c) => c != '(Sin categoría)')]
-                            .map((c) => DropdownMenuItem(
-                                  value: c,
-                                  child: Text(c),
-                                ))
-                            .toList(),
+                        items: <String>[
+                          '(Sin categoría)',
+                          ..._categories.where((c) => c != '(Sin categoría)')
+                        ].map((c) => DropdownMenuItem(value: c, child: Text(c))).toList(),
                         onChanged: (v) => setState(() => _selectedDialogCategory = v),
                         decoration: const InputDecoration(labelText: 'Categoría'),
                       ),
@@ -401,17 +390,18 @@ class _InventoryPageState extends State<InventoryPage> {
     }
   }
 
-  // =======================
-  // NUEVO: Resumen / historial por SKU
-  // =======================
+  // ===========================
+  // NUEVO: resumen/historial SKU
+  // ===========================
   Future<void> _showSkuHistory(Map<String, dynamic> p) async {
     final db = await _db();
     final productId = (p['id'] as num).toInt();
     final sku = (p['sku'] ?? '').toString();
     final name = (p['name'] ?? '').toString();
     final stock = ((p['stock'] as num?)?.toInt() ?? 0);
+    final lastCost = ((p['last_purchase_price'] as num?)?.toDouble() ?? 0.0);
 
-    // --- Ventas (últimas 50) + totales ---
+    // Ventas: agregados
     final salesAgg = await db.rawQuery('''
       SELECT
         COALESCE(SUM(si.quantity),0) AS qty,
@@ -424,6 +414,7 @@ class _InventoryPageState extends State<InventoryPage> {
     final soldQty = ((salesAgg.first['qty'] as num?) ?? 0).toInt();
     final revenue = ((salesAgg.first['revenue'] as num?) ?? 0).toDouble();
 
+    // Ventas: últimas 50
     final salesRows = await db.rawQuery('''
       SELECT s.date AS date, si.quantity AS qty, si.unit_price AS unit_price
       FROM sale_items si
@@ -433,17 +424,18 @@ class _InventoryPageState extends State<InventoryPage> {
       LIMIT 50
     ''', [productId]);
 
-    // --- Compras: intentamos detectar tablas y columna de costo ---
+    // Compras: intentamos unit_cost, si no unit_price
     int boughtQty = 0;
     double boughtCost = 0.0;
     List<Map<String, dynamic>> purchaseRows = [];
+    bool hasPurchases = false;
 
-    Future<bool> tryLoadPurchases(String costCol) async {
+    Future<bool> tryPurchases(String costCol) async {
       try {
         final purAgg = await db.rawQuery('''
           SELECT
             COALESCE(SUM(pi.quantity),0) AS qty,
-            COALESCE(SUM(pi.quantity * COALESCE(pi.$costCol, 0)),0) AS cost
+            COALESCE(SUM(pi.quantity * COALESCE(pi.$costCol,0)),0) AS cost
           FROM purchase_items pi
           JOIN purchases p ON p.id = pi.purchase_id
           WHERE pi.product_id = ?
@@ -468,11 +460,13 @@ class _InventoryPageState extends State<InventoryPage> {
       }
     }
 
-    // Primero unit_cost, si no, unit_price, si no, no mostramos compras
-    final hasPurchases = await tryLoadPurchases('unit_cost') || await tryLoadPurchases('unit_price');
+    hasPurchases = await tryPurchases('unit_cost') || await tryPurchases('unit_price');
 
-    // Utilidad estimada (si hay compras: revenue - boughtCost, si no: revenue - last_purchase* soldQty)
-    final lastCost = ((p['last_purchase_price'] as num?)?.toDouble() ?? 0.0);
+    // Utilidad estimada:
+    // - Si hay compras: revenue - boughtCost (ojo: esto es “costo comprado”, si compras más de lo vendido, se infla el costo)
+    // - Si no hay compras: revenue - (soldQty * lastCost)
+    //
+    // Para no “romper” nada, lo dejamos simple, pero mostramos etiqueta "estimado".
     final estCostForSold = hasPurchases ? boughtCost : (soldQty * lastCost);
     final estProfit = revenue - estCostForSold;
     final estMargin = revenue > 0 ? (estProfit / revenue) : 0.0;
@@ -487,15 +481,14 @@ class _InventoryPageState extends State<InventoryPage> {
       builder: (_) {
         final mq = MediaQuery.of(context);
         final bottomSafe = mq.padding.bottom;
+
         return Padding(
           padding: EdgeInsets.fromLTRB(16, 8, 16, bottomSafe + 16),
           child: Column(
-            mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text('$sku • $name', style: Theme.of(context).textTheme.titleLarge),
               const SizedBox(height: 10),
-
               Wrap(
                 spacing: 10,
                 runSpacing: 10,
@@ -503,16 +496,14 @@ class _InventoryPageState extends State<InventoryPage> {
                   _chipStat('Stock', '$stock'),
                   _chipStat('Vendidas', '$soldQty'),
                   _chipStat('Ingresos', _money.format(revenue)),
-                  _chipStat('Costo', _money.format(estCostForSold)),
-                  _chipStat('Utilidad', _money.format(estProfit)),
-                  _chipStat('Margen', '${(estMargin * 100).toStringAsFixed(1)}%'),
+                  _chipStat('Costo est.', _money.format(estCostForSold)),
+                  _chipStat('Utilidad est.', _money.format(estProfit)),
+                  _chipStat('Margen est.', '${(estMargin * 100).toStringAsFixed(1)}%'),
                   if (hasPurchases) _chipStat('Compradas', '$boughtQty'),
                 ],
               ),
-
               const SizedBox(height: 12),
               const Divider(),
-
               Expanded(
                 child: ListView(
                   children: [
@@ -530,17 +521,18 @@ class _InventoryPageState extends State<InventoryPage> {
                           dense: true,
                           contentPadding: EdgeInsets.zero,
                           leading: const Icon(Icons.trending_up),
-                          title: Text('${qty} × ${_money.format(unit)}'),
+                          title: Text('$qty × ${_money.format(unit)}'),
                           subtitle: Text(date),
-                          trailing: Text(_money.format(total), style: const TextStyle(fontWeight: FontWeight.w700)),
+                          trailing: Text(_money.format(total),
+                              style: const TextStyle(fontWeight: FontWeight.w700)),
                         );
                       }),
 
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 12),
                     Text('Historial de compras', style: Theme.of(context).textTheme.titleMedium),
                     const SizedBox(height: 6),
                     if (!hasPurchases)
-                      const Text('No se encontró tabla de compras (purchase_items/purchases) en esta BD.')
+                      const Text('No se pudo leer purchases/purchase_items (tablas/columnas).')
                     else if (purchaseRows.isEmpty)
                       const Text('Sin compras registradas para este SKU.')
                     else
@@ -553,9 +545,10 @@ class _InventoryPageState extends State<InventoryPage> {
                           dense: true,
                           contentPadding: EdgeInsets.zero,
                           leading: const Icon(Icons.shopping_cart),
-                          title: Text('${qty} × ${_money.format(unit)}'),
+                          title: Text('$qty × ${_money.format(unit)}'),
                           subtitle: Text(date),
-                          trailing: Text(_money.format(total), style: const TextStyle(fontWeight: FontWeight.w700)),
+                          trailing: Text(_money.format(total),
+                              style: const TextStyle(fontWeight: FontWeight.w700)),
                         );
                       }),
                   ],
@@ -582,6 +575,151 @@ class _InventoryPageState extends State<InventoryPage> {
           Text('$k: ', style: const TextStyle(fontWeight: FontWeight.w600)),
           Text(v),
         ],
+      ),
+    );
+  }
+
+  // =======================
+  // BUILD (✅ DENTRO DE LA CLASE)
+  // =======================
+  @override
+  Widget build(BuildContext context) {
+    final lowCount = _products.where((p) => (p['stock'] as num? ?? 0) <= 2).length;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Inventario'),
+        actions: [IconButton(onPressed: _loadAll, icon: const Icon(Icons.refresh))],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(56),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+            child: TextField(
+              controller: _qCtrl,
+              decoration: InputDecoration(
+                hintText: 'Buscar por SKU o nombre…',
+                prefixIcon: const Icon(Icons.search),
+                filled: true,
+                isDense: true,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                suffixIcon: _qCtrl.text.isEmpty
+                    ? null
+                    : IconButton(
+                        onPressed: () {
+                          _qCtrl.clear();
+                          _loadProducts();
+                        },
+                        icon: const Icon(Icons.clear),
+                      ),
+              ),
+              onChanged: (_) => _loadProducts(),
+            ),
+          ),
+        ),
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _startCreate,
+        icon: const Icon(Icons.add),
+        label: const Text('Agregar'),
+      ),
+      body: RefreshIndicator(
+        onRefresh: _loadAll,
+        child: CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                child: _buildSuggestionsReportCard(),
+              ),
+            ),
+            const SliverToBoxAdapter(child: SizedBox(height: 8)),
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<String?>(
+                        value: _selectedCategory,
+                        isExpanded: true,
+                        items: <String?>[null, ..._categories]
+                            .map((c) => DropdownMenuItem<String?>(
+                                  value: c,
+                                  child: Text(c ?? 'Todas las categorías'),
+                                ))
+                            .toList(),
+                        onChanged: (v) {
+                          setState(() => _selectedCategory = v);
+                          _loadProducts();
+                        },
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          labelText: 'Filtrar por categoría',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    FilterChip(
+                      label: Text('Existencia ≤ 2${lowCount > 0 ? ' ($lowCount)' : ''}'),
+                      selected: _lowStockOnly,
+                      onSelected: (v) {
+                        setState(() => _lowStockOnly = v);
+                        _loadProducts();
+                      },
+                      avatar: const Icon(Icons.warning_amber_outlined, size: 18),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SliverToBoxAdapter(child: Divider(height: 0)),
+            if (_products.isEmpty)
+              const SliverFillRemaining(
+                hasScrollBody: false,
+                child: Center(child: Text('No hay productos')),
+              )
+            else
+              SliverList(
+                delegate: SliverChildBuilderDelegate(
+                  (context, index) {
+                    final p = _products[index];
+                    final stock = (p['stock'] as num?)?.toInt() ?? 0;
+                    final low = stock <= 2;
+                    final cat = (p['category'] == null || (p['category'] as String).trim().isEmpty)
+                        ? '(Sin categoría)'
+                        : (p['category'] as String);
+
+                    return Column(
+                      children: [
+                        ListTile(
+                          // ✅ Tap abre resumen/historial SKU
+                          onTap: () => _showSkuHistory(p),
+                          leading: CircleAvatar(
+                            backgroundColor: low ? Colors.red.shade50 : Colors.blue.shade50,
+                            child: Icon(
+                              low ? Icons.priority_high : Icons.inventory_2,
+                              color: low ? Colors.red : Colors.blue,
+                            ),
+                          ),
+                          title: Text(p['name'] ?? '', maxLines: 1, overflow: TextOverflow.ellipsis),
+                          subtitle: Text('SKU: ${p['sku']} • $cat • Stock: $stock'),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.edit),
+                            tooltip: 'Editar',
+                            onPressed: () => _startEdit(p),
+                          ),
+                        ),
+                        if (index != _products.length - 1) const Divider(height: 0),
+                      ],
+                    );
+                  },
+                  childCount: _products.length,
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -716,7 +854,7 @@ class _InventoryPageState extends State<InventoryPage> {
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.black12), // ✅ ya no choca
+        border: Border.all(color: Colors.black12),
         color: Theme.of(context).colorScheme.surface,
       ),
       child: Row(
@@ -752,7 +890,6 @@ class _InventoryPageState extends State<InventoryPage> {
       return _SugReport(byCategory: {}, categoryOrder: const []);
     }
 
-    // Mapear categorías por SKU
     final skus = suggestions.map((s) => s.sku).where((e) => e.trim().isNotEmpty).toSet().toList();
     final skuToCategory = <String, String>{};
 
@@ -771,7 +908,6 @@ class _InventoryPageState extends State<InventoryPage> {
       }
     }
 
-    // Construir filas
     final byCategory = <String, List<_SugRow>>{};
     for (final s in suggestions) {
       final cat = skuToCategory[s.sku] ?? '(Sin categoría)';
@@ -787,7 +923,6 @@ class _InventoryPageState extends State<InventoryPage> {
       (byCategory[cat] ??= []).add(row);
     }
 
-    // Orden: categorías con mayor costo sugerido primero
     final catOrder = byCategory.keys.toList()
       ..sort((a, b) {
         final aCost = (byCategory[a] ?? const []).fold<double>(0.0, (x, y) => x + y.estimatedCost);
@@ -795,7 +930,6 @@ class _InventoryPageState extends State<InventoryPage> {
         return bCost.compareTo(aCost);
       });
 
-    // Orden interno: mayor costo primero
     for (final cat in catOrder) {
       byCategory[cat]!.sort((x, y) => y.estimatedCost.compareTo(x.estimatedCost));
     }
@@ -815,7 +949,6 @@ class _InventoryPageState extends State<InventoryPage> {
 
       final sheet = excel['Sugerencias_compra'];
 
-      // Encabezados
       sheet.appendRow([
         ex.TextCellValue('Categoría'),
         ex.TextCellValue('SKU'),
@@ -841,7 +974,6 @@ class _InventoryPageState extends State<InventoryPage> {
           ]);
         }
 
-        // Totales por categoría
         final catUnits = rows.fold<int>(0, (a, b) => a + b.suggestedQuantity);
         final catCost = rows.fold<double>(0.0, (a, b) => a + b.estimatedCost);
 
@@ -855,7 +987,6 @@ class _InventoryPageState extends State<InventoryPage> {
           ex.DoubleCellValue(catCost),
         ]);
 
-        // Línea en blanco
         sheet.appendRow([
           ex.TextCellValue(''),
           ex.TextCellValue(''),
@@ -867,7 +998,6 @@ class _InventoryPageState extends State<InventoryPage> {
         ]);
       }
 
-      // Totales generales
       sheet.appendRow([
         ex.TextCellValue('TOTAL GENERAL'),
         ex.TextCellValue(''),
@@ -900,6 +1030,7 @@ class _InventoryPageState extends State<InventoryPage> {
   }
 }
 
+// ======= modelos internos =========
 class _SugRow {
   _SugRow({
     required this.category,
