@@ -27,13 +27,13 @@ class _InventoryPageState extends State<InventoryPage> {
   String? _selectedCategory;
   bool _lowStockOnly = false;
 
-  // Sugerencias de compra (reporte)
+  // Sugerencias de compra (base)
   List<PurchaseSuggestion> _purchaseSuggestions = [];
   bool _loadingRecommendations = false;
 
-  // Enriquecido: sugerencias con categoría + agrupación
-  final Map<String, List<_SuggestionRow>> _suggestionsByCategory = {};
-  List<String> _suggestionCategoryOrder = [];
+  // ===== Reporte (agrupado) =====
+  final Map<String, List<_SugRow>> _suggestionsByCategory = {};
+  final List<String> _suggestionCategoryOrder = [];
 
   // Búsqueda
   final _qCtrl = TextEditingController();
@@ -83,8 +83,6 @@ class _InventoryPageState extends State<InventoryPage> {
     ]);
   }
 
-  // ================== SUGERENCIAS (REPORTE) ==================
-
   Future<void> _loadRecommendations() async {
     if (!_loadingRecommendations) {
       setState(() => _loadingRecommendations = true);
@@ -92,222 +90,28 @@ class _InventoryPageState extends State<InventoryPage> {
 
     try {
       final db = await _db();
-
-      // 1) Trae sugerencias (sin tocar la lógica original)
       final suggestions = await fetchPurchaseSuggestions(db); // <- SIN límite
 
-      // 2) Enriquecer con categoría desde products (por SKU)
-      final skuToCategory = await _mapSkuToCategory(db, suggestions.map((e) => e.sku).toList());
-
-      // 3) Convertir a filas enriquecidas y agrupar por categoría
-      final rows = suggestions.map((s) {
-        final cat = _normalizeCategory(skuToCategory[s.sku]);
-        return _SuggestionRow(
-          category: cat,
-          sku: s.sku,
-          name: s.name,
-          stock: s.stock,
-          soldLastPeriod: s.soldLastPeriod,
-          suggestedQuantity: s.suggestedQuantity,
-          estimatedCost: s.estimatedCost,
-        );
-      }).toList();
-
-      final grouped = <String, List<_SuggestionRow>>{};
-      for (final r in rows) {
-        grouped.putIfAbsent(r.category, () => []).add(r);
-      }
-
-      // Orden: categorías alfabético, pero "(Sin categoría)" al final
-      final cats = grouped.keys.toList()
-        ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
-      if (cats.contains('(Sin categoría)')) {
-        cats.remove('(Sin categoría)');
-        cats.add('(Sin categoría)');
-      }
-
-      // Dentro de cada categoría: ordenar por "urgencia" (sugerido desc, y luego costo desc)
-      for (final c in cats) {
-        grouped[c]!.sort((a, b) {
-          final q = b.suggestedQuantity.compareTo(a.suggestedQuantity);
-          if (q != 0) return q;
-          return b.estimatedCost.compareTo(a.estimatedCost);
-        });
-      }
+      // Armar reporte agrupado por categoría (sin cambiar la lógica de recomendaciones)
+      final report = await _buildSuggestionsReport(db, suggestions);
 
       if (!mounted) return;
       setState(() {
         _purchaseSuggestions = suggestions;
         _suggestionsByCategory
           ..clear()
-          ..addAll(grouped);
-        _suggestionCategoryOrder = cats;
+          ..addAll(report.byCategory);
+        _suggestionCategoryOrder
+          ..clear()
+          ..addAll(report.categoryOrder);
         _loadingRecommendations = false;
       });
-    } catch (e) {
+    } catch (_) {
       if (mounted) {
         setState(() => _loadingRecommendations = false);
       }
     }
   }
-
-  String _normalizeCategory(String? raw) {
-    final v = (raw ?? '').trim();
-    if (v.isEmpty) return '(Sin categoría)';
-    return v;
-  }
-
-  Future<Map<String, String?>> _mapSkuToCategory(Database db, List<String> skus) async {
-    final map = <String, String?>{};
-    if (skus.isEmpty) return map;
-
-    // Quitar duplicados
-    final uniq = skus.toSet().toList();
-    // SQLite tiene límite de parámetros; chunk por seguridad
-    const chunkSize = 450;
-
-    for (int i = 0; i < uniq.length; i += chunkSize) {
-      final chunk = uniq.sublist(i, (i + chunkSize > uniq.length) ? uniq.length : (i + chunkSize));
-      final placeholders = List.filled(chunk.length, '?').join(',');
-
-      final rows = await db.rawQuery('''
-        SELECT sku, category
-        FROM products
-        WHERE sku IN ($placeholders)
-      ''', chunk);
-
-      for (final r in rows) {
-        final sku = (r['sku'] ?? '').toString();
-        final cat = r['category']?.toString();
-        map[sku] = cat;
-      }
-    }
-
-    // Para SKUs no encontrados, regresa null
-    for (final sku in uniq) {
-      map.putIfAbsent(sku, () => null);
-    }
-
-    return map;
-  }
-
-  double _totalEstimatedCostAll() {
-    double sum = 0.0;
-    for (final c in _suggestionsByCategory.values) {
-      for (final r in c) {
-        sum += r.estimatedCost;
-      }
-    }
-    return sum;
-  }
-
-  int _totalSuggestedUnitsAll() {
-    int sum = 0;
-    for (final c in _suggestionsByCategory.values) {
-      for (final r in c) {
-        sum += r.suggestedQuantity;
-      }
-    }
-    return sum;
-  }
-
-  // Export Excel
-  Future<void> _exportSuggestionsToExcel() async {
-    try {
-      if (_suggestionsByCategory.isEmpty) {
-        _snack('No hay sugerencias para exportar');
-        return;
-      }
-
-      final excel = Excel.createExcel();
-      excel.delete('Sheet1');
-
-      final sheet = excel['Sugerencias_compra'];
-
-      // Encabezados
-      sheet.appendRow([
-        TextCellValue('Categoría'),
-        TextCellValue('SKU'),
-        TextCellValue('Producto'),
-        TextCellValue('Stock'),
-        TextCellValue('Ventas recientes'),
-        TextCellValue('Sugerido comprar'),
-        TextCellValue('Costo estimado'),
-      ]);
-
-      // Filas
-      for (final cat in _suggestionCategoryOrder) {
-        final rows = _suggestionsByCategory[cat] ?? const [];
-        for (final r in rows) {
-          sheet.appendRow([
-            TextCellValue(r.category),
-            TextCellValue(r.sku),
-            TextCellValue(r.name),
-            IntCellValue(r.stock),
-            IntCellValue(r.soldLastPeriod),
-            IntCellValue(r.suggestedQuantity),
-            DoubleCellValue(r.estimatedCost),
-          ]);
-        }
-
-        // Totales por categoría
-        final catUnits = rows.fold<int>(0, (a, b) => a + b.suggestedQuantity);
-        final catCost = rows.fold<double>(0.0, (a, b) => a + b.estimatedCost);
-        sheet.appendRow([
-          TextCellValue('${cat} (TOTAL)'),
-          const TextCellValue(''),
-          const TextCellValue(''),
-          const TextCellValue(''),
-          const TextCellValue(''),
-          IntCellValue(catUnits),
-          DoubleCellValue(catCost),
-        ]);
-
-        // Línea en blanco
-        sheet.appendRow([
-          const TextCellValue(''),
-          const TextCellValue(''),
-          const TextCellValue(''),
-          const TextCellValue(''),
-          const TextCellValue(''),
-          const TextCellValue(''),
-          const TextCellValue(''),
-        ]);
-      }
-
-      // Totales generales
-      sheet.appendRow([
-        const TextCellValue('TOTAL GENERAL'),
-        const TextCellValue(''),
-        const TextCellValue(''),
-        const TextCellValue(''),
-        const TextCellValue(''),
-        IntCellValue(_totalSuggestedUnitsAll()),
-        DoubleCellValue(_totalEstimatedCostAll()),
-      ]);
-
-      // Guardar y compartir
-      final dir = await getTemporaryDirectory();
-      final file = File('${dir.path}/reporte_sugerencias_compra.xlsx');
-
-      final bytes = excel.encode();
-      if (bytes == null) throw Exception('No se pudo generar el Excel');
-      await file.writeAsBytes(bytes, flush: true);
-
-      await Share.shareXFiles(
-        [XFile(file.path)],
-        subject: 'Reporte de sugerencias de compra',
-        text:
-            'Reporte exportado: sugerencias de compra agrupadas por categoría.\n'
-            'Total sugerido: ${_totalSuggestedUnitsAll()} pzas\n'
-            'Costo estimado: ${_money.format(_totalEstimatedCostAll())}',
-      );
-    } catch (e) {
-      _snack('Error exportando Excel: $e');
-    }
-  }
-
-  // ================== CATEGORÍAS / PRODUCTOS ==================
 
   Future<void> _loadCategories() async {
     final db = await _db();
@@ -586,8 +390,6 @@ class _InventoryPageState extends State<InventoryPage> {
     }
   }
 
-  // ================== UI ==================
-
   @override
   Widget build(BuildContext context) {
     final lowCount = _products.where((p) => (p['stock'] as num? ?? 0) <= 2).length;
@@ -595,18 +397,7 @@ class _InventoryPageState extends State<InventoryPage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Inventario'),
-        actions: [
-          IconButton(
-            tooltip: 'Exportar sugerencias (Excel)',
-            onPressed: _suggestionsByCategory.isEmpty ? null : _exportSuggestionsToExcel,
-            icon: const Icon(Icons.download),
-          ),
-          IconButton(
-            tooltip: 'Actualizar todo',
-            onPressed: _loadAll,
-            icon: const Icon(Icons.refresh),
-          ),
-        ],
+        actions: [IconButton(onPressed: _loadAll, icon: const Icon(Icons.refresh))],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(56),
           child: Padding(
@@ -644,16 +435,16 @@ class _InventoryPageState extends State<InventoryPage> {
         child: CustomScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
-            // Reporte de sugerencias agrupado
+            // Reporte de sugerencias (visual + exportable)
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-                child: _buildSuggestionsReport(),
+                child: _buildSuggestionsReportCard(),
               ),
             ),
             const SliverToBoxAdapter(child: SizedBox(height: 8)),
 
-            // Filtros productos
+            // Filtros
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
@@ -718,8 +509,10 @@ class _InventoryPageState extends State<InventoryPage> {
                         ListTile(
                           leading: CircleAvatar(
                             backgroundColor: low ? Colors.red.shade50 : Colors.blue.shade50,
-                            child: Icon(low ? Icons.priority_high : Icons.inventory_2,
-                                color: low ? Colors.red : Colors.blue),
+                            child: Icon(
+                              low ? Icons.priority_high : Icons.inventory_2,
+                              color: low ? Colors.red : Colors.blue,
+                            ),
                           ),
                           title: Text(p['name'] ?? '', maxLines: 1, overflow: TextOverflow.ellipsis),
                           subtitle: Text('SKU: ${p['sku']} • $cat • Stock: $stock'),
@@ -742,9 +535,8 @@ class _InventoryPageState extends State<InventoryPage> {
     );
   }
 
-  // ================== REPORTE VISUAL EN APP ==================
-
-  Widget _buildSuggestionsReport() {
+  // ===== Reporte visualizable (agrupado por categoría) + export ======================================
+  Widget _buildSuggestionsReportCard() {
     if (_loadingRecommendations) {
       return const Card(
         child: Padding(
@@ -754,16 +546,26 @@ class _InventoryPageState extends State<InventoryPage> {
       );
     }
 
-    if (_suggestionsByCategory.isEmpty) {
+    if (_purchaseSuggestions.isEmpty || _suggestionsByCategory.isEmpty) {
       return Card(
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: const [
-              Text('Reporte de sugerencias de compra', style: TextStyle(fontWeight: FontWeight.bold)),
-              SizedBox(height: 8),
-              Text('Inventario saludable: no hay compras urgentes basadas en las ventas recientes.'),
+            children: [
+              const Text('Reporte de sugerencias de compra', style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              const Text('Inventario saludable: no hay compras urgentes basadas en las ventas recientes.'),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: _loadRecommendations,
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Actualizar'),
+                  ),
+                ],
+              ),
             ],
           ),
         ),
@@ -775,172 +577,286 @@ class _InventoryPageState extends State<InventoryPage> {
 
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
+            const Text('Reporte de sugerencias de compra', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 12,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                const Expanded(
-                  child: Text(
-                    'Reporte de sugerencias de compra',
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                ),
-                IconButton(
-                  tooltip: 'Exportar a Excel',
-                  onPressed: _exportSuggestionsToExcel,
-                  icon: const Icon(Icons.download),
-                ),
-                IconButton(
-                  tooltip: 'Actualizar sugerencias',
+                _miniStat('Total sugerido', '$totalUnits pzas'),
+                _miniStat('Costo estimado', _money.format(totalCost)),
+                OutlinedButton.icon(
                   onPressed: _loadRecommendations,
                   icon: const Icon(Icons.refresh),
+                  label: const Text('Actualizar'),
                 ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            Wrap(
-              spacing: 10,
-              runSpacing: 8,
-              children: [
-                _MiniStatChip(
-                  icon: Icons.shopping_cart,
-                  label: 'Total sugerido',
-                  value: '$totalUnits pzas',
-                ),
-                _MiniStatChip(
-                  icon: Icons.payments,
-                  label: 'Costo estimado',
-                  value: _money.format(totalCost),
-                ),
-                _MiniStatChip(
-                  icon: Icons.category,
-                  label: 'Categorías',
-                  value: '${_suggestionCategoryOrder.length}',
+                FilledButton.icon(
+                  onPressed: _exportSuggestionsToExcel,
+                  icon: const Icon(Icons.file_download),
+                  label: const Text('Exportar Excel'),
                 ),
               ],
             ),
             const SizedBox(height: 10),
-            const Divider(height: 10),
+            const Divider(height: 1),
+            const SizedBox(height: 6),
 
-            // Categorías agrupadas
-            ListView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: _suggestionCategoryOrder.length,
-              itemBuilder: (_, idx) {
-                final cat = _suggestionCategoryOrder[idx];
-                final rows = _suggestionsByCategory[cat] ?? const [];
+            // Categorías
+            ..._suggestionCategoryOrder.map((cat) {
+              final rows = _suggestionsByCategory[cat] ?? const <_SugRow>[];
+              if (rows.isEmpty) return const SizedBox.shrink();
 
-                final catUnits = rows.fold<int>(0, (a, b) => a + b.suggestedQuantity);
-                final catCost = rows.fold<double>(0.0, (a, b) => a + b.estimatedCost);
+              final catUnits = rows.fold<int>(0, (a, b) => a + b.suggestedQuantity);
+              final catCost = rows.fold<double>(0.0, (a, b) => a + b.estimatedCost);
 
-                return _CategorySuggestionSection(
-                  category: cat,
-                  totalUnits: catUnits,
-                  totalCost: catCost,
-                  money: _money,
-                  rows: rows,
-                );
-              },
-            ),
+              return Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: ExpansionTile(
+                  tilePadding: EdgeInsets.zero,
+                  childrenPadding: const EdgeInsets.only(bottom: 8),
+                  title: Text(cat, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  subtitle: Text('Sugerido: $catUnits pzas • ${_money.format(catCost)}'),
+                  children: [
+                    const Divider(height: 1),
+                    ListView.separated(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: rows.length,
+                      separatorBuilder: (_, __) => const Divider(height: 0),
+                      itemBuilder: (_, i) {
+                        final s = rows[i];
+                        return ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: CircleAvatar(
+                            backgroundColor: Colors.orange.shade100,
+                            child: const Icon(Icons.shopping_bag, color: Colors.deepOrange),
+                          ),
+                          title: Text(s.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                          subtitle: Text('SKU ${s.sku} • Stock ${s.stock} • Ventas recientes ${s.soldLastPeriod}'),
+                          trailing: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              Text('Comprar ${s.suggestedQuantity}'),
+                              Text(_money.format(s.estimatedCost), style: const TextStyle(fontWeight: FontWeight.bold)),
+                            ],
+                          ),
+                          onLongPress: () {
+                            final line =
+                                '${s.category}\t${s.sku}\t${s.name}\tStock:${s.stock}\tVend:${s.soldLastPeriod}\tSug:${s.suggestedQuantity}\t${_money.format(s.estimatedCost)}';
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('Copiado: $line')),
+                            );
+                          },
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              );
+            }).toList(),
           ],
         ),
       ),
     );
   }
-}
 
-// ================== UI helpers ==================
-
-class _MiniStatChip extends StatelessWidget {
-  const _MiniStatChip({
-    required this.icon,
-    required this.label,
-    required this.value,
-  });
-
-  final IconData icon;
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Chip(
-      avatar: Icon(icon, size: 18),
-      label: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _miniStat(String k, String v) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.black12),
+        color: Theme.of(context).colorScheme.surface,
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Text(label, style: theme.textTheme.bodySmall),
-          Text(value, style: const TextStyle(fontWeight: FontWeight.w600)),
+          Text('$k: ', style: const TextStyle(fontWeight: FontWeight.w600)),
+          Text(v),
         ],
       ),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
     );
+  }
+
+  int _totalSuggestedUnitsAll() {
+    int total = 0;
+    for (final cat in _suggestionCategoryOrder) {
+      final rows = _suggestionsByCategory[cat] ?? const <_SugRow>[];
+      total += rows.fold<int>(0, (a, b) => a + b.suggestedQuantity);
+    }
+    return total;
+  }
+
+  double _totalEstimatedCostAll() {
+    double total = 0.0;
+    for (final cat in _suggestionCategoryOrder) {
+      final rows = _suggestionsByCategory[cat] ?? const <_SugRow>[];
+      total += rows.fold<double>(0.0, (a, b) => a + b.estimatedCost);
+    }
+    return total;
+  }
+
+  Future<_SugReport> _buildSuggestionsReport(Database db, List<PurchaseSuggestion> suggestions) async {
+    if (suggestions.isEmpty) {
+      return _SugReport(byCategory: {}, categoryOrder: const []);
+    }
+
+    // Mapear categorías por SKU
+    final skus = suggestions.map((s) => s.sku).where((e) => e.trim().isNotEmpty).toSet().toList();
+    final skuToCategory = <String, String>{};
+
+    if (skus.isNotEmpty) {
+      final placeholders = List.filled(skus.length, '?').join(',');
+      final rows = await db.rawQuery('''
+        SELECT sku, COALESCE(NULLIF(TRIM(category), ''), '(Sin categoría)') AS cat
+        FROM products
+        WHERE sku IN ($placeholders)
+      ''', skus);
+
+      for (final r in rows) {
+        final sku = (r['sku'] ?? '').toString();
+        final cat = (r['cat'] ?? '(Sin categoría)').toString();
+        if (sku.isNotEmpty) skuToCategory[sku] = cat;
+      }
+    }
+
+    // Construir filas
+    final byCategory = <String, List<_SugRow>>{};
+    for (final s in suggestions) {
+      final cat = skuToCategory[s.sku] ?? '(Sin categoría)';
+      final row = _SugRow(
+        category: cat,
+        sku: s.sku,
+        name: s.name,
+        stock: s.stock,
+        soldLastPeriod: s.soldLastPeriod,
+        suggestedQuantity: s.suggestedQuantity,
+        estimatedCost: s.estimatedCost,
+      );
+      (byCategory[cat] ??= []).add(row);
+    }
+
+    // Orden: categorías con mayor costo sugerido primero
+    final catOrder = byCategory.keys.toList()
+      ..sort((a, b) {
+        final aCost = (byCategory[a] ?? const []).fold<double>(0.0, (x, y) => x + y.estimatedCost);
+        final bCost = (byCategory[b] ?? const []).fold<double>(0.0, (x, y) => x + y.estimatedCost);
+        return bCost.compareTo(aCost);
+      });
+
+    // Orden interno: mayor suggestedQuantity*estimatedCost (o costo) primero
+    for (final cat in catOrder) {
+      byCategory[cat]!.sort((x, y) => y.estimatedCost.compareTo(x.estimatedCost));
+    }
+
+    return _SugReport(byCategory: byCategory, categoryOrder: catOrder);
+  }
+
+  Future<void> _exportSuggestionsToExcel() async {
+    try {
+      if (_suggestionsByCategory.isEmpty) {
+        _snack('No hay sugerencias para exportar');
+        return;
+      }
+
+      final excel = Excel.createExcel();
+      excel.delete('Sheet1');
+
+      final sheet = excel['Sugerencias_compra'];
+
+      // Encabezados
+      sheet.appendRow([
+        TextCellValue('Categoría'),
+        TextCellValue('SKU'),
+        TextCellValue('Producto'),
+        TextCellValue('Stock'),
+        TextCellValue('Ventas recientes'),
+        TextCellValue('Sugerido comprar'),
+        TextCellValue('Costo estimado'),
+      ]);
+
+      for (final cat in _suggestionCategoryOrder) {
+        final rows = _suggestionsByCategory[cat] ?? const <_SugRow>[];
+
+        for (final r in rows) {
+          sheet.appendRow([
+            TextCellValue(r.category),
+            TextCellValue(r.sku),
+            TextCellValue(r.name),
+            IntCellValue(r.stock),
+            IntCellValue(r.soldLastPeriod),
+            IntCellValue(r.suggestedQuantity),
+            DoubleCellValue(r.estimatedCost),
+          ]);
+        }
+
+        // Totales por categoría
+        final catUnits = rows.fold<int>(0, (a, b) => a + b.suggestedQuantity);
+        final catCost = rows.fold<double>(0.0, (a, b) => a + b.estimatedCost);
+
+        sheet.appendRow([
+          TextCellValue('$cat (TOTAL)'),
+          TextCellValue(''),
+          TextCellValue(''),
+          TextCellValue(''),
+          TextCellValue(''),
+          IntCellValue(catUnits),
+          DoubleCellValue(catCost),
+        ]);
+
+        // Línea en blanco
+        sheet.appendRow([
+          TextCellValue(''),
+          TextCellValue(''),
+          TextCellValue(''),
+          TextCellValue(''),
+          TextCellValue(''),
+          TextCellValue(''),
+          TextCellValue(''),
+        ]);
+      }
+
+      // Totales generales
+      sheet.appendRow([
+        TextCellValue('TOTAL GENERAL'),
+        TextCellValue(''),
+        TextCellValue(''),
+        TextCellValue(''),
+        TextCellValue(''),
+        IntCellValue(_totalSuggestedUnitsAll()),
+        DoubleCellValue(_totalEstimatedCostAll()),
+      ]);
+
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/reporte_sugerencias_compra.xlsx');
+
+      final bytes = excel.encode();
+      if (bytes == null) throw Exception('No se pudo generar el Excel');
+
+      await file.writeAsBytes(bytes, flush: true);
+
+      await Share.shareXFiles(
+        [XFile(file.path)],
+        subject: 'Reporte de sugerencias de compra',
+        text:
+            'Reporte exportado: sugerencias de compra agrupadas por categoría.\n'
+            'Total sugerido: ${_totalSuggestedUnitsAll()} pzas\n'
+            'Costo estimado: ${_money.format(_totalEstimatedCostAll())}',
+      );
+    } catch (e) {
+      _snack('Error exportando Excel: $e');
+    }
   }
 }
 
-class _CategorySuggestionSection extends StatelessWidget {
-  const _CategorySuggestionSection({
-    required this.category,
-    required this.totalUnits,
-    required this.totalCost,
-    required this.money,
-    required this.rows,
-  });
-
-  final String category;
-  final int totalUnits;
-  final double totalCost;
-  final NumberFormat money;
-  final List<_SuggestionRow> rows;
-
-  @override
-  Widget build(BuildContext context) {
-    return ExpansionTile(
-      initiallyExpanded: rows.length <= 6,
-      title: Text(category, style: const TextStyle(fontWeight: FontWeight.w600)),
-      subtitle: Text('Sugerido: $totalUnits pzas • ${money.format(totalCost)}'),
-      children: [
-        const Divider(height: 1),
-        ListView.separated(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          itemCount: rows.length,
-          separatorBuilder: (_, __) => const Divider(height: 1),
-          itemBuilder: (_, i) {
-            final s = rows[i];
-            return ListTile(
-              dense: true,
-              leading: CircleAvatar(
-                backgroundColor: Colors.orange.shade100,
-                child: const Icon(Icons.shopping_bag, color: Colors.deepOrange),
-              ),
-              title: Text(s.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-              subtitle: Text('SKU ${s.sku} • Stock ${s.stock} • Ventas recientes ${s.soldLastPeriod}'),
-              trailing: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text('Comprar ${s.suggestedQuantity}', style: const TextStyle(fontWeight: FontWeight.w600)),
-                  Text(money.format(s.estimatedCost)),
-                ],
-              ),
-            );
-          },
-        ),
-        const SizedBox(height: 8),
-      ],
-    );
-  }
-}
-
-// ================== Modelo interno enriquecido ==================
-
-class _SuggestionRow {
-  _SuggestionRow({
+class _SugRow {
+  _SugRow({
     required this.category,
     required this.sku,
     required this.name,
@@ -958,3 +874,11 @@ class _SuggestionRow {
   final int suggestedQuantity;
   final double estimatedCost;
 }
+
+class _SugReport {
+  _SugReport({required this.byCategory, required this.categoryOrder});
+
+  final Map<String, List<_SugRow>> byCategory;
+  final List<String> categoryOrder;
+}
+```0
