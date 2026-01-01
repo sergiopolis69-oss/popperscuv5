@@ -1,12 +1,14 @@
 // lib/ui/inventory_page.dart
 import 'dart:io';
 
-import 'package:excel/excel.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:sqflite/sqflite.dart';
+
+// ✅ ALIAS para evitar choque con Border de Flutter
+import 'package:excel/excel.dart' as ex;
 
 import '../data/database.dart' as appdb;
 import '../utils/purchase_advisor.dart';
@@ -435,7 +437,6 @@ class _InventoryPageState extends State<InventoryPage> {
         child: CustomScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
-            // Reporte de sugerencias (visual + exportable)
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
@@ -443,8 +444,6 @@ class _InventoryPageState extends State<InventoryPage> {
               ),
             ),
             const SliverToBoxAdapter(child: SizedBox(height: 8)),
-
-            // Filtros
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
@@ -486,8 +485,6 @@ class _InventoryPageState extends State<InventoryPage> {
               ),
             ),
             const SliverToBoxAdapter(child: Divider(height: 0)),
-
-            // Lista de productos
             if (_products.isEmpty)
               const SliverFillRemaining(
                 hasScrollBody: false,
@@ -503,7 +500,6 @@ class _InventoryPageState extends State<InventoryPage> {
                     final cat = (p['category'] == null || (p['category'] as String).trim().isEmpty)
                         ? '(Sin categoría)'
                         : (p['category'] as String);
-
                     return Column(
                       children: [
                         ListTile(
@@ -535,7 +531,7 @@ class _InventoryPageState extends State<InventoryPage> {
     );
   }
 
-  // ===== Reporte visualizable (agrupado por categoría) + export ======================================
+  // ===== Reporte visualizable + export ======================================
   Widget _buildSuggestionsReportCard() {
     if (_loadingRecommendations) {
       return const Card(
@@ -557,14 +553,10 @@ class _InventoryPageState extends State<InventoryPage> {
               const SizedBox(height: 8),
               const Text('Inventario saludable: no hay compras urgentes basadas en las ventas recientes.'),
               const SizedBox(height: 12),
-              Row(
-                children: [
-                  OutlinedButton.icon(
-                    onPressed: _loadRecommendations,
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('Actualizar'),
-                  ),
-                ],
+              OutlinedButton.icon(
+                onPressed: _loadRecommendations,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Actualizar'),
               ),
             ],
           ),
@@ -605,8 +597,6 @@ class _InventoryPageState extends State<InventoryPage> {
             const SizedBox(height: 10),
             const Divider(height: 1),
             const SizedBox(height: 6),
-
-            // Categorías
             ..._suggestionCategoryOrder.map((cat) {
               final rows = _suggestionsByCategory[cat] ?? const <_SugRow>[];
               if (rows.isEmpty) return const SizedBox.shrink();
@@ -671,7 +661,7 @@ class _InventoryPageState extends State<InventoryPage> {
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.black12),
+        border: Border.all(color: Colors.black12), // ✅ ya no choca
         color: Theme.of(context).colorScheme.surface,
       ),
       child: Row(
@@ -750,7 +740,7 @@ class _InventoryPageState extends State<InventoryPage> {
         return bCost.compareTo(aCost);
       });
 
-    // Orden interno: mayor suggestedQuantity*estimatedCost (o costo) primero
+    // Orden interno: mayor costo primero
     for (final cat in catOrder) {
       byCategory[cat]!.sort((x, y) => y.estimatedCost.compareTo(x.estimatedCost));
     }
@@ -765,20 +755,20 @@ class _InventoryPageState extends State<InventoryPage> {
         return;
       }
 
-      final excel = Excel.createExcel();
+      final excel = ex.Excel.createExcel();
       excel.delete('Sheet1');
 
       final sheet = excel['Sugerencias_compra'];
 
       // Encabezados
       sheet.appendRow([
-        TextCellValue('Categoría'),
-        TextCellValue('SKU'),
-        TextCellValue('Producto'),
-        TextCellValue('Stock'),
-        TextCellValue('Ventas recientes'),
-        TextCellValue('Sugerido comprar'),
-        TextCellValue('Costo estimado'),
+        ex.TextCellValue('Categoría'),
+        ex.TextCellValue('SKU'),
+        ex.TextCellValue('Producto'),
+        ex.TextCellValue('Stock'),
+        ex.TextCellValue('Ventas recientes'),
+        ex.TextCellValue('Sugerido comprar'),
+        ex.TextCellValue('Costo estimado'),
       ]);
 
       for (final cat in _suggestionCategoryOrder) {
@@ -786,13 +776,13 @@ class _InventoryPageState extends State<InventoryPage> {
 
         for (final r in rows) {
           sheet.appendRow([
-            TextCellValue(r.category),
-            TextCellValue(r.sku),
-            TextCellValue(r.name),
-            IntCellValue(r.stock),
-            IntCellValue(r.soldLastPeriod),
-            IntCellValue(r.suggestedQuantity),
-            DoubleCellValue(r.estimatedCost),
+            ex.TextCellValue(r.category),
+            ex.TextCellValue(r.sku),
+            ex.TextCellValue(r.name),
+            ex.IntCellValue(r.stock),
+            ex.IntCellValue(r.soldLastPeriod),
+            ex.IntCellValue(r.suggestedQuantity),
+            ex.DoubleCellValue(r.estimatedCost),
           ]);
         }
 
@@ -801,36 +791,36 @@ class _InventoryPageState extends State<InventoryPage> {
         final catCost = rows.fold<double>(0.0, (a, b) => a + b.estimatedCost);
 
         sheet.appendRow([
-          TextCellValue('$cat (TOTAL)'),
-          TextCellValue(''),
-          TextCellValue(''),
-          TextCellValue(''),
-          TextCellValue(''),
-          IntCellValue(catUnits),
-          DoubleCellValue(catCost),
+          ex.TextCellValue('$cat (TOTAL)'),
+          ex.TextCellValue(''),
+          ex.TextCellValue(''),
+          ex.TextCellValue(''),
+          ex.TextCellValue(''),
+          ex.IntCellValue(catUnits),
+          ex.DoubleCellValue(catCost),
         ]);
 
         // Línea en blanco
         sheet.appendRow([
-          TextCellValue(''),
-          TextCellValue(''),
-          TextCellValue(''),
-          TextCellValue(''),
-          TextCellValue(''),
-          TextCellValue(''),
-          TextCellValue(''),
+          ex.TextCellValue(''),
+          ex.TextCellValue(''),
+          ex.TextCellValue(''),
+          ex.TextCellValue(''),
+          ex.TextCellValue(''),
+          ex.TextCellValue(''),
+          ex.TextCellValue(''),
         ]);
       }
 
       // Totales generales
       sheet.appendRow([
-        TextCellValue('TOTAL GENERAL'),
-        TextCellValue(''),
-        TextCellValue(''),
-        TextCellValue(''),
-        TextCellValue(''),
-        IntCellValue(_totalSuggestedUnitsAll()),
-        DoubleCellValue(_totalEstimatedCostAll()),
+        ex.TextCellValue('TOTAL GENERAL'),
+        ex.TextCellValue(''),
+        ex.TextCellValue(''),
+        ex.TextCellValue(''),
+        ex.TextCellValue(''),
+        ex.IntCellValue(_totalSuggestedUnitsAll()),
+        ex.DoubleCellValue(_totalEstimatedCostAll()),
       ]);
 
       final dir = await getTemporaryDirectory();
