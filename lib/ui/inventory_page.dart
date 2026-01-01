@@ -1,12 +1,14 @@
 // lib/ui/inventory_page.dart
 import 'dart:io';
 
-import 'package:excel/excel.dart' as xls;
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:sqflite/sqflite.dart';
+
+// ✅ ALIAS para evitar choque con Border de Flutter
+import 'package:excel/excel.dart' as ex;
 
 import '../data/database.dart' as appdb;
 import '../utils/purchase_advisor.dart';
@@ -27,12 +29,13 @@ class _InventoryPageState extends State<InventoryPage> {
   String? _selectedCategory;
   bool _lowStockOnly = false;
 
-  // Sugerencias de compra
+  // Sugerencias de compra (base)
   List<PurchaseSuggestion> _purchaseSuggestions = [];
   bool _loadingRecommendations = false;
 
-  // Categoría por SKU (para agrupar sugerencias)
-  final Map<String, String> _suggestionCategoryBySku = {};
+  // ===== Reporte (agrupado) =====
+  final Map<String, List<_SugRow>> _suggestionsByCategory = {};
+  final List<String> _suggestionCategoryOrder = [];
 
   // Búsqueda
   final _qCtrl = TextEditingController();
@@ -86,44 +89,29 @@ class _InventoryPageState extends State<InventoryPage> {
     if (!_loadingRecommendations) {
       setState(() => _loadingRecommendations = true);
     }
+
     try {
       final db = await _db();
       final suggestions = await fetchPurchaseSuggestions(db); // <- SIN límite
+
+      // Armar reporte agrupado por categoría (sin cambiar la lógica de recomendaciones)
+      final report = await _buildSuggestionsReport(db, suggestions);
+
       if (!mounted) return;
-
-      // Enriquecer con categoría por SKU para agrupar el reporte
-      await _loadSuggestionCategories(db, suggestions);
-
       setState(() {
         _purchaseSuggestions = suggestions;
+        _suggestionsByCategory
+          ..clear()
+          ..addAll(report.byCategory);
+        _suggestionCategoryOrder
+          ..clear()
+          ..addAll(report.categoryOrder);
         _loadingRecommendations = false;
       });
     } catch (_) {
       if (mounted) {
         setState(() => _loadingRecommendations = false);
       }
-    }
-  }
-
-  Future<void> _loadSuggestionCategories(Database db, List<PurchaseSuggestion> suggestions) async {
-    _suggestionCategoryBySku.clear();
-    if (suggestions.isEmpty) return;
-
-    final skus = suggestions.map((s) => s.sku).where((s) => s.trim().isNotEmpty).toSet().toList();
-    if (skus.isEmpty) return;
-
-    // IN (...) con placeholders
-    final placeholders = List.filled(skus.length, '?').join(',');
-    final rows = await db.rawQuery('''
-      SELECT sku, COALESCE(NULLIF(TRIM(category),''), '(Sin categoría)') AS cat
-      FROM products
-      WHERE sku IN ($placeholders)
-    ''', skus);
-
-    for (final r in rows) {
-      final sku = (r['sku'] ?? '').toString();
-      final cat = (r['cat'] ?? '(Sin categoría)').toString();
-      if (sku.isNotEmpty) _suggestionCategoryBySku[sku] = cat;
     }
   }
 
@@ -180,7 +168,6 @@ class _InventoryPageState extends State<InventoryPage> {
   }
 
   void _snack(String msg) {
-    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
@@ -203,12 +190,16 @@ class _InventoryPageState extends State<InventoryPage> {
       _editingId = p['id'] as int;
       _skuCtrl.text = (p['sku'] ?? '').toString();
       _nameCtrl.text = (p['name'] ?? '').toString();
-      _salePriceCtrl.text = ((p['default_sale_price'] as num?)?.toDouble() ?? 0).toStringAsFixed(2);
-      _lastCostCtrl.text = ((p['last_purchase_price'] as num?)?.toDouble() ?? 0).toStringAsFixed(2);
+      _salePriceCtrl.text =
+          ((p['default_sale_price'] as num?)?.toDouble() ?? 0).toStringAsFixed(2);
+      _lastCostCtrl.text =
+          ((p['last_purchase_price'] as num?)?.toDouble() ?? 0).toStringAsFixed(2);
       _stockCtrl.text = ((p['stock'] as num?)?.toInt() ?? 0).toString();
       _categoryCtrl.text = '';
       _selectedDialogCategory =
-          (p['category'] == null || (p['category'] as String).trim().isEmpty) ? '(Sin categoría)' : (p['category'] as String);
+          (p['category'] == null || (p['category'] as String).trim().isEmpty)
+              ? '(Sin categoría)'
+              : (p['category'] as String);
     });
     _showProductDialog(title: 'Editar producto');
   }
@@ -233,7 +224,7 @@ class _InventoryPageState extends State<InventoryPage> {
     await _loadAll();
   }
 
-  // ✅ Popup corregido: padding con teclado + safe bottom (botones android)
+  // ✅ Ajuste: bottom sheet no se encima con nav bar / teclado
   Future<void> _showProductDialog({required String title}) async {
     if (_categories.isEmpty) {
       await _loadCategories();
@@ -247,106 +238,103 @@ class _InventoryPageState extends State<InventoryPage> {
       showDragHandle: true,
       builder: (_) {
         final mq = MediaQuery.of(context);
-        final bottomSafe = mq.padding.bottom;
         final keyboard = mq.viewInsets.bottom;
-        const extraBottom = 16.0;
-
-        return SafeArea(
-          top: false,
-          child: Padding(
-            padding: EdgeInsets.only(
-              left: 16,
-              right: 16,
-              top: 8,
-              bottom: keyboard + bottomSafe + extraBottom,
-            ),
-            child: SingleChildScrollView(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(title, style: Theme.of(context).textTheme.titleLarge),
-                  const SizedBox(height: 12),
-                  TextField(controller: _skuCtrl, decoration: const InputDecoration(labelText: 'SKU *')),
-                  const SizedBox(height: 8),
-                  TextField(controller: _nameCtrl, decoration: const InputDecoration(labelText: 'Nombre *')),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: DropdownButtonFormField<String>(
-                          value: _selectedDialogCategory,
-                          items: <String>['(Sin categoría)', ..._categories.where((c) => c != '(Sin categoría)')]
-                              .map((c) => DropdownMenuItem(value: c, child: Text(c)))
-                              .toList(),
-                          onChanged: (v) => setState(() => _selectedDialogCategory = v),
-                          decoration: const InputDecoration(labelText: 'Categoría'),
-                        ),
+        final bottomSafe = mq.padding.bottom; // ✅ nav bar / gesture area
+        return Padding(
+          padding: EdgeInsets.only(
+            left: 16,
+            right: 16,
+            top: 8,
+            bottom: keyboard + bottomSafe + 16,
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: Theme.of(context).textTheme.titleLarge),
+                const SizedBox(height: 12),
+                TextField(controller: _skuCtrl, decoration: const InputDecoration(labelText: 'SKU *')),
+                const SizedBox(height: 8),
+                TextField(controller: _nameCtrl, decoration: const InputDecoration(labelText: 'Nombre *')),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<String>(
+                        value: _selectedDialogCategory,
+                        items: <String>['(Sin categoría)', ..._categories.where((c) => c != '(Sin categoría)')]
+                            .map((c) => DropdownMenuItem(
+                                  value: c,
+                                  child: Text(c),
+                                ))
+                            .toList(),
+                        onChanged: (v) => setState(() => _selectedDialogCategory = v),
+                        decoration: const InputDecoration(labelText: 'Categoría'),
                       ),
-                      const SizedBox(width: 8),
-                      IconButton(
-                        tooltip: 'Agregar nueva categoría',
-                        onPressed: () async {
-                          final newCat = await _askNewCategory();
-                          if (newCat != null && newCat.trim().isNotEmpty) {
-                            if (!_categories.contains(newCat)) {
-                              setState(() => _categories = [..._categories, newCat]);
-                            }
-                            setState(() => _selectedDialogCategory = newCat);
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      tooltip: 'Agregar nueva categoría',
+                      onPressed: () async {
+                        final newCat = await _askNewCategory();
+                        if (newCat != null && newCat.trim().isNotEmpty) {
+                          if (!_categories.contains(newCat)) {
+                            setState(() => _categories = [..._categories, newCat]);
                           }
+                          setState(() => _selectedDialogCategory = newCat);
+                        }
+                      },
+                      icon: const Icon(Icons.add),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _salePriceCtrl,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        decoration: const InputDecoration(labelText: 'Precio de venta'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextField(
+                        controller: _lastCostCtrl,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        decoration: const InputDecoration(labelText: 'Último costo de compra'),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: _stockCtrl,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: 'Existencia'),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    if (_editingId != null)
+                      TextButton.icon(
+                        onPressed: () {
+                          Navigator.of(context).pop();
+                          _deleteProduct(_editingId!);
                         },
-                        icon: const Icon(Icons.add),
+                        icon: const Icon(Icons.delete_outline),
+                        label: const Text('Eliminar'),
                       ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          controller: _salePriceCtrl,
-                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                          decoration: const InputDecoration(labelText: 'Precio de venta'),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: TextField(
-                          controller: _lastCostCtrl,
-                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                          decoration: const InputDecoration(labelText: 'Último costo de compra'),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: _stockCtrl,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(labelText: 'Existencia'),
-                  ),
-                  const SizedBox(height: 16),
-                  Row(
-                    children: [
-                      if (_editingId != null)
-                        TextButton.icon(
-                          onPressed: () {
-                            Navigator.of(context).pop();
-                            _deleteProduct(_editingId!);
-                          },
-                          icon: const Icon(Icons.delete_outline),
-                          label: const Text('Eliminar'),
-                        ),
-                      const Spacer(),
-                      FilledButton.icon(
-                        onPressed: _saveProduct,
-                        icon: const Icon(Icons.save),
-                        label: const Text('Guardar'),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
+                    const Spacer(),
+                    FilledButton.icon(
+                      onPressed: _saveProduct,
+                      icon: const Icon(Icons.save),
+                      label: const Text('Guardar'),
+                    ),
+                  ],
+                ),
+              ],
             ),
           ),
         );
@@ -414,283 +402,191 @@ class _InventoryPageState extends State<InventoryPage> {
   }
 
   // =======================
-  // REPORTE SUGERENCIAS + EXCEL
+  // NUEVO: Resumen / historial por SKU
   // =======================
-  Map<String, List<PurchaseSuggestion>> _groupSuggestionsByCategory() {
-    final map = <String, List<PurchaseSuggestion>>{};
-    for (final s in _purchaseSuggestions) {
-      final cat = _suggestionCategoryBySku[s.sku] ?? '(Sin categoría)';
-      (map[cat] ??= []).add(s);
-    }
-    // Orden por categoría y por costo desc dentro
-    final sortedKeys = map.keys.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
-    final out = <String, List<PurchaseSuggestion>>{};
-    for (final k in sortedKeys) {
-      final list = map[k]!..sort((a, b) => b.estimatedCost.compareTo(a.estimatedCost));
-      out[k] = list;
-    }
-    return out;
-  }
+  Future<void> _showSkuHistory(Map<String, dynamic> p) async {
+    final db = await _db();
+    final productId = (p['id'] as num).toInt();
+    final sku = (p['sku'] ?? '').toString();
+    final name = (p['name'] ?? '').toString();
+    final stock = ((p['stock'] as num?)?.toInt() ?? 0);
 
-  Future<void> _exportSuggestionsToExcel() async {
-    if (_purchaseSuggestions.isEmpty) {
-      _snack('No hay sugerencias para exportar');
-      return;
-    }
+    // --- Ventas (últimas 50) + totales ---
+    final salesAgg = await db.rawQuery('''
+      SELECT
+        COALESCE(SUM(si.quantity),0) AS qty,
+        COALESCE(SUM(si.quantity * si.unit_price),0) AS revenue
+      FROM sale_items si
+      JOIN sales s ON s.id = si.sale_id
+      WHERE si.product_id = ?
+    ''', [productId]);
 
-    try {
-      final grouped = _groupSuggestionsByCategory();
-      final excel = xls.Excel.createExcel();
-      final sheet = excel['Sugerencias'];
+    final soldQty = ((salesAgg.first['qty'] as num?) ?? 0).toInt();
+    final revenue = ((salesAgg.first['revenue'] as num?) ?? 0).toDouble();
 
-      // Encabezados
-      sheet.appendRow([
-        xls.TextCellValue('Categoría'),
-        xls.TextCellValue('SKU'),
-        xls.TextCellValue('Producto'),
-        xls.TextCellValue('Stock'),
-        xls.TextCellValue('Ventas recientes'),
-        xls.TextCellValue('Sugerido'),
-        xls.TextCellValue('Costo estimado'),
-      ]);
+    final salesRows = await db.rawQuery('''
+      SELECT s.date AS date, si.quantity AS qty, si.unit_price AS unit_price
+      FROM sale_items si
+      JOIN sales s ON s.id = si.sale_id
+      WHERE si.product_id = ?
+      ORDER BY s.date DESC, si.sale_id DESC
+      LIMIT 50
+    ''', [productId]);
 
-      double grandTotal = 0.0;
+    // --- Compras: intentamos detectar tablas y columna de costo ---
+    int boughtQty = 0;
+    double boughtCost = 0.0;
+    List<Map<String, dynamic>> purchaseRows = [];
 
-      for (final entry in grouped.entries) {
-        final cat = entry.key;
-        final items = entry.value;
+    Future<bool> tryLoadPurchases(String costCol) async {
+      try {
+        final purAgg = await db.rawQuery('''
+          SELECT
+            COALESCE(SUM(pi.quantity),0) AS qty,
+            COALESCE(SUM(pi.quantity * COALESCE(pi.$costCol, 0)),0) AS cost
+          FROM purchase_items pi
+          JOIN purchases p ON p.id = pi.purchase_id
+          WHERE pi.product_id = ?
+        ''', [productId]);
 
-        // Separador de categoría
-        sheet.appendRow([
-          xls.TextCellValue(cat.toUpperCase()),
-          xls.TextCellValue(''),
-          xls.TextCellValue(''),
-          xls.TextCellValue(''),
-          xls.TextCellValue(''),
-          xls.TextCellValue(''),
-          xls.TextCellValue(''),
-        ]);
+        boughtQty = ((purAgg.first['qty'] as num?) ?? 0).toInt();
+        boughtCost = ((purAgg.first['cost'] as num?) ?? 0).toDouble();
 
-        double catTotal = 0.0;
-        for (final s in items) {
-          catTotal += s.estimatedCost;
-          sheet.appendRow([
-            xls.TextCellValue(cat),
-            xls.TextCellValue(s.sku),
-            xls.TextCellValue(s.name),
-            xls.IntCellValue(s.stock),
-            xls.IntCellValue(s.soldLastPeriod),
-            xls.IntCellValue(s.suggestedQuantity),
-            xls.DoubleCellValue(double.parse(s.estimatedCost.toStringAsFixed(2))),
-          ]);
-        }
+        final rows = await db.rawQuery('''
+          SELECT p.date AS date, pi.quantity AS qty, COALESCE(pi.$costCol,0) AS unit_cost
+          FROM purchase_items pi
+          JOIN purchases p ON p.id = pi.purchase_id
+          WHERE pi.product_id = ?
+          ORDER BY p.date DESC, pi.purchase_id DESC
+          LIMIT 50
+        ''', [productId]);
 
-        grandTotal += catTotal;
-
-        // Total por categoría
-        sheet.appendRow([
-          xls.TextCellValue('TOTAL $cat'),
-          xls.TextCellValue(''),
-          xls.TextCellValue(''),
-          xls.TextCellValue(''),
-          xls.TextCellValue(''),
-          xls.TextCellValue(''),
-          xls.DoubleCellValue(double.parse(catTotal.toStringAsFixed(2))),
-        ]);
-
-        // Línea en blanco
-        sheet.appendRow([
-          xls.TextCellValue(''),
-          xls.TextCellValue(''),
-          xls.TextCellValue(''),
-          xls.TextCellValue(''),
-          xls.TextCellValue(''),
-          xls.TextCellValue(''),
-          xls.TextCellValue(''),
-        ]);
+        purchaseRows = rows.cast<Map<String, dynamic>>();
+        return true;
+      } catch (_) {
+        return false;
       }
-
-      // Total general
-      sheet.appendRow([
-        xls.TextCellValue('TOTAL GENERAL'),
-        xls.TextCellValue(''),
-        xls.TextCellValue(''),
-        xls.TextCellValue(''),
-        xls.TextCellValue(''),
-        xls.TextCellValue(''),
-        xls.DoubleCellValue(double.parse(grandTotal.toStringAsFixed(2))),
-      ]);
-
-      final bytes = excel.encode();
-      if (bytes == null) {
-        _snack('No se pudo generar el Excel');
-        return;
-      }
-
-      final dir = await getTemporaryDirectory();
-      final ts = DateFormat('yyyyMMdd_HHmm').format(DateTime.now());
-      final file = File('${dir.path}/reporte_sugerencias_compra_$ts.xlsx');
-      await file.writeAsBytes(bytes, flush: true);
-
-      await Share.shareXFiles(
-        [XFile(file.path)],
-        subject: 'Reporte de sugerencias de compra',
-        text: 'Reporte agrupado por categoría. Total: ${_money.format(grandTotal)}',
-      );
-    } catch (e) {
-      _snack('Error exportando a Excel: $e');
     }
-  }
 
-  @override
-  Widget build(BuildContext context) {
-    final lowCount = _products.where((p) => (p['stock'] as num? ?? 0) <= 2).length;
+    // Primero unit_cost, si no, unit_price, si no, no mostramos compras
+    final hasPurchases = await tryLoadPurchases('unit_cost') || await tryLoadPurchases('unit_price');
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Inventario'),
-        actions: [
-          IconButton(onPressed: _loadAll, icon: const Icon(Icons.refresh)),
-        ],
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(56),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-            child: TextField(
-              controller: _qCtrl,
-              decoration: InputDecoration(
-                hintText: 'Buscar por SKU o nombre…',
-                prefixIcon: const Icon(Icons.search),
-                filled: true,
-                isDense: true,
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                suffixIcon: _qCtrl.text.isEmpty
-                    ? null
-                    : IconButton(
-                        onPressed: () {
-                          _qCtrl.clear();
-                          _loadProducts();
-                        },
-                        icon: const Icon(Icons.clear),
-                      ),
+    // Utilidad estimada (si hay compras: revenue - boughtCost, si no: revenue - last_purchase* soldQty)
+    final lastCost = ((p['last_purchase_price'] as num?)?.toDouble() ?? 0.0);
+    final estCostForSold = hasPurchases ? boughtCost : (soldQty * lastCost);
+    final estProfit = revenue - estCostForSold;
+    final estMargin = revenue > 0 ? (estProfit / revenue) : 0.0;
+
+    if (!mounted) return;
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      showDragHandle: true,
+      builder: (_) {
+        final mq = MediaQuery.of(context);
+        final bottomSafe = mq.padding.bottom;
+        return Padding(
+          padding: EdgeInsets.fromLTRB(16, 8, 16, bottomSafe + 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('$sku • $name', style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 10),
+
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  _chipStat('Stock', '$stock'),
+                  _chipStat('Vendidas', '$soldQty'),
+                  _chipStat('Ingresos', _money.format(revenue)),
+                  _chipStat('Costo', _money.format(estCostForSold)),
+                  _chipStat('Utilidad', _money.format(estProfit)),
+                  _chipStat('Margen', '${(estMargin * 100).toStringAsFixed(1)}%'),
+                  if (hasPurchases) _chipStat('Compradas', '$boughtQty'),
+                ],
               ),
-              onChanged: (_) => _loadProducts(),
-            ),
-          ),
-        ),
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _startCreate,
-        icon: const Icon(Icons.add),
-        label: const Text('Agregar'),
-      ),
-      body: RefreshIndicator(
-        onRefresh: _loadAll,
-        child: CustomScrollView(
-          physics: const AlwaysScrollableScrollPhysics(),
-          slivers: [
-            // Reporte de sugerencias (agrupado + export)
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-                child: _buildSuggestionsReportCard(),
-              ),
-            ),
-            const SliverToBoxAdapter(child: SizedBox(height: 8)),
 
-            // Filtros
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
-                child: Row(
+              const SizedBox(height: 12),
+              const Divider(),
+
+              Expanded(
+                child: ListView(
                   children: [
-                    Expanded(
-                      child: DropdownButtonFormField<String?>(
-                        value: _selectedCategory,
-                        isExpanded: true,
-                        items: <String?>[null, ..._categories]
-                            .map((c) => DropdownMenuItem<String?>(
-                                  value: c,
-                                  child: Text(c ?? 'Todas las categorías'),
-                                ))
-                            .toList(),
-                        onChanged: (v) {
-                          setState(() => _selectedCategory = v);
-                          _loadProducts();
-                        },
-                        decoration: const InputDecoration(
-                          isDense: true,
-                          labelText: 'Filtrar por categoría',
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    FilterChip(
-                      label: Text('Existencia ≤ 2${lowCount > 0 ? ' ($lowCount)' : ''}'),
-                      selected: _lowStockOnly,
-                      onSelected: (v) {
-                        setState(() => _lowStockOnly = v);
-                        _loadProducts();
-                      },
-                      avatar: const Icon(Icons.warning_amber_outlined, size: 18),
-                    ),
+                    Text('Historial de ventas', style: Theme.of(context).textTheme.titleMedium),
+                    const SizedBox(height: 6),
+                    if (salesRows.isEmpty)
+                      const Text('Sin ventas registradas para este SKU.')
+                    else
+                      ...salesRows.map((r) {
+                        final date = (r['date'] ?? '').toString();
+                        final qty = ((r['qty'] as num?) ?? 0).toInt();
+                        final unit = ((r['unit_price'] as num?) ?? 0).toDouble();
+                        final total = qty * unit;
+                        return ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading: const Icon(Icons.trending_up),
+                          title: Text('${qty} × ${_money.format(unit)}'),
+                          subtitle: Text(date),
+                          trailing: Text(_money.format(total), style: const TextStyle(fontWeight: FontWeight.w700)),
+                        );
+                      }),
+
+                    const SizedBox(height: 10),
+                    Text('Historial de compras', style: Theme.of(context).textTheme.titleMedium),
+                    const SizedBox(height: 6),
+                    if (!hasPurchases)
+                      const Text('No se encontró tabla de compras (purchase_items/purchases) en esta BD.')
+                    else if (purchaseRows.isEmpty)
+                      const Text('Sin compras registradas para este SKU.')
+                    else
+                      ...purchaseRows.map((r) {
+                        final date = (r['date'] ?? '').toString();
+                        final qty = ((r['qty'] as num?) ?? 0).toInt();
+                        final unit = ((r['unit_cost'] as num?) ?? 0).toDouble();
+                        final total = qty * unit;
+                        return ListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          leading: const Icon(Icons.shopping_cart),
+                          title: Text('${qty} × ${_money.format(unit)}'),
+                          subtitle: Text(date),
+                          trailing: Text(_money.format(total), style: const TextStyle(fontWeight: FontWeight.w700)),
+                        );
+                      }),
                   ],
                 ),
               ),
-            ),
-            const SliverToBoxAdapter(child: Divider(height: 0)),
+            ],
+          ),
+        );
+      },
+    );
+  }
 
-            // Lista de productos
-            if (_products.isEmpty)
-              const SliverFillRemaining(
-                hasScrollBody: false,
-                child: Center(child: Text('No hay productos')),
-              )
-            else
-              SliverList(
-                delegate: SliverChildBuilderDelegate(
-                  (context, index) {
-                    final p = _products[index];
-                    final stock = (p['stock'] as num?)?.toInt() ?? 0;
-                    final low = stock <= 2;
-                    final cat = (p['category'] == null || (p['category'] as String).trim().isEmpty)
-                        ? '(Sin categoría)'
-                        : (p['category'] as String);
-
-                    return Column(
-                      children: [
-                        ListTile(
-                          leading: CircleAvatar(
-                            backgroundColor: low ? Colors.red.shade50 : Colors.blue.shade50,
-                            child: Icon(
-                              low ? Icons.priority_high : Icons.inventory_2,
-                              color: low ? Colors.red : Colors.blue,
-                            ),
-                          ),
-                          title: Text(p['name'] ?? '', maxLines: 1, overflow: TextOverflow.ellipsis),
-                          subtitle: Text('SKU: ${p['sku']} • $cat • Stock: $stock'),
-                          trailing: IconButton(
-                            icon: const Icon(Icons.edit),
-                            tooltip: 'Editar',
-                            onPressed: () => _startEdit(p),
-                          ),
-                        ),
-                        if (index != _products.length - 1) const Divider(height: 0),
-                      ],
-                    );
-                  },
-                  childCount: _products.length,
-                ),
-              ),
-            const SliverToBoxAdapter(child: SizedBox(height: 24)),
-          ],
-        ),
+  Widget _chipStat(String k, String v) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.black12),
+        color: Theme.of(context).colorScheme.surface,
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text('$k: ', style: const TextStyle(fontWeight: FontWeight.w600)),
+          Text(v),
+        ],
       ),
     );
   }
 
-  // ===== Reporte visual (agrupado por categorías) + Export Excel ============
+  // ===== Reporte visualizable + export ======================================
   Widget _buildSuggestionsReportCard() {
     if (_loadingRecommendations) {
       return const Card(
@@ -701,88 +597,91 @@ class _InventoryPageState extends State<InventoryPage> {
       );
     }
 
-    if (_purchaseSuggestions.isEmpty) {
+    if (_purchaseSuggestions.isEmpty || _suggestionsByCategory.isEmpty) {
       return Card(
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: const [
-              Text('Sugerencias de compra', style: TextStyle(fontWeight: FontWeight.bold)),
-              SizedBox(height: 8),
-              Text('Inventario saludable: no hay compras urgentes basadas en las ventas recientes.'),
+            children: [
+              const Text('Reporte de sugerencias de compra', style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              const Text('Inventario saludable: no hay compras urgentes basadas en las ventas recientes.'),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: _loadRecommendations,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Actualizar'),
+              ),
             ],
           ),
         ),
       );
     }
 
-    final grouped = _groupSuggestionsByCategory();
-
-    double grandTotal = 0;
-    for (final list in grouped.values) {
-      grandTotal += list.fold<double>(0.0, (sum, s) => sum + s.estimatedCost);
-    }
+    final totalUnits = _totalSuggestedUnitsAll();
+    final totalCost = _totalEstimatedCostAll();
 
     return Card(
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
+            const Text('Reporte de sugerencias de compra', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 12,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                const Expanded(
-                  child: Text('Sugerencias de compra', style: TextStyle(fontWeight: FontWeight.bold)),
+                _miniStat('Total sugerido', '$totalUnits pzas'),
+                _miniStat('Costo estimado', _money.format(totalCost)),
+                OutlinedButton.icon(
+                  onPressed: _loadRecommendations,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Actualizar'),
                 ),
-                IconButton(
-                  tooltip: 'Exportar a Excel',
+                FilledButton.icon(
                   onPressed: _exportSuggestionsToExcel,
-                  icon: const Icon(Icons.table_view),
+                  icon: const Icon(Icons.file_download),
+                  label: const Text('Exportar Excel'),
                 ),
               ],
             ),
+            const SizedBox(height: 10),
+            const Divider(height: 1),
             const SizedBox(height: 6),
-            Text(
-              'Total estimado sugerido: ${_money.format(grandTotal)} • Categorías: ${grouped.length} • SKUs: ${_purchaseSuggestions.length}',
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-            const SizedBox(height: 12),
+            ..._suggestionCategoryOrder.map((cat) {
+              final rows = _suggestionsByCategory[cat] ?? const <_SugRow>[];
+              if (rows.isEmpty) return const SizedBox.shrink();
 
-            // Secciones por categoría (expandibles)
-            ...grouped.entries.map((entry) {
-              final cat = entry.key;
-              final items = entry.value;
-              final catTotal = items.fold<double>(0.0, (sum, s) => sum + s.estimatedCost);
+              final catUnits = rows.fold<int>(0, (a, b) => a + b.suggestedQuantity);
+              final catCost = rows.fold<double>(0.0, (a, b) => a + b.estimatedCost);
 
-              return Container(
-                margin: const EdgeInsets.only(bottom: 10),
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.black12), // Flutter Border (ya no choca con excel)
-                  borderRadius: BorderRadius.circular(12),
-                ),
+              return Padding(
+                padding: const EdgeInsets.only(top: 6),
                 child: ExpansionTile(
-                  tilePadding: const EdgeInsets.symmetric(horizontal: 12),
-                  childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                  title: Text(cat),
-                  subtitle: Text('${items.length} sugerencias • Total ${_money.format(catTotal)}'),
+                  tilePadding: EdgeInsets.zero,
+                  childrenPadding: const EdgeInsets.only(bottom: 8),
+                  title: Text(cat, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  subtitle: Text('Sugerido: $catUnits pzas • ${_money.format(catCost)}'),
                   children: [
                     const Divider(height: 1),
-                    const SizedBox(height: 8),
                     ListView.separated(
                       shrinkWrap: true,
                       physics: const NeverScrollableScrollPhysics(),
-                      itemCount: items.length,
-                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemCount: rows.length,
+                      separatorBuilder: (_, __) => const Divider(height: 0),
                       itemBuilder: (_, i) {
-                        final s = items[i];
+                        final s = rows[i];
                         return ListTile(
                           contentPadding: EdgeInsets.zero,
                           leading: CircleAvatar(
                             backgroundColor: Colors.orange.shade100,
                             child: const Icon(Icons.shopping_bag, color: Colors.deepOrange),
                           ),
-                          title: Text('${s.name}', maxLines: 1, overflow: TextOverflow.ellipsis),
+                          title: Text(s.name, maxLines: 1, overflow: TextOverflow.ellipsis),
                           subtitle: Text('SKU ${s.sku} • Stock ${s.stock} • Ventas recientes ${s.soldLastPeriod}'),
                           trailing: Column(
                             mainAxisAlignment: MainAxisAlignment.center,
@@ -793,8 +692,11 @@ class _InventoryPageState extends State<InventoryPage> {
                             ],
                           ),
                           onLongPress: () {
-                            final line = '${cat}\t${s.sku}\t${s.name}\tStock:${s.stock}\tVend:${s.soldLastPeriod}\tSug:${s.suggestedQuantity}\t${_money.format(s.estimatedCost)}';
-                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Copiado: $line')));
+                            final line =
+                                '${s.category}\t${s.sku}\t${s.name}\tStock:${s.stock}\tVend:${s.soldLastPeriod}\tSug:${s.suggestedQuantity}\t${_money.format(s.estimatedCost)}';
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('Copiado: $line')),
+                            );
                           },
                         );
                       },
@@ -808,4 +710,219 @@ class _InventoryPageState extends State<InventoryPage> {
       ),
     );
   }
+
+  Widget _miniStat(String k, String v) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.black12), // ✅ ya no choca
+        color: Theme.of(context).colorScheme.surface,
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text('$k: ', style: const TextStyle(fontWeight: FontWeight.w600)),
+          Text(v),
+        ],
+      ),
+    );
+  }
+
+  int _totalSuggestedUnitsAll() {
+    int total = 0;
+    for (final cat in _suggestionCategoryOrder) {
+      final rows = _suggestionsByCategory[cat] ?? const <_SugRow>[];
+      total += rows.fold<int>(0, (a, b) => a + b.suggestedQuantity);
+    }
+    return total;
+  }
+
+  double _totalEstimatedCostAll() {
+    double total = 0.0;
+    for (final cat in _suggestionCategoryOrder) {
+      final rows = _suggestionsByCategory[cat] ?? const <_SugRow>[];
+      total += rows.fold<double>(0.0, (a, b) => a + b.estimatedCost);
+    }
+    return total;
+  }
+
+  Future<_SugReport> _buildSuggestionsReport(Database db, List<PurchaseSuggestion> suggestions) async {
+    if (suggestions.isEmpty) {
+      return _SugReport(byCategory: {}, categoryOrder: const []);
+    }
+
+    // Mapear categorías por SKU
+    final skus = suggestions.map((s) => s.sku).where((e) => e.trim().isNotEmpty).toSet().toList();
+    final skuToCategory = <String, String>{};
+
+    if (skus.isNotEmpty) {
+      final placeholders = List.filled(skus.length, '?').join(',');
+      final rows = await db.rawQuery('''
+        SELECT sku, COALESCE(NULLIF(TRIM(category), ''), '(Sin categoría)') AS cat
+        FROM products
+        WHERE sku IN ($placeholders)
+      ''', skus);
+
+      for (final r in rows) {
+        final sku = (r['sku'] ?? '').toString();
+        final cat = (r['cat'] ?? '(Sin categoría)').toString();
+        if (sku.isNotEmpty) skuToCategory[sku] = cat;
+      }
+    }
+
+    // Construir filas
+    final byCategory = <String, List<_SugRow>>{};
+    for (final s in suggestions) {
+      final cat = skuToCategory[s.sku] ?? '(Sin categoría)';
+      final row = _SugRow(
+        category: cat,
+        sku: s.sku,
+        name: s.name,
+        stock: s.stock,
+        soldLastPeriod: s.soldLastPeriod,
+        suggestedQuantity: s.suggestedQuantity,
+        estimatedCost: s.estimatedCost,
+      );
+      (byCategory[cat] ??= []).add(row);
+    }
+
+    // Orden: categorías con mayor costo sugerido primero
+    final catOrder = byCategory.keys.toList()
+      ..sort((a, b) {
+        final aCost = (byCategory[a] ?? const []).fold<double>(0.0, (x, y) => x + y.estimatedCost);
+        final bCost = (byCategory[b] ?? const []).fold<double>(0.0, (x, y) => x + y.estimatedCost);
+        return bCost.compareTo(aCost);
+      });
+
+    // Orden interno: mayor costo primero
+    for (final cat in catOrder) {
+      byCategory[cat]!.sort((x, y) => y.estimatedCost.compareTo(x.estimatedCost));
+    }
+
+    return _SugReport(byCategory: byCategory, categoryOrder: catOrder);
+  }
+
+  Future<void> _exportSuggestionsToExcel() async {
+    try {
+      if (_suggestionsByCategory.isEmpty) {
+        _snack('No hay sugerencias para exportar');
+        return;
+      }
+
+      final excel = ex.Excel.createExcel();
+      excel.delete('Sheet1');
+
+      final sheet = excel['Sugerencias_compra'];
+
+      // Encabezados
+      sheet.appendRow([
+        ex.TextCellValue('Categoría'),
+        ex.TextCellValue('SKU'),
+        ex.TextCellValue('Producto'),
+        ex.TextCellValue('Stock'),
+        ex.TextCellValue('Ventas recientes'),
+        ex.TextCellValue('Sugerido comprar'),
+        ex.TextCellValue('Costo estimado'),
+      ]);
+
+      for (final cat in _suggestionCategoryOrder) {
+        final rows = _suggestionsByCategory[cat] ?? const <_SugRow>[];
+
+        for (final r in rows) {
+          sheet.appendRow([
+            ex.TextCellValue(r.category),
+            ex.TextCellValue(r.sku),
+            ex.TextCellValue(r.name),
+            ex.IntCellValue(r.stock),
+            ex.IntCellValue(r.soldLastPeriod),
+            ex.IntCellValue(r.suggestedQuantity),
+            ex.DoubleCellValue(r.estimatedCost),
+          ]);
+        }
+
+        // Totales por categoría
+        final catUnits = rows.fold<int>(0, (a, b) => a + b.suggestedQuantity);
+        final catCost = rows.fold<double>(0.0, (a, b) => a + b.estimatedCost);
+
+        sheet.appendRow([
+          ex.TextCellValue('$cat (TOTAL)'),
+          ex.TextCellValue(''),
+          ex.TextCellValue(''),
+          ex.TextCellValue(''),
+          ex.TextCellValue(''),
+          ex.IntCellValue(catUnits),
+          ex.DoubleCellValue(catCost),
+        ]);
+
+        // Línea en blanco
+        sheet.appendRow([
+          ex.TextCellValue(''),
+          ex.TextCellValue(''),
+          ex.TextCellValue(''),
+          ex.TextCellValue(''),
+          ex.TextCellValue(''),
+          ex.TextCellValue(''),
+          ex.TextCellValue(''),
+        ]);
+      }
+
+      // Totales generales
+      sheet.appendRow([
+        ex.TextCellValue('TOTAL GENERAL'),
+        ex.TextCellValue(''),
+        ex.TextCellValue(''),
+        ex.TextCellValue(''),
+        ex.TextCellValue(''),
+        ex.IntCellValue(_totalSuggestedUnitsAll()),
+        ex.DoubleCellValue(_totalEstimatedCostAll()),
+      ]);
+
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/reporte_sugerencias_compra.xlsx');
+
+      final bytes = excel.encode();
+      if (bytes == null) throw Exception('No se pudo generar el Excel');
+
+      await file.writeAsBytes(bytes, flush: true);
+
+      await Share.shareXFiles(
+        [XFile(file.path)],
+        subject: 'Reporte de sugerencias de compra',
+        text:
+            'Reporte exportado: sugerencias de compra agrupadas por categoría.\n'
+            'Total sugerido: ${_totalSuggestedUnitsAll()} pzas\n'
+            'Costo estimado: ${_money.format(_totalEstimatedCostAll())}',
+      );
+    } catch (e) {
+      _snack('Error exportando Excel: $e');
+    }
+  }
+}
+
+class _SugRow {
+  _SugRow({
+    required this.category,
+    required this.sku,
+    required this.name,
+    required this.stock,
+    required this.soldLastPeriod,
+    required this.suggestedQuantity,
+    required this.estimatedCost,
+  });
+
+  final String category;
+  final String sku;
+  final String name;
+  final int stock;
+  final int soldLastPeriod;
+  final int suggestedQuantity;
+  final double estimatedCost;
+}
+
+class _SugReport {
+  _SugReport({required this.byCategory, required this.categoryOrder});
+
+  final Map<String, List<_SugRow>> byCategory;
+  final List<String> categoryOrder;
 }
