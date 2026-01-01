@@ -1,6 +1,11 @@
 // lib/ui/inventory_page.dart
+import 'dart:io';
+
+import 'package:excel/excel.dart' as xls;
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:sqflite/sqflite.dart';
 
 import '../data/database.dart' as appdb;
@@ -25,6 +30,9 @@ class _InventoryPageState extends State<InventoryPage> {
   // Sugerencias de compra
   List<PurchaseSuggestion> _purchaseSuggestions = [];
   bool _loadingRecommendations = false;
+
+  // Categoría por SKU (para agrupar sugerencias)
+  final Map<String, String> _suggestionCategoryBySku = {};
 
   // Búsqueda
   final _qCtrl = TextEditingController();
@@ -82,6 +90,10 @@ class _InventoryPageState extends State<InventoryPage> {
       final db = await _db();
       final suggestions = await fetchPurchaseSuggestions(db); // <- SIN límite
       if (!mounted) return;
+
+      // Enriquecer con categoría por SKU para agrupar el reporte
+      await _loadSuggestionCategories(db, suggestions);
+
       setState(() {
         _purchaseSuggestions = suggestions;
         _loadingRecommendations = false;
@@ -90,6 +102,28 @@ class _InventoryPageState extends State<InventoryPage> {
       if (mounted) {
         setState(() => _loadingRecommendations = false);
       }
+    }
+  }
+
+  Future<void> _loadSuggestionCategories(Database db, List<PurchaseSuggestion> suggestions) async {
+    _suggestionCategoryBySku.clear();
+    if (suggestions.isEmpty) return;
+
+    final skus = suggestions.map((s) => s.sku).where((s) => s.trim().isNotEmpty).toSet().toList();
+    if (skus.isEmpty) return;
+
+    // IN (...) con placeholders
+    final placeholders = List.filled(skus.length, '?').join(',');
+    final rows = await db.rawQuery('''
+      SELECT sku, COALESCE(NULLIF(TRIM(category),''), '(Sin categoría)') AS cat
+      FROM products
+      WHERE sku IN ($placeholders)
+    ''', skus);
+
+    for (final r in rows) {
+      final sku = (r['sku'] ?? '').toString();
+      final cat = (r['cat'] ?? '(Sin categoría)').toString();
+      if (sku.isNotEmpty) _suggestionCategoryBySku[sku] = cat;
     }
   }
 
@@ -146,6 +180,7 @@ class _InventoryPageState extends State<InventoryPage> {
   }
 
   void _snack(String msg) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
@@ -168,16 +203,12 @@ class _InventoryPageState extends State<InventoryPage> {
       _editingId = p['id'] as int;
       _skuCtrl.text = (p['sku'] ?? '').toString();
       _nameCtrl.text = (p['name'] ?? '').toString();
-      _salePriceCtrl.text =
-          ((p['default_sale_price'] as num?)?.toDouble() ?? 0).toStringAsFixed(2);
-      _lastCostCtrl.text =
-          ((p['last_purchase_price'] as num?)?.toDouble() ?? 0).toStringAsFixed(2);
+      _salePriceCtrl.text = ((p['default_sale_price'] as num?)?.toDouble() ?? 0).toStringAsFixed(2);
+      _lastCostCtrl.text = ((p['last_purchase_price'] as num?)?.toDouble() ?? 0).toStringAsFixed(2);
       _stockCtrl.text = ((p['stock'] as num?)?.toInt() ?? 0).toString();
       _categoryCtrl.text = '';
       _selectedDialogCategory =
-          (p['category'] == null || (p['category'] as String).trim().isEmpty)
-              ? '(Sin categoría)'
-              : (p['category'] as String);
+          (p['category'] == null || (p['category'] as String).trim().isEmpty) ? '(Sin categoría)' : (p['category'] as String);
     });
     _showProductDialog(title: 'Editar producto');
   }
@@ -202,13 +233,13 @@ class _InventoryPageState extends State<InventoryPage> {
     await _loadAll();
   }
 
+  // ✅ Popup corregido: padding con teclado + safe bottom (botones android)
   Future<void> _showProductDialog({required String title}) async {
     if (_categories.isEmpty) {
       await _loadCategories();
     }
     _selectedDialogCategory ??= _categories.isNotEmpty ? _categories.first : '(Sin categoría)';
 
-    // ✅ CAMBIO ÚNICO: mover el popup hacia arriba y evitar que se encime con la barra inferior/teclado
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -216,8 +247,8 @@ class _InventoryPageState extends State<InventoryPage> {
       showDragHandle: true,
       builder: (_) {
         final mq = MediaQuery.of(context);
-        final bottomSafe = mq.padding.bottom; // barra navegación
-        final keyboard = mq.viewInsets.bottom; // teclado
+        final bottomSafe = mq.padding.bottom;
+        final keyboard = mq.viewInsets.bottom;
         const extraBottom = 16.0;
 
         return SafeArea(
@@ -240,17 +271,13 @@ class _InventoryPageState extends State<InventoryPage> {
                   const SizedBox(height: 8),
                   TextField(controller: _nameCtrl, decoration: const InputDecoration(labelText: 'Nombre *')),
                   const SizedBox(height: 8),
-
                   Row(
                     children: [
                       Expanded(
                         child: DropdownButtonFormField<String>(
                           value: _selectedDialogCategory,
                           items: <String>['(Sin categoría)', ..._categories.where((c) => c != '(Sin categoría)')]
-                              .map((c) => DropdownMenuItem(
-                                    value: c,
-                                    child: Text(c),
-                                  ))
+                              .map((c) => DropdownMenuItem(value: c, child: Text(c)))
                               .toList(),
                           onChanged: (v) => setState(() => _selectedDialogCategory = v),
                           decoration: const InputDecoration(labelText: 'Categoría'),
@@ -273,7 +300,6 @@ class _InventoryPageState extends State<InventoryPage> {
                     ],
                   ),
                   const SizedBox(height: 8),
-
                   Row(
                     children: [
                       Expanded(
@@ -300,7 +326,6 @@ class _InventoryPageState extends State<InventoryPage> {
                     decoration: const InputDecoration(labelText: 'Existencia'),
                   ),
                   const SizedBox(height: 16),
-
                   Row(
                     children: [
                       if (_editingId != null)
@@ -388,6 +413,135 @@ class _InventoryPageState extends State<InventoryPage> {
     }
   }
 
+  // =======================
+  // REPORTE SUGERENCIAS + EXCEL
+  // =======================
+  Map<String, List<PurchaseSuggestion>> _groupSuggestionsByCategory() {
+    final map = <String, List<PurchaseSuggestion>>{};
+    for (final s in _purchaseSuggestions) {
+      final cat = _suggestionCategoryBySku[s.sku] ?? '(Sin categoría)';
+      (map[cat] ??= []).add(s);
+    }
+    // Orden por categoría y por costo desc dentro
+    final sortedKeys = map.keys.toList()..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    final out = <String, List<PurchaseSuggestion>>{};
+    for (final k in sortedKeys) {
+      final list = map[k]!..sort((a, b) => b.estimatedCost.compareTo(a.estimatedCost));
+      out[k] = list;
+    }
+    return out;
+  }
+
+  Future<void> _exportSuggestionsToExcel() async {
+    if (_purchaseSuggestions.isEmpty) {
+      _snack('No hay sugerencias para exportar');
+      return;
+    }
+
+    try {
+      final grouped = _groupSuggestionsByCategory();
+      final excel = xls.Excel.createExcel();
+      final sheet = excel['Sugerencias'];
+
+      // Encabezados
+      sheet.appendRow([
+        xls.TextCellValue('Categoría'),
+        xls.TextCellValue('SKU'),
+        xls.TextCellValue('Producto'),
+        xls.TextCellValue('Stock'),
+        xls.TextCellValue('Ventas recientes'),
+        xls.TextCellValue('Sugerido'),
+        xls.TextCellValue('Costo estimado'),
+      ]);
+
+      double grandTotal = 0.0;
+
+      for (final entry in grouped.entries) {
+        final cat = entry.key;
+        final items = entry.value;
+
+        // Separador de categoría
+        sheet.appendRow([
+          xls.TextCellValue(cat.toUpperCase()),
+          xls.TextCellValue(''),
+          xls.TextCellValue(''),
+          xls.TextCellValue(''),
+          xls.TextCellValue(''),
+          xls.TextCellValue(''),
+          xls.TextCellValue(''),
+        ]);
+
+        double catTotal = 0.0;
+        for (final s in items) {
+          catTotal += s.estimatedCost;
+          sheet.appendRow([
+            xls.TextCellValue(cat),
+            xls.TextCellValue(s.sku),
+            xls.TextCellValue(s.name),
+            xls.IntCellValue(s.stock),
+            xls.IntCellValue(s.soldLastPeriod),
+            xls.IntCellValue(s.suggestedQuantity),
+            xls.DoubleCellValue(double.parse(s.estimatedCost.toStringAsFixed(2))),
+          ]);
+        }
+
+        grandTotal += catTotal;
+
+        // Total por categoría
+        sheet.appendRow([
+          xls.TextCellValue('TOTAL $cat'),
+          xls.TextCellValue(''),
+          xls.TextCellValue(''),
+          xls.TextCellValue(''),
+          xls.TextCellValue(''),
+          xls.TextCellValue(''),
+          xls.DoubleCellValue(double.parse(catTotal.toStringAsFixed(2))),
+        ]);
+
+        // Línea en blanco
+        sheet.appendRow([
+          xls.TextCellValue(''),
+          xls.TextCellValue(''),
+          xls.TextCellValue(''),
+          xls.TextCellValue(''),
+          xls.TextCellValue(''),
+          xls.TextCellValue(''),
+          xls.TextCellValue(''),
+        ]);
+      }
+
+      // Total general
+      sheet.appendRow([
+        xls.TextCellValue('TOTAL GENERAL'),
+        xls.TextCellValue(''),
+        xls.TextCellValue(''),
+        xls.TextCellValue(''),
+        xls.TextCellValue(''),
+        xls.TextCellValue(''),
+        xls.DoubleCellValue(double.parse(grandTotal.toStringAsFixed(2))),
+      ]);
+
+      final bytes = excel.encode();
+      if (bytes == null) {
+        _snack('No se pudo generar el Excel');
+        return;
+      }
+
+      final dir = await getTemporaryDirectory();
+      final ts = DateFormat('yyyyMMdd_HHmm').format(DateTime.now());
+      final file = File('${dir.path}/reporte_sugerencias_compra_$ts.xlsx');
+      await file.writeAsBytes(bytes, flush: true);
+
+      await Share.shareXFiles(
+        [XFile(file.path)],
+        subject: 'Reporte de sugerencias de compra',
+        text: 'Reporte agrupado por categoría. Total: ${_money.format(grandTotal)}',
+      );
+    } catch (e) {
+      _snack('Error exportando a Excel: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final lowCount = _products.where((p) => (p['stock'] as num? ?? 0) <= 2).length;
@@ -395,7 +549,9 @@ class _InventoryPageState extends State<InventoryPage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Inventario'),
-        actions: [IconButton(onPressed: _loadAll, icon: const Icon(Icons.refresh))],
+        actions: [
+          IconButton(onPressed: _loadAll, icon: const Icon(Icons.refresh)),
+        ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(56),
           child: Padding(
@@ -433,14 +589,15 @@ class _InventoryPageState extends State<InventoryPage> {
         child: CustomScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
-            // Sugerencias (TODAS)
+            // Reporte de sugerencias (agrupado + export)
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-                child: _buildSuggestionsCard(),
+                child: _buildSuggestionsReportCard(),
               ),
             ),
             const SliverToBoxAdapter(child: SizedBox(height: 8)),
+
             // Filtros
             SliverToBoxAdapter(
               child: Padding(
@@ -483,6 +640,7 @@ class _InventoryPageState extends State<InventoryPage> {
               ),
             ),
             const SliverToBoxAdapter(child: Divider(height: 0)),
+
             // Lista de productos
             if (_products.isEmpty)
               const SliverFillRemaining(
@@ -499,6 +657,7 @@ class _InventoryPageState extends State<InventoryPage> {
                     final cat = (p['category'] == null || (p['category'] as String).trim().isEmpty)
                         ? '(Sin categoría)'
                         : (p['category'] as String);
+
                     return Column(
                       children: [
                         ListTile(
@@ -524,14 +683,15 @@ class _InventoryPageState extends State<InventoryPage> {
                   childCount: _products.length,
                 ),
               ),
+            const SliverToBoxAdapter(child: SizedBox(height: 24)),
           ],
         ),
       ),
     );
   }
 
-  // ===== Tarjeta de sugerencias (TODAS) ======================================
-  Widget _buildSuggestionsCard() {
+  // ===== Reporte visual (agrupado por categorías) + Export Excel ============
+  Widget _buildSuggestionsReportCard() {
     if (_loadingRecommendations) {
       return const Card(
         child: Padding(
@@ -557,48 +717,92 @@ class _InventoryPageState extends State<InventoryPage> {
       );
     }
 
-    // MUESTRA TODAS LAS SUGERENCIAS, SIN LÍMITE
+    final grouped = _groupSuggestionsByCategory();
+
+    double grandTotal = 0;
+    for (final list in grouped.values) {
+      grandTotal += list.fold<double>(0.0, (sum, s) => sum + s.estimatedCost);
+    }
+
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Sugerencias de compra', style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            ListView.separated(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: _purchaseSuggestions.length,
-              separatorBuilder: (_, __) => const Divider(height: 1),
-              itemBuilder: (_, i) {
-                final s = _purchaseSuggestions[i];
-                return ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: CircleAvatar(
-                    backgroundColor: Colors.orange.shade100,
-                    child: const Icon(Icons.shopping_bag, color: Colors.deepOrange),
-                  ),
-                  title: Text(s.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                  subtitle: Text('SKU ${s.sku} • Stock ${s.stock} • Ventas recientes ${s.soldLastPeriod}'),
-                  trailing: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Text('Comprar ${s.suggestedQuantity}'),
-                      Text(_money.format(s.estimatedCost), style: const TextStyle(fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                  onLongPress: () {
-                    final line =
-                        '${s.sku}\t${s.name}\tStock:${s.stock}\tSug:${s.suggestedQuantity}\t${_money.format(s.estimatedCost)}';
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Copiado: $line')),
-                    );
-                  },
-                );
-              },
+            Row(
+              children: [
+                const Expanded(
+                  child: Text('Sugerencias de compra', style: TextStyle(fontWeight: FontWeight.bold)),
+                ),
+                IconButton(
+                  tooltip: 'Exportar a Excel',
+                  onPressed: _exportSuggestionsToExcel,
+                  icon: const Icon(Icons.table_view),
+                ),
+              ],
             ),
+            const SizedBox(height: 6),
+            Text(
+              'Total estimado sugerido: ${_money.format(grandTotal)} • Categorías: ${grouped.length} • SKUs: ${_purchaseSuggestions.length}',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+
+            // Secciones por categoría (expandibles)
+            ...grouped.entries.map((entry) {
+              final cat = entry.key;
+              final items = entry.value;
+              final catTotal = items.fold<double>(0.0, (sum, s) => sum + s.estimatedCost);
+
+              return Container(
+                margin: const EdgeInsets.only(bottom: 10),
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.black12), // Flutter Border (ya no choca con excel)
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: ExpansionTile(
+                  tilePadding: const EdgeInsets.symmetric(horizontal: 12),
+                  childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                  title: Text(cat),
+                  subtitle: Text('${items.length} sugerencias • Total ${_money.format(catTotal)}'),
+                  children: [
+                    const Divider(height: 1),
+                    const SizedBox(height: 8),
+                    ListView.separated(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: items.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (_, i) {
+                        final s = items[i];
+                        return ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          leading: CircleAvatar(
+                            backgroundColor: Colors.orange.shade100,
+                            child: const Icon(Icons.shopping_bag, color: Colors.deepOrange),
+                          ),
+                          title: Text('${s.name}', maxLines: 1, overflow: TextOverflow.ellipsis),
+                          subtitle: Text('SKU ${s.sku} • Stock ${s.stock} • Ventas recientes ${s.soldLastPeriod}'),
+                          trailing: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              Text('Comprar ${s.suggestedQuantity}'),
+                              Text(_money.format(s.estimatedCost), style: const TextStyle(fontWeight: FontWeight.bold)),
+                            ],
+                          ),
+                          onLongPress: () {
+                            final line = '${cat}\t${s.sku}\t${s.name}\tStock:${s.stock}\tVend:${s.soldLastPeriod}\tSug:${s.suggestedQuantity}\t${_money.format(s.estimatedCost)}';
+                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Copiado: $line')));
+                          },
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              );
+            }).toList(),
           ],
         ),
       ),
