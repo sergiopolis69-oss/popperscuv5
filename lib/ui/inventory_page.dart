@@ -881,4 +881,3 @@ class _SugReport {
   final Map<String, List<_SugRow>> byCategory;
   final List<String> categoryOrder;
 }
-```0
