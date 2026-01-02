@@ -10,11 +10,8 @@
 //   * Hoja 'sale_items' (renglones de items)
 //   * Hoja 'sales_detail' (renglones SKU con costo, descuento, envío repartido,
 //     y utilidad por línea).
-// - Export de compras: hoja 'purchases' + 'purchase_items'.
+// - Export de compras: hoja 'purchases' + 'purchase_items' (ROBUSTO a schema).
 // - Import de ventas / compras: NO implementado (lanza UnimplementedError).
-//
-// Si en el futuro quieres que también se puedan importar
-// ventas / compras desde XLSX, lo hacemos aparte con cuidado.
 
 import 'dart:typed_data';
 
@@ -33,6 +30,27 @@ Future<Database> _db() async {
   }
 }
 
+Future<bool> _tableExists(Database db, String table) async {
+  final r = await db.rawQuery(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+    [table],
+  );
+  return r.isNotEmpty;
+}
+
+Future<Set<String>> _columnsOf(Database db, String table) async {
+  final rows = await db.rawQuery("PRAGMA table_info($table)");
+  return rows
+      .map((e) => (e['name'] ?? '').toString())
+      .where((s) => s.isNotEmpty)
+      .toSet();
+}
+
+Future<bool> _hasColumn(Database db, String table, String col) async {
+  final cols = await _columnsOf(db, table);
+  return cols.contains(col);
+}
+
 // ====================== Helpers Excel (lectura) =============================
 
 ex.Data? _cell(List<ex.Data?> row, int index) {
@@ -44,22 +62,15 @@ String _cellAsString(ex.Data? d) {
   final v = d?.value;
   if (v == null) return '';
 
-  // Texto
-  if (v is ex.TextCellValue) {
-    return v.value.toString();
-  }
-
-  // Números
+  if (v is ex.TextCellValue) return v.value.toString();
   if (v is ex.IntCellValue) return v.value.toString();
   if (v is ex.DoubleCellValue) return v.value.toString();
 
-  // Fechas
   if (v is ex.DateCellValue) {
     final dt = v.asDateTimeLocal();
     return dt.toIso8601String();
   }
 
-  // Cualquier otra cosa
   return v.toString();
 }
 
@@ -93,9 +104,7 @@ DateTime? _cellAsDate(ex.Data? d) {
   final v = d?.value;
   if (v == null) return null;
 
-  if (v is ex.DateCellValue) {
-    return v.asDateTimeLocal();
-  }
+  if (v is ex.DateCellValue) return v.asDateTimeLocal();
   if (v is ex.TextCellValue) {
     final s = v.value.toString();
     if (s.isEmpty) return null;
@@ -134,10 +143,7 @@ Future<Uint8List> buildProductsXlsxBytes() async {
   ''');
 
   final book = ex.Excel.createExcel();
-  // borramos la hoja por defecto para no ensuciar
-  if (book.sheets.containsKey('Sheet1')) {
-    book.delete('Sheet1');
-  }
+  if (book.sheets.containsKey('Sheet1')) book.delete('Sheet1');
 
   const sheet = 'products';
   _appendHeader(book, sheet, [
@@ -176,9 +182,7 @@ Future<Uint8List> buildClientsXlsxBytes() async {
   ''');
 
   final book = ex.Excel.createExcel();
-  if (book.sheets.containsKey('Sheet1')) {
-    book.delete('Sheet1');
-  }
+  if (book.sheets.containsKey('Sheet1')) book.delete('Sheet1');
 
   const sheet = 'clients';
   _appendHeader(book, sheet, ['phone', 'name', 'address']);
@@ -194,29 +198,41 @@ Future<Uint8List> buildClientsXlsxBytes() async {
   return _encode(book);
 }
 
-// ====================== EXPORT: SUPPLIERS ===================================
+// ====================== EXPORT: SUPPLIERS (robusto) ==========================
 
 Future<Uint8List> buildSuppliersXlsxBytes() async {
   final db = await _db();
+
+  final book = ex.Excel.createExcel();
+  if (book.sheets.containsKey('Sheet1')) book.delete('Sheet1');
+
+  const sheet = 'suppliers';
+
+  if (!await _tableExists(db, 'suppliers')) {
+    // Exporta vacío pero sin reventar
+    _appendHeader(book, sheet, ['phone', 'name']);
+    return _encode(book);
+  }
+
+  final hasAddress = await _hasColumn(db, 'suppliers', 'address');
+
+  _appendHeader(book, sheet, [
+    'phone',
+    'name',
+    if (hasAddress) 'address',
+  ]);
+
   final rows = await db.rawQuery('''
-    SELECT phone, name, address
+    SELECT phone, name ${hasAddress ? ", address" : ""}
     FROM suppliers
     ORDER BY name COLLATE NOCASE
   ''');
-
-  final book = ex.Excel.createExcel();
-  if (book.sheets.containsKey('Sheet1')) {
-    book.delete('Sheet1');
-  }
-
-  const sheet = 'suppliers';
-  _appendHeader(book, sheet, ['phone', 'name', 'address']);
 
   for (final r in rows) {
     book.appendRow(sheet, [
       _tx((r['phone'] ?? '').toString()),
       _tx((r['name'] ?? '').toString()),
-      _tx((r['address'] ?? '').toString()),
+      if (hasAddress) _tx((r['address'] ?? '').toString()),
     ]);
   }
 
@@ -224,17 +240,10 @@ Future<Uint8List> buildSuppliersXlsxBytes() async {
 }
 
 // ====================== EXPORT: SALES (+ detalle por SKU) ===================
-//
-// Genera 3 hojas:
-// - 'sales': info por venta (id, fecha, cliente, método, descuento, envío)
-// - 'sale_items': renglones de items
-// - 'sales_detail': renglón por SKU con costo, descuento y envío repartido,
-//   y utilidad por línea (sin contar envío como utilidad).
 
 Future<Uint8List> buildSalesXlsxBytes() async {
   final db = await _db();
 
-  // Ventas (cabecera)
   final salesRows = await db.rawQuery('''
     SELECT
       s.id,
@@ -249,7 +258,6 @@ Future<Uint8List> buildSalesXlsxBytes() async {
     ORDER BY s.date, s.id
   ''');
 
-  // Items
   final itemsRows = await db.rawQuery('''
     SELECT
       si.sale_id,
@@ -263,7 +271,6 @@ Future<Uint8List> buildSalesXlsxBytes() async {
     ORDER BY si.sale_id, p.name
   ''');
 
-  // Flat join para detalle por SKU (con costo)
   final flatRows = await db.rawQuery('''
     SELECT
       s.id AS sale_id,
@@ -287,15 +294,12 @@ Future<Uint8List> buildSalesXlsxBytes() async {
   ''');
 
   final book = ex.Excel.createExcel();
-  if (book.sheets.containsKey('Sheet1')) {
-    book.delete('Sheet1');
-  }
+  if (book.sheets.containsKey('Sheet1')) book.delete('Sheet1');
 
   const sSales = 'sales';
   const sItems = 'sale_items';
   const sDetail = 'sales_detail';
 
-  // Hoja sales
   _appendHeader(book, sSales, [
     'id',
     'date',
@@ -318,7 +322,6 @@ Future<Uint8List> buildSalesXlsxBytes() async {
     ]);
   }
 
-  // Hoja sale_items
   _appendHeader(book, sItems, [
     'sale_id',
     'product_id',
@@ -339,7 +342,6 @@ Future<Uint8List> buildSalesXlsxBytes() async {
     ]);
   }
 
-  // Hoja sales_detail: reparto de descuento y envío por SKU
   _appendHeader(book, sDetail, [
     'sale_id',
     'date',
@@ -357,10 +359,9 @@ Future<Uint8List> buildSalesXlsxBytes() async {
     'discount_per_unit',
     'shipping_total_alloc',
     'shipping_per_unit',
-    'line_profit', // (line_gross - discount_total_alloc - line_cost)
+    'line_profit',
   ]);
 
-  // Agrupar por venta para repartir descuento/envío
   final bySale = <int, List<Map<String, Object?>>>{};
   for (final r in flatRows) {
     final saleId = (r['sale_id'] as int?) ?? 0;
@@ -414,8 +415,7 @@ Future<Uint8List> buildSalesXlsxBytes() async {
       final lineShippingTotal = shipping * share;
       final shippingPerUnit = qty > 0 ? lineShippingTotal / qty : 0.0;
 
-      // Utilidad: ventas netas de ese renglón (sin envío) - costo
-      final lineNet = lineGross - lineDiscountTotal;
+      final lineNet = lineGross - lineDiscountTotal; // sin envío
       final lineProfit = lineNet - lineCost;
 
       book.appendRow(sDetail, [
@@ -443,61 +443,140 @@ Future<Uint8List> buildSalesXlsxBytes() async {
   return _encode(book);
 }
 
-// ====================== EXPORT: PURCHASES ===================================
+// ====================== EXPORT: PURCHASES (robusto a schema) =================
 
 Future<Uint8List> buildPurchasesXlsxBytes() async {
   final db = await _db();
 
-  final heads = await db.rawQuery('''
-    SELECT
-      p.id,
-      p.folio,
-      p.date,
-      p.supplier_phone,
-      COALESCE(s.name,'') AS supplier_name
-    FROM purchases p
-    LEFT JOIN suppliers s ON s.phone = p.supplier_phone
-    ORDER BY p.date, p.id
-  ''');
-
-  final items = await db.rawQuery('''
-    SELECT
-      pi.purchase_id,
-      pi.product_id,
-      pr.sku,
-      COALESCE(pr.name,'') AS product_name,
-      pi.quantity,
-      pi.unit_cost
-    FROM purchase_items pi
-    JOIN products pr ON pr.id = pi.product_id
-    ORDER BY pi.purchase_id, pr.name
-  ''');
-
   final book = ex.Excel.createExcel();
-  if (book.sheets.containsKey('Sheet1')) {
-    book.delete('Sheet1');
-  }
+  if (book.sheets.containsKey('Sheet1')) book.delete('Sheet1');
 
   const sPurch = 'purchases';
   const sItems = 'purchase_items';
+
+  // Si tu BD no trae compras, no revientes.
+  if (!await _tableExists(db, 'purchases')) {
+    _appendHeader(book, sPurch, ['purchase_id', 'folio', 'date', 'supplier_ref', 'supplier_name']);
+    _appendHeader(book, sItems, ['purchase_id', 'product_id', 'sku', 'product_name', 'quantity', 'unit_cost', 'line_total']);
+    return _encode(book);
+  }
+
+  final pCols = await _columnsOf(db, 'purchases');
+  final hasSuppliers = await _tableExists(db, 'suppliers');
+
+  final hasSupplierPhone = pCols.contains('supplier_phone');
+  final hasSupplierId = pCols.contains('supplier_id');
+  final hasSupplierText = pCols.contains('supplier') || pCols.contains('supplier_name');
+
+  String supplierRefExpr = "''";
+  String supplierNameExpr = "''";
+  String joinClause = "";
+
+  if (hasSuppliers) {
+    final sCols = await _columnsOf(db, 'suppliers');
+    final suppliersHasId = sCols.contains('id');
+    final suppliersHasPhone = sCols.contains('phone');
+    final suppliersHasName = sCols.contains('name');
+
+    // A) purchases.supplier_phone -> suppliers.phone
+    if (hasSupplierPhone && suppliersHasPhone && suppliersHasName) {
+      supplierRefExpr = "COALESCE(p.supplier_phone,'')";
+      supplierNameExpr = "COALESCE(s.name,'')";
+      joinClause = "LEFT JOIN suppliers s ON s.phone = p.supplier_phone";
+    }
+    // B) purchases.supplier_id -> suppliers.id
+    else if (hasSupplierId && suppliersHasId && suppliersHasName) {
+      supplierRefExpr = "COALESCE(p.supplier_id,'')";
+      supplierNameExpr = "COALESCE(s.name,'')";
+      joinClause = "LEFT JOIN suppliers s ON s.id = p.supplier_id";
+    }
+    // C) texto directo en purchases
+    else if (hasSupplierText) {
+      final col = pCols.contains('supplier') ? 'supplier' : 'supplier_name';
+      supplierRefExpr = "COALESCE(p.$col,'')";
+      supplierNameExpr = "COALESCE(p.$col,'')";
+      joinClause = "";
+    }
+  } else {
+    // Sin tabla suppliers: usa lo que exista
+    if (hasSupplierText) {
+      final col = pCols.contains('supplier') ? 'supplier' : 'supplier_name';
+      supplierRefExpr = "COALESCE(p.$col,'')";
+      supplierNameExpr = "COALESCE(p.$col,'')";
+    } else if (hasSupplierPhone) {
+      supplierRefExpr = "COALESCE(p.supplier_phone,'')";
+      supplierNameExpr = "COALESCE(p.supplier_phone,'')";
+    } else if (hasSupplierId) {
+      supplierRefExpr = "COALESCE(p.supplier_id,'')";
+      supplierNameExpr = "COALESCE(p.supplier_id,'')";
+    }
+  }
+
+  // Columnas de compras (folio/date pueden llamarse distinto en tu BD)
+  final folioCol = pCols.contains('folio')
+      ? 'folio'
+      : (pCols.contains('code') ? 'code' : (pCols.contains('ref') ? 'ref' : null));
+  final dateCol = pCols.contains('date')
+      ? 'date'
+      : (pCols.contains('created_at') ? 'created_at' : (pCols.contains('timestamp') ? 'timestamp' : null));
+
+  final folioExpr = folioCol == null ? "''" : "COALESCE(p.$folioCol,'')";
+  final dateExpr = dateCol == null ? "''" : "COALESCE(p.$dateCol,'')";
 
   _appendHeader(book, sPurch, [
     'purchase_id',
     'folio',
     'date',
-    'supplier_phone',
+    'supplier_ref',
     'supplier_name',
   ]);
 
+  final heads = await db.rawQuery('''
+    SELECT
+      p.id AS purchase_id,
+      $folioExpr AS folio,
+      $dateExpr AS date,
+      $supplierRefExpr AS supplier_ref,
+      $supplierNameExpr AS supplier_name
+    FROM purchases p
+    $joinClause
+    ORDER BY p.id
+  ''');
+
   for (final r in heads) {
     book.appendRow(sPurch, [
-      _i((r['id'] as num?) ?? 0),
+      _i((r['purchase_id'] as num?) ?? 0),
       _tx((r['folio'] ?? '').toString()),
       _tx((r['date'] ?? '').toString()),
-      _tx((r['supplier_phone'] ?? '').toString()),
+      _tx((r['supplier_ref'] ?? '').toString()),
       _tx((r['supplier_name'] ?? '').toString()),
     ]);
   }
+
+  // ---- purchase_items robusto ----
+  if (!await _tableExists(db, 'purchase_items')) {
+    _appendHeader(book, sItems, ['purchase_id', 'product_id', 'sku', 'product_name', 'quantity', 'unit_cost', 'line_total']);
+    return _encode(book);
+  }
+
+  final piCols = await _columnsOf(db, 'purchase_items');
+
+  final purchaseIdCol = piCols.contains('purchase_id')
+      ? 'purchase_id'
+      : (piCols.contains('purchaseId') ? 'purchaseId' : null);
+
+  final productIdCol = piCols.contains('product_id')
+      ? 'product_id'
+      : (piCols.contains('productId') ? 'productId' : null);
+
+  final qtyCol = piCols.contains('quantity')
+      ? 'quantity'
+      : (piCols.contains('qty') ? 'qty' : null);
+
+  // costo: intenta unit_cost, luego unit_price, luego cost
+  final costCol = piCols.contains('unit_cost')
+      ? 'unit_cost'
+      : (piCols.contains('unit_price') ? 'unit_price' : (piCols.contains('cost') ? 'cost' : null));
 
   _appendHeader(book, sItems, [
     'purchase_id',
@@ -508,6 +587,24 @@ Future<Uint8List> buildPurchasesXlsxBytes() async {
     'unit_cost',
     'line_total',
   ]);
+
+  // Si no hay columnas clave, exporta vacío sin fallar
+  if (purchaseIdCol == null || productIdCol == null || qtyCol == null || costCol == null) {
+    return _encode(book);
+  }
+
+  final items = await db.rawQuery('''
+    SELECT
+      pi.$purchaseIdCol AS purchase_id,
+      pi.$productIdCol AS product_id,
+      pr.sku,
+      COALESCE(pr.name,'') AS product_name,
+      COALESCE(pi.$qtyCol,0) AS quantity,
+      COALESCE(pi.$costCol,0) AS unit_cost
+    FROM purchase_items pi
+    JOIN products pr ON pr.id = pi.$productIdCol
+    ORDER BY pi.$purchaseIdCol, pr.name
+  ''');
 
   for (final r in items) {
     final qty = (r['quantity'] as num?)?.toDouble() ?? 0.0;
@@ -564,9 +661,7 @@ Future<void> importProductsXlsxBytes(Uint8List bytes) async {
       'stock': stock,
     };
 
-    if (id > 0) {
-      data['id'] = id;
-    }
+    if (id > 0) data['id'] = id;
 
     batch.insert(
       'products',
@@ -653,9 +748,6 @@ Future<void> importSuppliersXlsxBytes(Uint8List bytes) async {
 }
 
 // ====================== IMPORT: SALES / PURCHASES ===========================
-// Por ahora NO implemento estos import para no hacerte
-// un “engaño piadoso”. Si presionas importar Ventas/Compras
-// verás un error claro en pantalla con el mensaje de abajo.
 
 Future<void> importSalesXlsxBytes(Uint8List bytes) async {
   throw UnimplementedError(
