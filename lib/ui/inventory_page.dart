@@ -37,6 +37,10 @@ class _InventoryPageState extends State<InventoryPage> {
   final Map<String, List<_SugRow>> _suggestionsByCategory = {};
   final List<String> _suggestionCategoryOrder = [];
 
+  // Caducidad
+  bool _suggestionsExpired = false;
+  DateTime? _suggestionsGeneratedAt;
+
   // Búsqueda
   final _qCtrl = TextEditingController();
 
@@ -50,6 +54,11 @@ class _InventoryPageState extends State<InventoryPage> {
 
   int? _editingId;
   String? _selectedDialogCategory;
+
+  // Cache table
+  static const _kSugCacheTable = 'purchase_suggestions_cache';
+  // “2 meses” aproximado en días
+  static const _kSugTtl = Duration(days: 60);
 
   @override
   void initState() {
@@ -81,27 +90,183 @@ class _InventoryPageState extends State<InventoryPage> {
     await Future.wait([
       _loadCategories(),
       _loadProducts(),
-      _loadRecommendations(),
+      _loadRecommendations(), // ahora primero intenta cache + caducidad
     ]);
   }
 
-  Future<void> _loadRecommendations() async {
+  // ===========================================================================
+  // SUGERENCIAS: Cache en DB + caducidad (60 días)
+  // ===========================================================================
+
+  Future<void> _ensureSugCacheTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS $_kSugCacheTable (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        generated_at INTEGER NOT NULL,
+        category TEXT NOT NULL,
+        sku TEXT NOT NULL,
+        name TEXT NOT NULL,
+        stock INTEGER NOT NULL,
+        sold_last_period INTEGER NOT NULL,
+        suggested_qty INTEGER NOT NULL,
+        estimated_cost REAL NOT NULL
+      )
+    ''');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_${_kSugCacheTable}_gen ON $_kSugCacheTable(generated_at)');
+    await db.execute('CREATE INDEX IF NOT EXISTS idx_${_kSugCacheTable}_cat ON $_kSugCacheTable(category)');
+  }
+
+  Future<void> _clearSugCache(Database db) async {
+    await _ensureSugCacheTables(db);
+    await db.delete(_kSugCacheTable);
+  }
+
+  Future<_SugReport?> _loadSugCache(Database db) async {
+    await _ensureSugCacheTables(db);
+
+    final lastGenRows = await db.rawQuery('''
+      SELECT generated_at
+      FROM $_kSugCacheTable
+      ORDER BY generated_at DESC
+      LIMIT 1
+    ''');
+
+    if (lastGenRows.isEmpty) return null;
+
+    final genMs = (lastGenRows.first['generated_at'] as num?)?.toInt() ?? 0;
+    if (genMs <= 0) return null;
+
+    final genAt = DateTime.fromMillisecondsSinceEpoch(genMs);
+    final now = DateTime.now();
+
+    // caducó
+    if (now.difference(genAt) > _kSugTtl) {
+      await _clearSugCache(db);
+      return _SugReport(byCategory: {}, categoryOrder: const [], generatedAt: genAt, expired: true);
+    }
+
+    final rows = await db.rawQuery('''
+      SELECT category, sku, name, stock, sold_last_period, suggested_qty, estimated_cost
+      FROM $_kSugCacheTable
+      WHERE generated_at = ?
+      ORDER BY category COLLATE NOCASE, estimated_cost DESC, name COLLATE NOCASE
+    ''', [genMs]);
+
+    final byCategory = <String, List<_SugRow>>{};
+    for (final r in rows) {
+      final cat = (r['category'] ?? '(Sin categoría)').toString();
+      (byCategory[cat] ??= []).add(
+        _SugRow(
+          category: cat,
+          sku: (r['sku'] ?? '').toString(),
+          name: (r['name'] ?? '').toString(),
+          stock: ((r['stock'] as num?) ?? 0).toInt(),
+          soldLastPeriod: ((r['sold_last_period'] as num?) ?? 0).toInt(),
+          suggestedQuantity: ((r['suggested_qty'] as num?) ?? 0).toInt(),
+          estimatedCost: ((r['estimated_cost'] as num?) ?? 0).toDouble(),
+        ),
+      );
+    }
+
+    // Orden categorías por costo total desc
+    final catOrder = byCategory.keys.toList()
+      ..sort((a, b) {
+        final aCost = (byCategory[a] ?? const []).fold<double>(0.0, (x, y) => x + y.estimatedCost);
+        final bCost = (byCategory[b] ?? const []).fold<double>(0.0, (x, y) => x + y.estimatedCost);
+        return bCost.compareTo(aCost);
+      });
+
+    // Orden interno ya viene “estimated_cost desc”; pero aseguramos
+    for (final cat in catOrder) {
+      byCategory[cat]!.sort((x, y) => y.estimatedCost.compareTo(x.estimatedCost));
+    }
+
+    return _SugReport(byCategory: byCategory, categoryOrder: catOrder, generatedAt: genAt, expired: false);
+  }
+
+  Future<void> _saveSugCache(Database db, _SugReport report) async {
+    await _ensureSugCacheTables(db);
+    await db.transaction((txn) async {
+      await txn.delete(_kSugCacheTable);
+      final genMs = report.generatedAt.millisecondsSinceEpoch;
+
+      final batch = txn.batch();
+      for (final cat in report.categoryOrder) {
+        final rows = report.byCategory[cat] ?? const <_SugRow>[];
+        for (final r in rows) {
+          batch.insert(_kSugCacheTable, {
+            'generated_at': genMs,
+            'category': r.category,
+            'sku': r.sku,
+            'name': r.name,
+            'stock': r.stock,
+            'sold_last_period': r.soldLastPeriod,
+            'suggested_qty': r.suggestedQuantity,
+            'estimated_cost': r.estimatedCost,
+          });
+        }
+      }
+      await batch.commit(noResult: true);
+    });
+  }
+
+  Future<void> _loadRecommendations({bool forceRegenerate = false}) async {
     if (!_loadingRecommendations) setState(() => _loadingRecommendations = true);
 
     try {
       final db = await _db();
+
+      // 1) Intentar cache si NO es forzado
+      if (!forceRegenerate) {
+        final cached = await _loadSugCache(db);
+        if (!mounted) return;
+
+        if (cached != null) {
+          setState(() {
+            _suggestionsExpired = cached.expired;
+            _suggestionsGeneratedAt = cached.generatedAt;
+
+            _purchaseSuggestions = []; // no necesitamos la lista base para UI del reporte
+            _suggestionsByCategory
+              ..clear()
+              ..addAll(cached.byCategory);
+            _suggestionCategoryOrder
+              ..clear()
+              ..addAll(cached.categoryOrder);
+
+            _loadingRecommendations = false;
+          });
+          return;
+        }
+      }
+
+      // 2) Regenerar (fetchPurchaseSuggestions) y cachear
       final suggestions = await fetchPurchaseSuggestions(db); // <- SIN límite
-      final report = await _buildSuggestionsReport(db, suggestions);
+      final reportBase = await _buildSuggestionsReport(db, suggestions);
+
+      final now = DateTime.now();
+      final report = _SugReport(
+        byCategory: reportBase.byCategory,
+        categoryOrder: reportBase.categoryOrder,
+        generatedAt: now,
+        expired: false,
+      );
+
+      await _saveSugCache(db, report);
 
       if (!mounted) return;
       setState(() {
+        _suggestionsExpired = false;
+        _suggestionsGeneratedAt = now;
         _purchaseSuggestions = suggestions;
+
         _suggestionsByCategory
           ..clear()
           ..addAll(report.byCategory);
         _suggestionCategoryOrder
           ..clear()
           ..addAll(report.categoryOrder);
+
         _loadingRecommendations = false;
       });
     } catch (_) {
@@ -109,6 +274,10 @@ class _InventoryPageState extends State<InventoryPage> {
       setState(() => _loadingRecommendations = false);
     }
   }
+
+  // ===========================================================================
+  // CARGAS BASE
+  // ===========================================================================
 
   Future<void> _loadCategories() async {
     final db = await _db();
@@ -162,6 +331,10 @@ class _InventoryPageState extends State<InventoryPage> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
+
+  // ===========================================================================
+  // CRUD Producto
+  // ===========================================================================
 
   void _startCreate() {
     setState(() {
@@ -390,9 +563,279 @@ class _InventoryPageState extends State<InventoryPage> {
     }
   }
 
-  // ===========================
-  // NUEVO: resumen/historial SKU
-  // ===========================
+  // ===========================================================================
+  // NUEVO: Ajuste de inventario
+  // ===========================================================================
+
+  Future<void> _openInventoryAdjustment() async {
+    final db = await _db();
+
+    final rows = await db.rawQuery('''
+      SELECT id, sku, name, COALESCE(stock,0) AS stock
+      FROM products
+      ORDER BY name COLLATE NOCASE
+    ''');
+
+    final items = rows
+        .map((r) => _AdjItem(
+              id: (r['id'] as num).toInt(),
+              sku: (r['sku'] ?? '').toString(),
+              name: (r['name'] ?? '').toString(),
+              currentStock: ((r['stock'] as num?) ?? 0).toInt(),
+            ))
+        .toList();
+
+    // controladores por item (solo dentro del sheet)
+    final ctrls = <int, TextEditingController>{};
+    for (final it in items) {
+      ctrls[it.id] = TextEditingController(text: it.currentStock.toString());
+    }
+
+    Future<void> disposeCtrls() async {
+      for (final c in ctrls.values) {
+        c.dispose();
+      }
+    }
+
+    if (!mounted) {
+      await disposeCtrls();
+      return;
+    }
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      showDragHandle: true,
+      builder: (_) {
+        final mq = MediaQuery.of(context);
+        final keyboard = mq.viewInsets.bottom;
+        final bottomSafe = mq.padding.bottom;
+
+        String q = '';
+
+        int changedCount() {
+          int n = 0;
+          for (final it in items) {
+            final v = int.tryParse(ctrls[it.id]!.text.trim()) ?? it.currentStock;
+            if (v != it.currentStock) n++;
+          }
+          return n;
+        }
+
+        int totalDelta() {
+          int d = 0;
+          for (final it in items) {
+            final v = int.tryParse(ctrls[it.id]!.text.trim()) ?? it.currentStock;
+            d += (v - it.currentStock);
+          }
+          return d;
+        }
+
+        List<_AdjChange> changes() {
+          final out = <_AdjChange>[];
+          for (final it in items) {
+            final v = int.tryParse(ctrls[it.id]!.text.trim()) ?? it.currentStock;
+            if (v != it.currentStock) {
+              out.add(_AdjChange(
+                id: it.id,
+                sku: it.sku,
+                name: it.name,
+                from: it.currentStock,
+                to: v,
+              ));
+            }
+          }
+          out.sort((a, b) => a.sku.compareTo(b.sku));
+          return out;
+        }
+
+        Future<void> apply() async {
+          final ch = changes();
+          if (ch.isEmpty) {
+            _snack('No hay cambios para aplicar');
+            return;
+          }
+
+          final ok = await showDialog<bool>(
+            context: context,
+            builder: (_) => AlertDialog(
+              title: const Text('Aplicar ajuste de inventario'),
+              content: Text(
+                'Se aplicarán ${ch.length} cambios.\n'
+                '¿Deseas continuar?',
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancelar')),
+                FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Aplicar')),
+              ],
+            ),
+          );
+          if (ok != true) return;
+
+          // aplicar en transacción
+          await db.transaction((txn) async {
+            final batch = txn.batch();
+            for (final c in ch) {
+              batch.update('products', {'stock': c.to}, where: 'id=?', whereArgs: [c.id]);
+            }
+            await batch.commit(noResult: true);
+          });
+
+          // refrescar UI
+          await _loadProducts();
+          // las sugerencias dependen del stock => las marcamos como caducadas “operativamente”
+          // para que el usuario regenere si quiere
+          // (sin borrar cache; el TTL sigue)
+          _snack('Ajuste aplicado');
+
+          if (!mounted) return;
+
+          // resumen
+          final delta = ch.fold<int>(0, (a, b) => a + (b.to - b.from));
+          await showDialog<void>(
+            context: context,
+            builder: (_) => AlertDialog(
+              title: const Text('Resumen del ajuste'),
+              content: SizedBox(
+                width: double.maxFinite,
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Cambios aplicados: ${ch.length}'),
+                      Text('Diferencia total: ${delta >= 0 ? '+' : ''}$delta'),
+                      const SizedBox(height: 12),
+                      ...ch.take(80).map((c) {
+                        final d = c.to - c.from;
+                        return Text(
+                          '${c.sku} • ${c.name}\n'
+                          '  ${c.from} → ${c.to}  (${d >= 0 ? '+' : ''}$d)',
+                        );
+                      }),
+                      if (ch.length > 80) const Text('\n(Se omitieron algunos por longitud)'),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                FilledButton(onPressed: () => Navigator.pop(context), child: const Text('OK')),
+              ],
+            ),
+          );
+
+          // cerrar sheet
+          if (Navigator.of(context).canPop()) Navigator.of(context).pop();
+        }
+
+        return StatefulBuilder(
+          builder: (context, setModal) {
+            final filtered = q.trim().isEmpty
+                ? items
+                : items.where((it) {
+                    final qq = q.toLowerCase();
+                    return it.sku.toLowerCase().contains(qq) || it.name.toLowerCase().contains(qq);
+                  }).toList();
+
+            final nChanged = changedCount();
+            final delta = totalDelta();
+
+            return Padding(
+              padding: EdgeInsets.only(
+                left: 16,
+                right: 16,
+                top: 8,
+                bottom: keyboard + bottomSafe + 16,
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text('Ajuste de inventario', style: Theme.of(context).textTheme.titleLarge),
+                      ),
+                      IconButton(
+                        tooltip: 'Cerrar',
+                        onPressed: () => Navigator.of(context).pop(),
+                        icon: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    decoration: InputDecoration(
+                      prefixIcon: const Icon(Icons.search),
+                      hintText: 'Buscar SKU o nombre…',
+                      filled: true,
+                      isDense: true,
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                    ),
+                    onChanged: (v) => setModal(() => q = v),
+                  ),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 8,
+                    children: [
+                      _miniStat('Productos', '${items.length}'),
+                      _miniStat('Cambios', '$nChanged'),
+                      _miniStat('Delta total', '${delta >= 0 ? '+' : ''}$delta'),
+                      FilledButton.icon(
+                        onPressed: nChanged == 0 ? null : apply,
+                        icon: const Icon(Icons.check),
+                        label: const Text('Aplicar ajuste'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  const Divider(height: 1),
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: ListView.separated(
+                      itemCount: filtered.length,
+                      separatorBuilder: (_, __) => const Divider(height: 0),
+                      itemBuilder: (_, i) {
+                        final it = filtered[i];
+                        final ctrl = ctrls[it.id]!;
+                        final newVal = int.tryParse(ctrl.text.trim()) ?? it.currentStock;
+                        final diff = newVal - it.currentStock;
+
+                        return ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: Text('${it.sku} • ${it.name}', maxLines: 1, overflow: TextOverflow.ellipsis),
+                          subtitle: Text('Actual: ${it.currentStock}  •  Dif: ${diff >= 0 ? '+' : ''}$diff'),
+                          trailing: SizedBox(
+                            width: 110,
+                            child: TextField(
+                              controller: ctrl,
+                              keyboardType: TextInputType.number,
+                              decoration: const InputDecoration(
+                                labelText: 'Nueva',
+                                isDense: true,
+                                border: OutlineInputBorder(),
+                              ),
+                              onChanged: (_) => setModal(() {}),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    await disposeCtrls();
+  }
+
+  // ===========================================================================
+  // Resumen/historial SKU (tap)
+  // ===========================================================================
+
   Future<void> _showSkuHistory(Map<String, dynamic> p) async {
     final db = await _db();
     final productId = (p['id'] as num).toInt();
@@ -401,7 +844,6 @@ class _InventoryPageState extends State<InventoryPage> {
     final stock = ((p['stock'] as num?)?.toInt() ?? 0);
     final lastCost = ((p['last_purchase_price'] as num?)?.toDouble() ?? 0.0);
 
-    // Ventas: agregados
     final salesAgg = await db.rawQuery('''
       SELECT
         COALESCE(SUM(si.quantity),0) AS qty,
@@ -414,7 +856,6 @@ class _InventoryPageState extends State<InventoryPage> {
     final soldQty = ((salesAgg.first['qty'] as num?) ?? 0).toInt();
     final revenue = ((salesAgg.first['revenue'] as num?) ?? 0).toDouble();
 
-    // Ventas: últimas 50
     final salesRows = await db.rawQuery('''
       SELECT s.date AS date, si.quantity AS qty, si.unit_price AS unit_price
       FROM sale_items si
@@ -424,7 +865,6 @@ class _InventoryPageState extends State<InventoryPage> {
       LIMIT 50
     ''', [productId]);
 
-    // Compras: intentamos unit_cost, si no unit_price
     int boughtQty = 0;
     double boughtCost = 0.0;
     List<Map<String, dynamic>> purchaseRows = [];
@@ -462,11 +902,6 @@ class _InventoryPageState extends State<InventoryPage> {
 
     hasPurchases = await tryPurchases('unit_cost') || await tryPurchases('unit_price');
 
-    // Utilidad estimada:
-    // - Si hay compras: revenue - boughtCost (ojo: esto es “costo comprado”, si compras más de lo vendido, se infla el costo)
-    // - Si no hay compras: revenue - (soldQty * lastCost)
-    //
-    // Para no “romper” nada, lo dejamos simple, pero mostramos etiqueta "estimado".
     final estCostForSold = hasPurchases ? boughtCost : (soldQty * lastCost);
     final estProfit = revenue - estCostForSold;
     final estMargin = revenue > 0 ? (estProfit / revenue) : 0.0;
@@ -527,7 +962,6 @@ class _InventoryPageState extends State<InventoryPage> {
                               style: const TextStyle(fontWeight: FontWeight.w700)),
                         );
                       }),
-
                     const SizedBox(height: 12),
                     Text('Historial de compras', style: Theme.of(context).textTheme.titleMedium),
                     const SizedBox(height: 6),
@@ -579,9 +1013,10 @@ class _InventoryPageState extends State<InventoryPage> {
     );
   }
 
-  // =======================
-  // BUILD (✅ DENTRO DE LA CLASE)
-  // =======================
+  // ===========================================================================
+  // BUILD
+  // ===========================================================================
+
   @override
   Widget build(BuildContext context) {
     final lowCount = _products.where((p) => (p['stock'] as num? ?? 0) <= 2).length;
@@ -589,7 +1024,14 @@ class _InventoryPageState extends State<InventoryPage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Inventario'),
-        actions: [IconButton(onPressed: _loadAll, icon: const Icon(Icons.refresh))],
+        actions: [
+          IconButton(
+            tooltip: 'Ajuste de inventario',
+            onPressed: _openInventoryAdjustment,
+            icon: const Icon(Icons.playlist_add_check),
+          ),
+          IconButton(onPressed: _loadAll, icon: const Icon(Icons.refresh)),
+        ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(56),
           child: Padding(
@@ -694,7 +1136,6 @@ class _InventoryPageState extends State<InventoryPage> {
                     return Column(
                       children: [
                         ListTile(
-                          // ✅ Tap abre resumen/historial SKU
                           onTap: () => _showSkuHistory(p),
                           leading: CircleAvatar(
                             backgroundColor: low ? Colors.red.shade50 : Colors.blue.shade50,
@@ -724,7 +1165,10 @@ class _InventoryPageState extends State<InventoryPage> {
     );
   }
 
-  // ===== Reporte visualizable + export ======================================
+  // ===========================================================================
+  // Reporte visualizable + export (con caducidad)
+  // ===========================================================================
+
   Widget _buildSuggestionsReportCard() {
     if (_loadingRecommendations) {
       return const Card(
@@ -735,7 +1179,34 @@ class _InventoryPageState extends State<InventoryPage> {
       );
     }
 
-    if (_purchaseSuggestions.isEmpty || _suggestionsByCategory.isEmpty) {
+    // Caducadas: desaparecen (no mostramos filas), pero damos botón regenerar
+    if (_suggestionsExpired) {
+      final when = _suggestionsGeneratedAt == null
+          ? ''
+          : ' (Generadas: ${DateFormat('yyyy-MM-dd').format(_suggestionsGeneratedAt!)})';
+
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Reporte de sugerencias de compra', style: TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              Text('Sugerencias caducadas$when.'),
+              const SizedBox(height: 12),
+              FilledButton.icon(
+                onPressed: () => _loadRecommendations(forceRegenerate: true),
+                icon: const Icon(Icons.refresh),
+                label: const Text('Actualizar (regenerar)'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (_suggestionsByCategory.isEmpty || _suggestionCategoryOrder.isEmpty) {
       return Card(
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -747,7 +1218,7 @@ class _InventoryPageState extends State<InventoryPage> {
               const Text('Inventario saludable: no hay compras urgentes basadas en las ventas recientes.'),
               const SizedBox(height: 12),
               OutlinedButton.icon(
-                onPressed: _loadRecommendations,
+                onPressed: () => _loadRecommendations(forceRegenerate: true),
                 icon: const Icon(Icons.refresh),
                 label: const Text('Actualizar'),
               ),
@@ -759,6 +1230,9 @@ class _InventoryPageState extends State<InventoryPage> {
 
     final totalUnits = _totalSuggestedUnitsAll();
     final totalCost = _totalEstimatedCostAll();
+    final gen = _suggestionsGeneratedAt == null
+        ? null
+        : DateFormat('yyyy-MM-dd').format(_suggestionsGeneratedAt!);
 
     return Card(
       child: Padding(
@@ -767,6 +1241,10 @@ class _InventoryPageState extends State<InventoryPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text('Reporte de sugerencias de compra', style: TextStyle(fontWeight: FontWeight.bold)),
+            if (gen != null) ...[
+              const SizedBox(height: 4),
+              Text('Generado: $gen', style: const TextStyle(color: Colors.black54)),
+            ],
             const SizedBox(height: 8),
             Wrap(
               spacing: 12,
@@ -776,7 +1254,7 @@ class _InventoryPageState extends State<InventoryPage> {
                 _miniStat('Total sugerido', '$totalUnits pzas'),
                 _miniStat('Costo estimado', _money.format(totalCost)),
                 OutlinedButton.icon(
-                  onPressed: _loadRecommendations,
+                  onPressed: () => _loadRecommendations(forceRegenerate: true),
                   icon: const Icon(Icons.refresh),
                   label: const Text('Actualizar'),
                 ),
@@ -887,7 +1365,7 @@ class _InventoryPageState extends State<InventoryPage> {
 
   Future<_SugReport> _buildSuggestionsReport(Database db, List<PurchaseSuggestion> suggestions) async {
     if (suggestions.isEmpty) {
-      return _SugReport(byCategory: {}, categoryOrder: const []);
+      return _SugReport(byCategory: {}, categoryOrder: const [], generatedAt: DateTime.now(), expired: false);
     }
 
     final skus = suggestions.map((s) => s.sku).where((e) => e.trim().isNotEmpty).toSet().toList();
@@ -934,7 +1412,7 @@ class _InventoryPageState extends State<InventoryPage> {
       byCategory[cat]!.sort((x, y) => y.estimatedCost.compareTo(x.estimatedCost));
     }
 
-    return _SugReport(byCategory: byCategory, categoryOrder: catOrder);
+    return _SugReport(byCategory: byCategory, categoryOrder: catOrder, generatedAt: DateTime.now(), expired: false);
   }
 
   Future<void> _exportSuggestionsToExcel() async {
@@ -1052,8 +1530,46 @@ class _SugRow {
 }
 
 class _SugReport {
-  _SugReport({required this.byCategory, required this.categoryOrder});
+  _SugReport({
+    required this.byCategory,
+    required this.categoryOrder,
+    required this.generatedAt,
+    required this.expired,
+  });
 
   final Map<String, List<_SugRow>> byCategory;
   final List<String> categoryOrder;
+  final DateTime generatedAt;
+  final bool expired;
+}
+
+// ======= ajuste inventario =========
+class _AdjItem {
+  _AdjItem({
+    required this.id,
+    required this.sku,
+    required this.name,
+    required this.currentStock,
+  });
+
+  final int id;
+  final String sku;
+  final String name;
+  final int currentStock;
+}
+
+class _AdjChange {
+  _AdjChange({
+    required this.id,
+    required this.sku,
+    required this.name,
+    required this.from,
+    required this.to,
+  });
+
+  final int id;
+  final String sku;
+  final String name;
+  final int from;
+  final int to;
 }
